@@ -1,0 +1,86 @@
+{
+  "appId": "com.jgraph.drawio.desktop",
+  "copyright": "Copyright 2017-2019 draw.io",
+  "asar": true,
+  "files": [
+    "**/*",
+    "!**/WEB-INF{,/**}"
+  ],
+  "artifactName": "${productName}-${arch}-${version}.${ext}",
+  "directories": {
+    "output": "./dist/"
+  },
+  "npmRebuild": false,
+  "publish": {
+      "provider": "github"
+  },
+  "mac": {
+  	"hardenedRuntime": true,
+  	"gatekeeperAssess": false,
+  	"entitlements": "build/entitlements.mac.plist",
+  	"entitlementsInherit": "build/entitlements.mac.plist",
+    "category": "public.app-category.graphics-design",
+    "target": [
+      { "target": "zip", "arch": [
+          "x64",
+          "arm64"
+        ]
+      },
+      { "target": "dmg", "arch": [
+          "x64",
+          "arm64",
+          "universal"
+        ]
+      }
+    ]
+  },
+  "afterSign": "build/notarize.mjs",
+  "afterPack": "build/fuses.cjs",
+  "dmg": {
+  },
+  "linux": {
+  	"executableName": "drawio",
+    "category": "Graphics",
+    "maintainer": "JGraph <support@draw.io>",
+    "icon": "./build",
+    "target": [
+      { "target": "AppImage", "arch": [
+          "x64",
+          "arm64"
+        ]
+      },
+      { "target": "deb", "arch": [
+          "x64",
+          "arm64"
+        ]
+      },
+      { "target": "rpm", "arch": [
+          "x64",
+          "arm64"
+        ]
+      }
+    ]
+  },
+  "rpm": {
+    "fpm": [
+      "--rpm-rpmbuild-define=_build_id_links none",
+      "--rpm-digest=sha256"
+    ]
+  },
+  "fileAssociations": [
+	  {
+	  	"ext": "drawio",
+	  	"name": "draw.io Diagram",
+	  	"description": "draw.io Diagram",
+	  	"mimeType": "application/vnd.jgraph.mxfile",
+	  	"role": "Editor"
+	  },
+	  {
+	  	"ext": "vsdx",
+	  	"name": "VSDX Document",
+	  	"description": "VSDX Document",
+	  	"mimeType": "application/vnd.visio",
+	  	"role": "Editor"
+	  }
+  ]
+}
