@@ -62,9 +62,9 @@ Draw.loadPlugin(function (ui) {
     return getAttrStr(cell, ATTR_LOD_SUMMARY) === '1';
   }
 
-  graph.__ccPasteUntil = 0;                                                                   // NEW
-  graph.__ccPasteIds = new Set();                                                             // NEW
-  const PASTE_WINDOW_MS = 250;                                                                // NEW
+  graph.__ccPasteUntil = 0;
+  graph.__ccPasteIds = new Set();
+  const PASTE_WINDOW_MS = 250;
 
 
   // Input window for "user action" gating
@@ -101,35 +101,35 @@ Draw.loadPlugin(function (ui) {
   graph.__ccWindowValue = 7;        // default: last 7 days
   graph.__ccWindowUnit = 'days';    // minutes | hours | days
 
-  graph.__ccSortOrder = 'newest';   // Newest | oldest
+  graph.__ccSortOrder = 'newest'; // newest | oldest
   graph.__ccFiltered = [];          // current filtered cells (for navigation)
   graph.__ccNavIndex = 0;
 
 
-  // -------------------- Zoom-aware stroke width --------------------     // NEW
-  graph.__ccZoomStrokeMult = 1;                                            // NEW
-  graph.__ccLastScale = null;                                              // NEW
+  // -------------------- Zoom-aware stroke width --------------------     
+  graph.__ccZoomStrokeMult = 1;
+  graph.__ccLastScale = null;
 
-  function getGraphScale() {                                               // NEW
-    return (graph.view && typeof graph.view.scale === 'number')            // NEW
-      ? graph.view.scale                                                   // NEW
-      : 1;                                                                 // NEW
-  }                                                                        // NEW
+  function getGraphScale() {
+    return (graph.view && typeof graph.view.scale === 'number')
+      ? graph.view.scale
+      : 1;
+  }
 
-  function computeZoomStrokeMult(scale) {                                  // NEW
-    // Scale-aware: when zoomed out (<1), increase stroke widths.           // NEW
-    // Clamp to prevent absurd widths.                                      // NEW
-    const s = Math.max(0.2, Number(scale) || 1);                           // NEW
-    const mult = 1 / s;                                                    // NEW
-    return Math.max(1, Math.min(4, mult));                                 // NEW
-  }                                                                        // NEW
+  function computeZoomStrokeMult(scale) {
+    // Scale-aware: when zoomed out (<1), increase stroke widths.           
+    // Clamp to prevent absurd widths.                                      
+    const s = Math.max(0.2, Number(scale) || 1);
+    const mult = 1 / s;
+    return Math.max(1, Math.min(4, mult));
+  }
 
-  function updateZoomStrokeMult() {                                        // NEW
-    const s = getGraphScale();                                             // NEW
-    if (graph.__ccLastScale != null && Math.abs(s - graph.__ccLastScale) < 0.001) return; // NEW
-    graph.__ccLastScale = s;                                               // NEW
-    graph.__ccZoomStrokeMult = computeZoomStrokeMult(s);                   // NEW
-  }                                                                        // NEW
+  function updateZoomStrokeMult() {
+    const s = getGraphScale();
+    if (graph.__ccLastScale != null && Math.abs(s - graph.__ccLastScale) < 0.001) return;
+    graph.__ccLastScale = s;
+    graph.__ccZoomStrokeMult = computeZoomStrokeMult(s);
+  }
 
 
   // User action gating state
@@ -172,27 +172,27 @@ Draw.loadPlugin(function (ui) {
     return Number.isFinite(n) ? n : null;
   }
 
-  function ensureXmlValue(cell) {                                                            // NEW
-    if (!cell) return false;                                                                  // NEW
-    const v = cell.value;                                                                     // NEW
-    const isXml = v && typeof v === 'object' && typeof v.nodeName === 'string';               // NEW
-    if (isXml) return true;                                                                   // NEW
+  function ensureXmlValue(cell) {
+    if (!cell) return false;
+    const v = cell.value;
+    const isXml = v && typeof v === 'object' && typeof v.nodeName === 'string';
+    if (isXml) return true;
 
-    // Create an XML user object and preserve the visible label if present.                   // NEW
-    const doc = mxUtils.createXmlDocument();                                                  // NEW
-    const obj = doc.createElement('object');                                                  // NEW
-    const label = (v != null) ? String(v) : '';                                               // NEW
-    if (label) obj.setAttribute('label', label);                                              // NEW
+    // Create an XML user object and preserve the visible label if present.                   
+    const doc = mxUtils.createXmlDocument();
+    const obj = doc.createElement('object');
+    const label = (v != null) ? String(v) : '';
+    if (label) obj.setAttribute('label', label);
 
-    model.setValue(cell, obj);                                                                // NEW
-    return true;                                                                              // NEW
+    model.setValue(cell, obj);
+    return true;
   }
 
 
   function setAttrMs(cell, key, ms) {
-    if (!cell) return;                                                                        // FIX
-    ensureXmlValue(cell);                                                                     // NEW
-    if (typeof cell.setAttribute !== 'function') return;                                      // FIX
+    if (!cell) return;
+    ensureXmlValue(cell);
+    if (typeof cell.setAttribute !== 'function') return;
     cell.setAttribute(key, String(ms));
   }
 
@@ -325,24 +325,24 @@ Draw.loadPlugin(function (ui) {
     return (cell && typeof cell.getStyle === 'function') ? (cell.getStyle() || '') : (cell && cell.style ? cell.style : '') || '';
   }
 
-  function getStoredStyle(cell) {                                                             // NEW
+  function getStoredStyle(cell) {
     if (!cell) return '';
-    // Prefer the raw property if present (most direct)                                         // NEW
-    if (typeof cell.style === 'string') return cell.style || '';                               // NEW
-    // Fallback to API                                                                          // NEW
-    if (typeof cell.getStyle === 'function') return cell.getStyle() || '';                     // NEW
+    // Prefer the raw property if present (most direct)                                         
+    if (typeof cell.style === 'string') return cell.style || '';
+    // Fallback to API                                                                          
+    if (typeof cell.getStyle === 'function') return cell.getStyle() || '';
     return '';
   }
-  
+
 
   function isTilerGroup(cell) {
     if (!cell) return false;
-    const st = getStoredStyle(cell);                                                          // FIX
-    const styleHit = /(?:^|;)tiler_group=1(?:;|$)/.test(st);                                  // FIX
-    const attrHit = getAttrStr(cell, 'tiler_group') === '1';                                  // NEW
-    return styleHit || attrHit;                                                               // FIX
+    const st = getStoredStyle(cell);
+    const styleHit = /(?:^|;)tiler_group=1(?:;|$)/.test(st);
+    const attrHit = getAttrStr(cell, 'tiler_group') === '1';
+    return styleHit || attrHit;
   }
-  
+
   function hasTilerGroupAncestor(cell) {
     if (!cell) return false;
     let p = model.getParent(cell);
@@ -385,10 +385,10 @@ Draw.loadPlugin(function (ui) {
     graph.__ccUserActionActive = true;
     graph.__ccUserActionUntil = nowMs() + USER_ACTION_WINDOW_MS;
 
-    // Snapshot after selection has had a chance to update from the click.               // FIX
-    setTimeout(function () {                                                            // FIX
-      graph.__ccUserActionSelIds = snapshotSelectionIds();                               // FIX
-    }, 0);                                                                              // FIX
+    // Snapshot after selection has had a chance to update from the click.               
+    setTimeout(function () {
+      graph.__ccUserActionSelIds = snapshotSelectionIds();
+    }, 0);
   }
 
 
@@ -409,20 +409,20 @@ Draw.loadPlugin(function (ui) {
 
     const changes = (edit && edit.changes) || [];
     const touched = new Map();
-    const tNow = nowMs();                                                                  // FIX
-    let did = false;                                                                       // NEW
+    const tNow = nowMs();
+    let did = false;
 
     for (let i = 0; i < changes.length; i++) {
       const ch = changes[i];
-      if (!isDirectEditChange(ch)) continue;                                               // FIX
+      if (!isDirectEditChange(ch)) continue;
 
       const cell = ch.cell || ch.child || null;
       if (!cell || !cell.id) continue;
-      if (!selIds.has(cell.id)) continue;                                                  // NEW (selection intersection)
+      if (!selIds.has(cell.id)) continue;                                                 // (selection intersection)
       if (!shouldStyleCell(cell)) continue;
       if (shouldIgnoreBecauseInTilerGroup(cell)) continue;
 
-      touched.set(cell.id, cell);                                                          // FIX
+      touched.set(cell.id, cell);
     }
 
     if (touched.size === 0) return false;
@@ -432,7 +432,7 @@ Draw.loadPlugin(function (ui) {
       for (const cell of touched.values()) {
         stampCreatedIfMissing(cell, tNow);                                                 // keep createdAt stable
         stampEdited(cell, tNow);
-        did = true;                                                                        // NEW
+        did = true;
       }
     } finally {
       model.endUpdate();
@@ -451,19 +451,19 @@ Draw.loadPlugin(function (ui) {
       for (let i = 0; i < changes.length; i++) {
         const ch = changes[i];
         const name = ch && ch.constructor && ch.constructor.name;
-        if (name !== 'mxChildChange') continue;                                            // FIX
+        if (name !== 'mxChildChange') continue;
 
-        const child = ch.child || ch.cell;                                                 // FIX
+        const child = ch.child || ch.cell;
         if (!child || !child.id) continue;
         if (!shouldStyleCell(child)) continue;
         if (shouldIgnoreBecauseInTilerGroup(child)) continue;
 
         // Insert-like: child is being attached to a parent
         // mxChildChange commonly has ch.parent when attached, and ch.previous when detached
-        const isAttach = (ch.parent != null);                                              // NEW
-        if (!isAttach) continue;                                                           // NEW
+        const isAttach = (ch.parent != null);
+        if (!isAttach) continue;
 
-        if (getAttrMs(child, ATTR_CREATED) == null) {                                      // FIX
+        if (getAttrMs(child, ATTR_CREATED) == null) {
           setAttrMs(child, ATTR_CREATED, tNow);
           did = true;
         }
@@ -478,30 +478,37 @@ Draw.loadPlugin(function (ui) {
   // Input hooks (keep tight to reduce false positives)
   if (graph.container) {
     graph.container.addEventListener('mousedown', beginUserActionWindow, true);
-    graph.container.addEventListener('mouseup', beginUserActionWindow, true);           // NEW
+    graph.container.addEventListener('mouseup', beginUserActionWindow, true);
     graph.container.addEventListener('touchstart', beginUserActionWindow, true);
-    graph.container.addEventListener('touchend', beginUserActionWindow, true);          // NEW
+    graph.container.addEventListener('touchend', beginUserActionWindow, true);
   }
+
+  window.addEventListener('resize', function () {                          // NEW
+    if (!panel) return;                                                    // NEW
+    if (!isPanelVisible()) return;                                         // NEW (avoid 0x0 rect when hidden)
+    readAndStorePanelSize();                                               // NEW
+  }, true);
+
 
   document.addEventListener('keydown', beginUserActionWindow, true);
 
   // -------------------- origStyle persist/restore --------------------
 
-  const NULL_STYLE_SENTINEL = '__NULL_STYLE__';                                               // NEW
+  const NULL_STYLE_SENTINEL = '__NULL_STYLE__';
 
   function ensureOrigStyle(cell) {
     if (!shouldStyleCell(cell)) return;
     const orig = getAttrStr(cell, ATTR_ORIG_STYLE);
     if (orig != null) return;
-  
-    const st = (typeof cell.getStyle === 'function') ? cell.getStyle() : (cell.style || null); // FIX
-    cell.setAttribute(ATTR_ORIG_STYLE, st == null ? NULL_STYLE_SENTINEL : String(st));       // FIX
+
+    const st = (typeof cell.getStyle === 'function') ? cell.getStyle() : (cell.style || null);
+    cell.setAttribute(ATTR_ORIG_STYLE, st == null ? NULL_STYLE_SENTINEL : String(st));
   }
 
   function baseStyleForApply(cell) {
     const orig = getAttrStr(cell, ATTR_ORIG_STYLE);
-    if (orig === NULL_STYLE_SENTINEL) return null;                                            // NEW
-    return orig != null ? orig : ((cell.getStyle && cell.getStyle()) || null);                // FIX
+    if (orig === NULL_STYLE_SENTINEL) return null;
+    return orig != null ? orig : ((cell.getStyle && cell.getStyle()) || null);
   }
 
   // -------------------- Scope + filtering --------------------
@@ -565,15 +572,15 @@ Draw.loadPlugin(function (ui) {
   }
 
   function getTimestampForMode(cell, mode) {
-    if (mode === MODE_CHANGE) {                                        // NEW
-      const edited = getAttrMs(cell, ATTR_EDITED);                     // NEW
-      if (edited != null) return edited;                               // NEW
-      return getAttrMs(cell, ATTR_CREATED);                            // NEW (fallback)
+    if (mode === MODE_CHANGE) {
+      const edited = getAttrMs(cell, ATTR_EDITED);
+      if (edited != null) return edited;
+      return getAttrMs(cell, ATTR_CREATED); // (fallback)
     }
     // MODE_CREATE
     return getAttrMs(cell, ATTR_CREATED);
   }
-  
+
 
   function filterCellsByTimeSlice(cells, mode) {
     const ms = windowMsFromSettings();
@@ -608,10 +615,10 @@ Draw.loadPlugin(function (ui) {
   }
 
   function widthFromP(cell, p) {
-    updateZoomStrokeMult();                                                // NEW
-    const m = graph.__ccZoomStrokeMult || 1;                               // NEW
-    if (isVertex(cell)) return lerp(VERTEX_WIDTH_MIN, VERTEX_WIDTH_MAX, p) * m; // FIX
-    return lerp(EDGE_WIDTH_MIN, EDGE_WIDTH_MAX, p) * m;                    // FIX
+    updateZoomStrokeMult();
+    const m = graph.__ccZoomStrokeMult || 1;
+    if (isVertex(cell)) return lerp(VERTEX_WIDTH_MIN, VERTEX_WIDTH_MAX, p) * m;
+    return lerp(EDGE_WIDTH_MIN, EDGE_WIDTH_MAX, p) * m;
   }
 
 
@@ -651,39 +658,39 @@ Draw.loadPlugin(function (ui) {
         const ts = getTimestampForMode(cell, mode);
 
         if (ts == null) {
-          const p0 = 0;                                                    // NEW
-          const strokeWidth = widthFromP(cell, p0);                        // NEW
-          model.setStyle(cell, mergeStyle(base, {                           // FIX
-            strokeColor: UNKNOWN_STYLE.strokeColor,                         // FIX
-            dashed: UNKNOWN_STYLE.dashed,                                   // FIX
-            strokeOpacity: UNKNOWN_STYLE.strokeOpacity,                     // FIX
-            strokeWidth: strokeWidth                                        // NEW
+          const p0 = 0;
+          const strokeWidth = widthFromP(cell, p0);
+          model.setStyle(cell, mergeStyle(base, {
+            strokeColor: UNKNOWN_STYLE.strokeColor,
+            dashed: UNKNOWN_STYLE.dashed,
+            strokeOpacity: UNKNOWN_STYLE.strokeOpacity,
+            strokeWidth: strokeWidth
           }));
           continue;
         }
 
 
         if (slice.windowMs != null && !inRangeSet.has(cell.id)) {
-          const p0 = 0;                                                    // NEW
-          const strokeWidth = widthFromP(cell, p0);                        // NEW
-          model.setStyle(cell, mergeStyle(base, {                           // FIX
-            strokeColor: OUT_OF_RANGE_STYLE.strokeColor,                    // FIX
-            dashed: OUT_OF_RANGE_STYLE.dashed,                              // FIX
-            strokeOpacity: OUT_OF_RANGE_STYLE.strokeOpacity,                // FIX
-            strokeWidth: strokeWidth                                        // NEW
+          const p0 = 0;
+          const strokeWidth = widthFromP(cell, p0);
+          model.setStyle(cell, mergeStyle(base, {
+            strokeColor: OUT_OF_RANGE_STYLE.strokeColor,
+            dashed: OUT_OF_RANGE_STYLE.dashed,
+            strokeOpacity: OUT_OF_RANGE_STYLE.strokeOpacity,
+            strokeWidth: strokeWidth
           }));
           continue;
         }
 
 
         if (slice.tMin == null || slice.tMax == null) {
-          const p0 = 0;                                                    // NEW
-          const strokeWidth = widthFromP(cell, p0);                        // NEW
-          model.setStyle(cell, mergeStyle(base, {                           // FIX
-            strokeColor: OUT_OF_RANGE_STYLE.strokeColor,                    // FIX
-            dashed: OUT_OF_RANGE_STYLE.dashed,                              // FIX
-            strokeOpacity: OUT_OF_RANGE_STYLE.strokeOpacity,                // FIX
-            strokeWidth: strokeWidth                                        // NEW
+          const p0 = 0;
+          const strokeWidth = widthFromP(cell, p0);
+          model.setStyle(cell, mergeStyle(base, {
+            strokeColor: OUT_OF_RANGE_STYLE.strokeColor,
+            dashed: OUT_OF_RANGE_STYLE.dashed,
+            strokeOpacity: OUT_OF_RANGE_STYLE.strokeOpacity,
+            strokeWidth: strokeWidth
           }));
           continue;
         }
@@ -715,11 +722,11 @@ Draw.loadPlugin(function (ui) {
 
   function clearMap() {
     const scopeCells = collectScopeCells(graph.__ccScope);
-  
+
     graph.__ccFiltered = [];
     graph.__ccNavIndex = 0;
     updateNavUI();
-  
+
     graph.__ccMapInternalChange = true;
     model.beginUpdate();
     try {
@@ -727,8 +734,8 @@ Draw.loadPlugin(function (ui) {
         const cell = scopeCells[i];
         const orig = getAttrStr(cell, ATTR_ORIG_STYLE);
         if (orig == null) continue;
-  
-        model.setStyle(cell, orig === NULL_STYLE_SENTINEL ? null : orig);                     // FIX
+
+        model.setStyle(cell, orig === NULL_STYLE_SENTINEL ? null : orig);
         removeAttr(cell, ATTR_ORIG_STYLE);
       }
     } finally {
@@ -736,7 +743,7 @@ Draw.loadPlugin(function (ui) {
       graph.__ccMapInternalChange = false;
       if (typeof graph.refresh === 'function') graph.refresh();
     }
-  
+
     graph.__ccMode = MODE_NONE;
   }
 
@@ -807,6 +814,62 @@ Draw.loadPlugin(function (ui) {
   let nextBtn = null;
   let listWrap = null;
 
+  graph.__ccPanelVisible = false;
+
+  graph.__ccPanelW = 260;                                                  // (px)
+  graph.__ccPanelH = 320;                                                  // (px)
+
+  function applyPanelSize() {
+    if (!panel) return;
+    panel.style.width = String(graph.__ccPanelW) + 'px';
+    panel.style.height = String(graph.__ccPanelH) + 'px';
+  }
+
+  function clamp(n, a, b) {
+    n = Number(n);
+    if (!Number.isFinite(n)) return a;
+    return Math.max(a, Math.min(b, n));
+  }
+
+  function readAndStorePanelSize() {
+    if (!panel) return;
+    // getBoundingClientRect is reliable even with box sizing
+    const r = panel.getBoundingClientRect();
+    const maxW = Math.max(280, (window.innerWidth || 1200) - 40);
+    const maxH = Math.max(220, (window.innerHeight || 800) - 40);
+
+    graph.__ccPanelW = clamp(r.width, 260, maxW);
+    graph.__ccPanelH = clamp(r.height, 200, maxH);
+
+    // Re-apply clamped values so it doesn't drift beyond bounds
+    applyPanelSize();
+  }
+
+
+  function isPanelVisible() {
+    return !!(panel && panel.style.display !== 'none' && graph.__ccPanelVisible);
+  }
+
+  function showPanel() {
+    createPanel();
+    if (!panel) return;
+    panel.style.display = '';
+    graph.__ccPanelVisible = true;
+    syncPanelFromState();
+    updateNavUI();
+  }
+
+  function hidePanel() {
+    if (!panel) return;
+    panel.style.display = 'none';
+    graph.__ccPanelVisible = false;
+  }
+
+  function togglePanel() {
+    if (isPanelVisible()) hidePanel();
+    else showPanel();
+  }
+
   function makeEl(tag, styleObj) {
     const el = document.createElement(tag);
     if (styleObj) Object.assign(el.style, styleObj);
@@ -828,7 +891,14 @@ Draw.loadPlugin(function (ui) {
       fontFamily: 'Arial, sans-serif',
       fontSize: '12px',
       minWidth: '260px',
-      boxShadow: '0 2px 8px rgba(0,0,0,0.12)'
+      boxShadow: '0 2px 8px rgba(0,0,0,0.12)',
+      display: 'flex',              // ← ADD HERE
+      flexDirection: 'column',      // ← ADD HERE
+      gap: '6px',
+      resize: 'both',                                                      // NEW
+      overflow: 'auto',                                                    // NEW (required for resize handle)
+      boxSizing: 'border-box',                                             // NEW
+      minHeight: '200px',                                                  // NEW (recommended)
     });
 
     const title = makeEl('div', { fontWeight: '600', marginBottom: '8px' });
@@ -888,16 +958,24 @@ Draw.loadPlugin(function (ui) {
     panel.appendChild(navRow);
 
     listWrap = makeEl('div', {
-      marginTop: '8px',
       borderTop: '1px solid #ddd',
       paddingTop: '6px',
-      maxHeight: '180px',
-      overflow: 'auto'
+      flex: '1 1 auto',
+      overflow: 'auto',
+      minHeight: '80px'
     });
     panel.appendChild(listWrap);
 
     wirePanelEvents();
+    // Persist size after user finishes resizing (mouse/touch release)
+    panel.addEventListener('mouseup', readAndStorePanelSize, true);        // NEW
+    panel.addEventListener('touchend', readAndStorePanelSize, true);       // NEW
+
     attachPanel();
+    panel.style.display = graph.__ccPanelVisible ? '' : 'none';
+
+    applyPanelSize();
+
     syncPanelFromState();
     updateNavUI();
   }
@@ -1019,88 +1097,88 @@ Draw.loadPlugin(function (ui) {
     }
   }
 
-  function dedupeTimestampsOnPaste(cells) {                                                    // NEW
-    if (!Array.isArray(cells) || cells.length === 0) return false;                             // NEW
-  
-    const tBase = nowMs();                                                                     // NEW
-    let bump = 0;                                                                              // NEW
-    let did = false;                                                                           // NEW
-  
-    model.beginUpdate();                                                                       // NEW
+  function dedupeTimestampsOnPaste(cells) {
+    if (!Array.isArray(cells) || cells.length === 0) return false;
+
+    const tBase = nowMs();
+    let bump = 0;
+    let did = false;
+
+    model.beginUpdate();
     try {
       for (let i = 0; i < cells.length; i++) {
         const c = cells[i];
         if (!c || !c.id) continue;
         if (!shouldStyleCell(c)) continue;
         if (shouldIgnoreBecauseInTilerGroup(c)) continue;
-  
-        ensureXmlValue(c);                                                                     // NEW
-  
-        // createdAt: reset only if it conflicts with another cell                             // NEW
-        const created = getAttrMs(c, ATTR_CREATED);                                             // NEW
-        if (created != null && hasTimestampConflict(ATTR_CREATED, created, c.id)) {            // NEW
-          setAttrMs(c, ATTR_CREATED, tBase + (bump++));                                         // NEW
-          did = true;                                                                           // NEW
+
+        ensureXmlValue(c);
+
+        // createdAt: reset only if it conflicts with another cell                             
+        const created = getAttrMs(c, ATTR_CREATED);
+        if (created != null && hasTimestampConflict(ATTR_CREATED, created, c.id)) {
+          setAttrMs(c, ATTR_CREATED, tBase + (bump++));
+          did = true;
         }
-  
-        // Optional: lastEditedAt can also be duplicated on paste; same rule                    // NEW
-        const edited = getAttrMs(c, ATTR_EDITED);                                               // NEW
-        if (edited != null && hasTimestampConflict(ATTR_EDITED, edited, c.id)) {               // NEW
-          setAttrMs(c, ATTR_EDITED, tBase + (bump++));                                          // NEW
-          did = true;                                                                           // NEW
+
+        // Optional: lastEditedAt can also be duplicated on paste; same rule                    
+        const edited = getAttrMs(c, ATTR_EDITED);
+        if (edited != null && hasTimestampConflict(ATTR_EDITED, edited, c.id)) {
+          setAttrMs(c, ATTR_EDITED, tBase + (bump++));
+          did = true;
         }
       }
     } finally {
-      model.endUpdate();                                                                       // NEW
+      model.endUpdate();
     }
-  
-    return did;                                                                                // NEW
-  }
-  
-  function hasTimestampConflict(key, ts, excludeId) {                                         // NEW
-    if (ts == null) return false;                                                             // NEW
-    let conflict = false;                                                                     // NEW
-    iterAllCells(function (c) {                                                               // NEW
-      if (conflict) return;                                                                   // NEW
-      if (!c || !c.id || c.id === excludeId) return;                                          // NEW
-      const other = getAttrMs(c, key);                                                        // NEW
-      if (other != null && other === ts) conflict = true;                                     // NEW
-    });                                                                                       // NEW
-    return conflict;                                                                          // NEW
-  }
-  
 
-  function isWithinPasteWindow() {                                                            // NEW
-    return nowMs() <= (graph.__ccPasteUntil || 0);                                            // NEW
+    return did;
   }
 
-  function stampCreatedCells(cells, tNow) {                                                   // NEW
-    if (!Array.isArray(cells) || cells.length === 0) return false;                            // NEW
-    let did = false;                                                                          // NEW
-  
-    model.beginUpdate();                                                                      // NEW
+  function hasTimestampConflict(key, ts, excludeId) {
+    if (ts == null) return false;
+    let conflict = false;
+    iterAllCells(function (c) {
+      if (conflict) return;
+      if (!c || !c.id || c.id === excludeId) return;
+      const other = getAttrMs(c, key);
+      if (other != null && other === ts) conflict = true;
+    });
+    return conflict;
+  }
+
+
+  function isWithinPasteWindow() {
+    return nowMs() <= (graph.__ccPasteUntil || 0);
+  }
+
+  function stampCreatedCells(cells, tNow) {
+    if (!Array.isArray(cells) || cells.length === 0) return false;
+    let did = false;
+
+    model.beginUpdate();
     try {
       for (let i = 0; i < cells.length; i++) {
         const c = cells[i];
         if (!c || !c.id) continue;
         if (!shouldStyleCell(c)) continue;
         if (shouldIgnoreBecauseInTilerGroup(c)) continue;
-  
-        ensureXmlValue(c);                                                                    // NEW
-        if (getAttrMs(c, ATTR_CREATED) == null) {                                             // NEW
-          setAttrMs(c, ATTR_CREATED, tNow);                                                   // NEW
-          did = true;                                                                         // NEW
+
+        ensureXmlValue(c);
+        if (getAttrMs(c, ATTR_CREATED) == null) {
+          setAttrMs(c, ATTR_CREATED, tNow);
+          did = true;
         }
       }
     } finally {
-      model.endUpdate();                                                                      // NEW
+      model.endUpdate();
     }
-  
-    return did;                                                                               // NEW
+
+    return did;
   }
 
   // -------------------- Listen for model changes --------------------
-  function debugLogEdit(edit, label) {                                                     // NEW
+  function debugLogEdit(edit, label) {
     try {
       const changes = (edit && edit.changes) || [];
       console.log(`[CCMap] ${label}: ${changes.length} change(s)`);
@@ -1123,7 +1201,7 @@ Draw.loadPlugin(function (ui) {
     const edit = evt && evt.getProperty && evt.getProperty('edit');
     if (!edit || !edit.changes) return;
 
-    debugLogEdit(edit, 'CHANGE');                                                          // NEW
+    debugLogEdit(edit, 'CHANGE');
 
     const createdStamped = stampCreatedOnInsert(edit);
     const editedStamped = stampEditedFromSelectedIntersection(edit);
@@ -1132,13 +1210,13 @@ Draw.loadPlugin(function (ui) {
   });
 
 
-  const originalAddCells = graph.addCells;                                                   // NEW
+  const originalAddCells = graph.addCells;
 
-  graph.addCells = function (cells, parent, index, source, target, absolute) {               // NEW
-    const tNow = nowMs();                                                                    // NEW
-    model.beginUpdate();                                                                     // NEW
+  graph.addCells = function (cells, parent, index, source, target, absolute) {
+    const tNow = nowMs();
+    model.beginUpdate();
     try {
-      // Ensure user object exists + stamp createdAt before actual insertion.                 // NEW
+      // Ensure user object exists + stamp createdAt before actual insertion.                 
       if (Array.isArray(cells)) {
         for (let i = 0; i < cells.length; i++) {
           const c = cells[i];
@@ -1146,40 +1224,40 @@ Draw.loadPlugin(function (ui) {
           if (!shouldStyleCell(c)) continue;
           if (shouldIgnoreBecauseInTilerGroup(c)) continue;
 
-          ensureXmlValue(c);                                                                 // NEW
-          if (getAttrMs(c, ATTR_CREATED) == null) setAttrMs(c, ATTR_CREATED, tNow);          // NEW
+          ensureXmlValue(c);
+          if (getAttrMs(c, ATTR_CREATED) == null) setAttrMs(c, ATTR_CREATED, tNow);
         }
       }
 
-      return originalAddCells.apply(this, arguments);                                        // NEW
+      return originalAddCells.apply(this, arguments);
     } finally {
-      model.endUpdate();                                                                     // NEW
+      model.endUpdate();
     }
   };
 
-  graph.addListener(mxEvent.CELLS_ADDED, function (sender, evt) {                              // NEW
-    if (graph.__ccMapInternalChange) return;                                                   // NEW
-  
-    const cells = (evt && evt.getProperty && (evt.getProperty('cells') || evt.getProperty('added'))) || []; // NEW
-  
-    // Normal insert stamping (createdAt if missing)                                            // NEW
-    const didCreate = stampCreatedCells(cells, nowMs());                                       // NEW
-  
-    // Paste-specific dedupe                                                                    // NEW
-    const maybePaste = isWithinPasteWindow() ||                                                // NEW
-      (cells || []).some(c => c && c.id && graph.__ccPasteIds && graph.__ccPasteIds.has(c.id)); // NEW
-  
-    const didDedupe = maybePaste ? dedupeTimestampsOnPaste(cells) : false;                     // NEW
-  
-    if (didCreate || didDedupe) scheduleRefreshIfEnabled();                                    // NEW
+  graph.addListener(mxEvent.CELLS_ADDED, function (sender, evt) {
+    if (graph.__ccMapInternalChange) return;
+
+    const cells = (evt && evt.getProperty && (evt.getProperty('cells') || evt.getProperty('added'))) || [];
+
+    // Normal insert stamping (createdAt if missing)                                            
+    const didCreate = stampCreatedCells(cells, nowMs());
+
+    // Paste-specific dedupe                                                                    
+    const maybePaste = isWithinPasteWindow() ||
+      (cells || []).some(c => c && c.id && graph.__ccPasteIds && graph.__ccPasteIds.has(c.id));
+
+    const didDedupe = maybePaste ? dedupeTimestampsOnPaste(cells) : false;
+
+    if (didCreate || didDedupe) scheduleRefreshIfEnabled();
   });
-  
 
-  const originalImportCells = graph.importCells;                                             // NEW
 
-  graph.importCells = function (cells, dx, dy, target, evt, mapping) {                       // NEW
-    const tNow = nowMs();                                                                    // NEW
-    model.beginUpdate();                                                                     // NEW
+  const originalImportCells = graph.importCells;
+
+  graph.importCells = function (cells, dx, dy, target, evt, mapping) {
+    const tNow = nowMs();
+    model.beginUpdate();
     try {
       if (Array.isArray(cells)) {
         for (let i = 0; i < cells.length; i++) {
@@ -1188,34 +1266,34 @@ Draw.loadPlugin(function (ui) {
           if (!shouldStyleCell(c)) continue;
           if (shouldIgnoreBecauseInTilerGroup(c)) continue;
 
-          ensureXmlValue(c);                                                                 // NEW
-          if (getAttrMs(c, ATTR_CREATED) == null) setAttrMs(c, ATTR_CREATED, tNow);          // NEW
+          ensureXmlValue(c);
+          if (getAttrMs(c, ATTR_CREATED) == null) setAttrMs(c, ATTR_CREATED, tNow);
         }
       }
 
-      return originalImportCells.apply(this, arguments);                                     // NEW
+      return originalImportCells.apply(this, arguments);
     } finally {
-      model.endUpdate();                                                                     // NEW
+      model.endUpdate();
     }
   };
 
 
-  graph.addListener(mxEvent.PASTE, function (sender, evt) {                                   // NEW
-    const cells = (evt && evt.getProperty && evt.getProperty('cells')) || [];                 // NEW
-    graph.__ccPasteIds = new Set((cells || []).map(c => c && c.id).filter(Boolean));          // NEW
-    graph.__ccPasteUntil = nowMs() + PASTE_WINDOW_MS;                                         // NEW
+  graph.addListener(mxEvent.PASTE, function (sender, evt) {
+    const cells = (evt && evt.getProperty && evt.getProperty('cells')) || [];
+    graph.__ccPasteIds = new Set((cells || []).map(c => c && c.id).filter(Boolean));
+    graph.__ccPasteUntil = nowMs() + PASTE_WINDOW_MS;
   });
 
 
 
-  // -------------------- Zoom listener (debounced apply) ---------------- // NEW
-  if (graph.view && typeof graph.view.addListener === 'function') {        // NEW
-    graph.view.addListener(mxEvent.SCALE, function () {                    // NEW
-      if (graph.__ccMode === MODE_NONE) return;                            // NEW
-      updateZoomStrokeMult();                                             // NEW
-      scheduleRefreshIfEnabled();                                         // NEW
-    });                                                                    // NEW
-  }                                                                        // NEW
+  // -------------------- Zoom listener (debounced apply) ---------------- 
+  if (graph.view && typeof graph.view.addListener === 'function') {
+    graph.view.addListener(mxEvent.SCALE, function () {
+      if (graph.__ccMode === MODE_NONE) return;
+      updateZoomStrokeMult();
+      scheduleRefreshIfEnabled();
+    });
+  }
 
 
   // -------------------- Context menu --------------------
@@ -1232,23 +1310,22 @@ Draw.loadPlugin(function (ui) {
 
     menu.addItem(changeLabel, null, function () {
       toggleMode(MODE_CHANGE);
-      createPanel();
+      showPanel();
       syncPanelFromState();
     });
 
     menu.addItem(createLabel, null, function () {
       toggleMode(MODE_CREATE);
-      createPanel();
+      showPanel();
       syncPanelFromState();
     });
 
     menu.addSeparator();
-    menu.addItem('Show Map Panel', null, function () {
-      createPanel();
-      syncPanelFromState();
+
+    const panelLabel = isPanelVisible() ? 'Hide Map Panel' : 'Show Map Panel';
+    menu.addItem(panelLabel, null, function () {
+      togglePanel();
     });
   };
 
-  // Create panel immediately on plugin load
-  createPanel();
 });

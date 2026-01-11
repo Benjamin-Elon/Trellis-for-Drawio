@@ -16,12 +16,21 @@ Draw.loadPlugin(function (ui) {
     const MAX_TILES = 1500; // hard cap to avoid freezes
     const RESIZE_DEBOUNCE_MS = 120; // debounce tiling during resize
 
+    const GROUP_LABEL_FONT_PX = 12;
+    const GROUP_LABEL_LINE_HEIGHT = 1.25;
+    const GROUP_LABEL_BAND_PAD_PX = 6;
+    const GROUP_LABEL_BAND_PX = Math.ceil(GROUP_LABEL_FONT_PX * GROUP_LABEL_LINE_HEIGHT + GROUP_LABEL_BAND_PAD_PX);
+
     // ---------- LOD settings ----------
     const LOD_TILE_THRESHOLD = 300; // collapse if rows*cols > this
     const LOD_SUMMARY_MIN_SIZE = 24; // min px size of summary marker
 
     // Yield
     const YIELD_UNIT = "kg"; // default display unit
+    const ATTR_YIELD_TARGET = "planting_target_yield_kg";                     // CHANGE
+    const ATTR_YIELD_EXPECTED = "planting_expected_yield_kg";                 // CHANGE
+    const ATTR_YIELD_ACTUAL = "planting_actual_yield_kg";                     // CHANGE
+
     const SHOW_YIELD_IN_GROUP_LABEL = false; // update group title with total yield
     const SHOW_YIELD_IN_SUMMARY = true; // append total yield in summary label
 
@@ -69,9 +78,11 @@ Draw.loadPlugin(function (ui) {
             "dashed=1",
             "fillColor=none",
             "dashPattern=3 3",
-            "fontSize=12",
+            `fontSize=${GROUP_LABEL_FONT_PX}`,
             "align=center",
             "verticalAlign=top",
+            "labelBackgroundColor=#ffffff",
+            "labelBorderColor=000000",
             "resizable=1",
             "movable=1",
             "deletable=1",
@@ -130,8 +141,8 @@ Draw.loadPlugin(function (ui) {
     }
 
     function shouldCollapseLOD(graph, groupCell, spacingXpx, spacingYpx) {
-        const { count } = computeGridStatsXY(groupCell, spacingXpx, spacingYpx);      // unchanged
-        return count > LOD_TILE_THRESHOLD;                                            // CHANGE: collapse when above threshold
+        const { count } = computeGridStatsXY(groupCell, spacingXpx, spacingYpx);
+        return count > LOD_TILE_THRESHOLD;
     }
 
     function isCollapsedLOD(groupCell) {
@@ -187,14 +198,14 @@ Draw.loadPlugin(function (ui) {
                 "fontSize=12",
                 "align=center",
                 "verticalAlign=middle",
-                "html=0",
+                "html=1",
                 "resizable=0",
                 "movable=0",
                 "editable=0",
             ].join(";");
 
             // --- NEW: Use full plant name in label ----------------------------------------------
-            const fullName = getXmlAttr(groupCell, 'plant_name', abbr || '?');
+            const fullName = getGroupDisplayName(groupCell, abbr);
 
 
             setXmlAttr(groupCell, "plant_count", count);
@@ -202,25 +213,23 @@ Draw.loadPlugin(function (ui) {
 
             // Pull unit and potential targets from attrs
             const unit = groupCell.getAttribute('yield_unit') || YIELD_UNIT;
-            const perSuccessionTarget = Number(groupCell.getAttribute('target_yield') || '');
-            const seasonTarget = Number(groupCell.getAttribute('yield_target_kg') || '');
+
+            const plantingTargetKg = Number(groupCell.getAttribute('planting_target_yield_kg') || ''); // CHANGE
 
             // Build label parts: "FullName × count [· target ...] [· current ...]"
             const parts = [];
-            parts.push(`${fullName} × ${count}`);
+            parts.push(`× ${count}`);
 
-            // Prefer per-succession target if present, otherwise show season target (if any)
-            if (Number.isFinite(perSuccessionTarget) && perSuccessionTarget > 0) {
-                parts.push(`target ${formatYield(perSuccessionTarget, unit)}`);
-            } else if (Number.isFinite(seasonTarget) && seasonTarget > 0) {
-                parts.push(`target ${formatYield(seasonTarget, unit)}`);
-            }
+            if (Number.isFinite(plantingTargetKg) && plantingTargetKg > 0) {                            // CHANGE
+                parts.push(`target ${formatYield(plantingTargetKg, unit)}`);                            // CHANGE
+            }                                                                                           // CHANGE
 
             if (SHOW_YIELD_IN_SUMMARY) {
-                parts.push(`Yield ${formatYield(y.totalYield, y.unit)}`);
+                parts.push(`Expected yield ${formatYield(y.expectedYield, y.unit)}`);
             }
 
-            const label = parts.join(' · ');
+            const label = parts.join('<br/>');
+
 
 
 
@@ -248,8 +257,8 @@ Draw.loadPlugin(function (ui) {
 
 
     function shouldExpandLOD(graph, groupCell, spacingXpx, spacingYpx) {
-        const { count } = computeGridStatsXY(groupCell, spacingXpx, spacingYpx);      // CHANGE: expand when at or below threshold
-        return count <= LOD_TILE_THRESHOLD;                                           // CHANGE
+        const { count } = computeGridStatsXY(groupCell, spacingXpx, spacingYpx);
+        return count <= LOD_TILE_THRESHOLD;
     }
 
     function expandTiles(graph, groupCell, abbr, spacingXpx, spacingYpx, iconDiamPx) {
@@ -273,7 +282,7 @@ Draw.loadPlugin(function (ui) {
 
             const g = groupCell.getGeometry();
             const x0Rel = GROUP_PADDING_PX + spacingXpx / 2;
-            const y0Rel = GROUP_PADDING_PX + spacingYpx / 2;
+            const y0Rel = GROUP_PADDING_PX + GROUP_LABEL_BAND_PX + spacingYpx / 2;
 
             const cells = [];
             for (let r = 0; r < rows; r++) {
@@ -330,37 +339,218 @@ Draw.loadPlugin(function (ui) {
         if (v && v.setAttribute) v.setAttribute(name, String(val));
     }
 
-    function ensureXmlValue(cell) {                                                              // NEW
-        // Return an XML Element for cell.value, creating one if needed                          // NEW
-        const current = cell && cell.value;                                                      // NEW
-        if (current && current.nodeType === 1) return current;                                   // NEW (already an Element)
-        // Create a <Module> node and carry over the visible label                               // NEW
-        const doc = mxUtils.createXmlDocument();                                                 // NEW
-        const node = doc.createElement('Module');                                                // NEW
-        const label = (typeof current === 'string' && current) ? current :                       // NEW
-            (typeof graph.convertValueToString === 'function'                          // NEW
-                ? graph.convertValueToString(cell)                                     // NEW
-                : '');                                                                 // NEW
-        if (label) node.setAttribute('label', label);                                            // NEW
-        return node;                                                                             // NEW
-    }                                                                                            // NEW
+    function ensureXmlValue(cell) {
+        // Return an XML Element for cell.value, creating one if needed                          
+        const current = cell && cell.value;
+        if (current && current.nodeType === 1) return current;
+        // Create a <Module> node and carry over the visible label                               
+        const doc = mxUtils.createXmlDocument();
+        const node = doc.createElement('Module');
+        const label = (typeof current === 'string' && current) ? current :
+            (typeof graph.convertValueToString === 'function'
+                ? graph.convertValueToString(cell)
+                : '');
+        if (label) node.setAttribute('label', label);
+        return node;
+    }
 
-    function setCellAttr(model, cell, name, value) {                                             // NEW
-        model.beginUpdate();                                                                      // NEW
-        try {                                                                                    // NEW
-            const base = ensureXmlValue(cell);                                                   // NEW
-            const clone = base.cloneNode(true);                                                  // NEW
-            if (value === null) {                                                                // NEW
-                clone.removeAttribute(name);                                                     // NEW
-            } else {                                                                             // NEW
-                clone.setAttribute(name, String(value));                                         // NEW
-            }                                                                                    // NEW
-            model.setValue(cell, clone);  // ensures persistence, undo, events                   // NEW
-        } finally {                                                                              // NEW
-            model.endUpdate();                                                                   // NEW
-        }                                                                                        // NEW
-    }                                                                                            // NEW
+    // -------------------- Utils & Styles --------------------
 
+    // NEW: batch set multiple attrs with one undoable value update
+    function setCellAttrs(model, cell, attrs) {                                              // NEW
+        model.beginUpdate();                                                                 // NEW
+        try {                                                                                // NEW
+            const base = ensureXmlValue(cell);                                               // NEW
+            const clone = base.cloneNode(true);                                              // NEW
+            for (const [k, v] of Object.entries(attrs || {})) {                              // NEW
+                if (v === null || v === undefined || v === "") clone.removeAttribute(k);     // NEW
+                else clone.setAttribute(k, String(v));                                       // NEW
+            }                                                                                // NEW
+            model.setValue(cell, clone);                                                     // NEW
+        } finally {                                                                          // NEW
+            model.endUpdate();                                                               // NEW
+        }                                                                                    // NEW
+    }
+
+    function hasGardenSettingsSet(moduleCell) {                                              // CHANGE
+        if (!(moduleCell && moduleCell.getAttribute)) return false;                          // NEW
+        const city = String(moduleCell.getAttribute("city_name") || "").trim();              // NEW
+        const units = String(moduleCell.getAttribute("unit_system") || "").trim();           // NEW
+        return !!(city && units);                                                            // CHANGE
+    }
+
+
+    // NEW: garden settings dialog (city + units)
+    async function showGardenSettingsDialog(ui, graph, moduleCell) {                        // CHANGE
+        const model = graph.getModel();                                                     // CHANGE
+        const curCity = getXmlAttr(moduleCell, "city_name", "");                            // CHANGE
+        const curUnits = getXmlAttr(moduleCell, "unit_system", "");                         // CHANGE
+
+        let cities = [];
+        try {
+            cities = await loadCities();
+        } catch (e) {
+            mxUtils.alert("Error loading cities: " + e.message);
+            return;
+        }
+        if (!cities.length) {
+            mxUtils.alert("No cities found in database.");
+            return;
+        }
+
+        const div = document.createElement("div");
+        div.style.padding = "10px";
+        div.style.minWidth = "360px";
+
+        const title = document.createElement("div");
+        title.style.fontWeight = "600";
+        title.style.marginBottom = "10px";
+        title.textContent = "Garden Settings";
+        div.appendChild(title);
+
+        const err = document.createElement("div");                                          // NEW
+        err.style.color = "#b91c1c";                                                        // NEW
+        err.style.fontSize = "12px";                                                        // NEW
+        err.style.marginBottom = "8px";                                                     // NEW
+        err.style.display = "none";                                                         // NEW
+        div.appendChild(err);                                                               // NEW
+
+        function row(labelText, controlEl) {
+            const wrap = document.createElement("div");
+            wrap.style.display = "flex";
+            wrap.style.alignItems = "center";
+            wrap.style.gap = "8px";
+            wrap.style.margin = "8px 0";
+            const lab = document.createElement("label");
+            lab.textContent = labelText;
+            lab.style.minWidth = "140px";
+            wrap.appendChild(lab);
+            wrap.appendChild(controlEl);
+            div.appendChild(wrap);
+        }
+
+        // City (mandatory)
+        const citySel = document.createElement("select");
+        citySel.style.flex = "1";
+
+        const cityPlaceholder = document.createElement("option");                           // NEW
+        cityPlaceholder.value = "";                                                         // NEW
+        cityPlaceholder.textContent = "Select a city…";                                     // NEW
+        cityPlaceholder.disabled = true;                                                    // NEW
+        cityPlaceholder.selected = !curCity;                                                // NEW
+        citySel.appendChild(cityPlaceholder);                                               // NEW
+
+        cities.forEach((name) => {
+            const o = document.createElement("option");
+            o.value = name;
+            o.textContent = name;
+            if (name === curCity) o.selected = true;
+            citySel.appendChild(o);
+        });
+        row("City:", citySel);
+
+        // Units (mandatory)
+        const unitsSel = document.createElement("select");
+        unitsSel.style.flex = "1";
+
+        const unitsPlaceholder = document.createElement("option");                          // NEW
+        unitsPlaceholder.value = "";                                                        // NEW
+        unitsPlaceholder.textContent = "Select units…";                                     // NEW
+        unitsPlaceholder.disabled = true;                                                   // NEW
+        unitsPlaceholder.selected = !curUnits;                                              // NEW
+        unitsSel.appendChild(unitsPlaceholder);                                             // NEW
+
+        [{ v: "metric", t: "Metric (m, cm)" }, { v: "imperial", t: "Imperial (ft, in)" }]
+            .forEach(({ v, t }) => {
+                const o = document.createElement("option");
+                o.value = v;
+                o.textContent = t;
+                if (v === curUnits) o.selected = true;
+                unitsSel.appendChild(o);
+            });
+        row("Units:", unitsSel);
+
+        function showError(msg) {                                                           // NEW
+            err.textContent = msg;                                                          // NEW
+            err.style.display = "block";                                                    // NEW
+        }                                                                                   // NEW
+
+        const btnRow = document.createElement("div");
+        btnRow.style.display = "flex";
+        btnRow.style.justifyContent = "flex-end";
+        btnRow.style.gap = "8px";
+        btnRow.style.marginTop = "12px";
+
+        const cancelBtn = mxUtils.button("Cancel", () => ui.hideDialog());
+        const okBtn = mxUtils.button("OK", () => {
+            err.style.display = "none";                                                     // NEW
+            const chosenCity = (citySel.value || "").trim();
+            const chosenUnits = (unitsSel.value || "").trim();
+
+            if (!chosenCity) { showError("City is required."); citySel.focus(); return; }   // NEW
+            if (!chosenUnits) { showError("Units are required."); unitsSel.focus(); return; } // NEW
+
+            ui.hideDialog();
+            setCellAttrs(model, moduleCell, {
+                city_name: chosenCity,
+                unit_system: chosenUnits,
+                // meters_per_px omitted (scale removed)
+            });
+            graph.refresh(moduleCell);
+        });
+
+        btnRow.appendChild(cancelBtn);
+        btnRow.appendChild(okBtn);
+        div.appendChild(btnRow);
+
+        ui.showDialog(div, 420, 220, true, true);
+        citySel.focus();
+    }                                                                                        // NEW
+
+
+    // Listen for garden-module settings requests emitted by the module plugin               // NEW
+    if (!graph.__uslGardenSettingsListenerInstalled) {                                       // NEW
+        graph.__uslGardenSettingsListenerInstalled = true;                                   // NEW
+
+        graph.addListener("usl:gardenModuleNeedsSettings", function (sender, evt) {          // NEW
+            const moduleCell = evt.getProperty("cell");                                      // NEW
+            if (!moduleCell || !isGardenModule(moduleCell)) return;                          // NEW
+
+            if (hasGardenSettingsSet(moduleCell)) return;                                    // NEW
+
+            // Defer dialog until after current paint/update completes                        // NEW
+            setTimeout(() => {                                                               // NEW
+                // Re-check in case settings were set during the delay                         // NEW
+                if (hasGardenSettingsSet(moduleCell)) return;                                // NEW
+                showGardenSettingsDialog(ui, graph, moduleCell);                             // NEW
+            }, 0);                                                                           // NEW
+        });                                                                                  // NEW
+    }                                                                                        // NEW
+
+
+    function setCellAttr(model, cell, name, value) {
+        model.beginUpdate();
+        try {
+            const base = ensureXmlValue(cell);
+            const clone = base.cloneNode(true);
+            if (value === null) {
+                clone.removeAttribute(name);
+            } else {
+                clone.setAttribute(name, String(value));
+            }
+            model.setValue(cell, clone);  // ensures persistence, undo, events                   
+        } finally {
+            model.endUpdate();
+        }
+    }
+
+    function getGroupDisplayName(groupCell, fallbackAbbr = '?') {
+        const plantName = getXmlAttr(groupCell, 'plant_name', '') || '';
+        const varietyName = getXmlAttr(groupCell, 'variety_name', '') || '';
+        const base = (plantName || fallbackAbbr || '?').trim();
+        const v = varietyName.trim();
+        return v ? `${base} - ${v}` : base;
+    }
 
 
     function getStyleSafe(cell) {
@@ -371,13 +561,6 @@ Draw.loadPlugin(function (ui) {
 
     function isModule(cell) {
         return !!cell && getStyleSafe(cell).includes("module=1");
-    }
-
-    function isRegularModule(cell) {
-        if (!isModule(cell)) return false;
-        const isGarden =
-            !!(cell.getAttribute && cell.getAttribute("garden_module") === "1");
-        return !isGarden;
     }
 
     function isGardenModule(cell) {
@@ -398,7 +581,7 @@ Draw.loadPlugin(function (ui) {
     }
 
     function hasCitySet(moduleCell) {
-        return !!(moduleCell && moduleCell.getAttribute && moduleCell.getAttribute('city_name')); // CHANGE
+        return !!(moduleCell && moduleCell.getAttribute && moduleCell.getAttribute('city_name'));
     }
 
     /**
@@ -408,7 +591,7 @@ Draw.loadPlugin(function (ui) {
      * - Centers a 240x240 group within the module bounds.
      */
     // Replace/create this helper in the tiler plugin:
-    function createEmptyTilerGroup(graph, moduleCell, clickX, clickY) {             // CHANGE
+    function createEmptyTilerGroup(graph, moduleCell, clickX, clickY) {
         const DEFAULT_GROUP_PX = 240;
         const spacingCm = 30;
 
@@ -422,12 +605,12 @@ Draw.loadPlugin(function (ui) {
         const h = DEFAULT_GROUP_PX;
 
         // Convert click (graph coords) -> local coords in module
-        const localX = (typeof clickX === "number") ? (clickX - gx - w / 2) : (gw - w) / 2; // CHANGE
-        const localY = (typeof clickY === "number") ? (clickY - gy - h / 2) : (gh - h) / 2; // CHANGE
+        const localX = (typeof clickX === "number") ? (clickX - gx - w / 2) : (gw - w) / 2;
+        const localY = (typeof clickY === "number") ? (clickY - gy - h / 2) : (gh - h) / 2;
 
         // Clamp inside module bounds
-        const relX = Math.max(0, Math.min(gw - w, localX));                         // CHANGE
-        const relY = Math.max(0, Math.min(gh - h, localY));                         // CHANGE
+        const relX = Math.max(0, Math.min(gw - w, localX));
+        const relY = Math.max(0, Math.min(gh - h, localY));
 
         const groupVal = createXmlValue("TilerGroup", {
             label: "New Plant Group",
@@ -436,14 +619,16 @@ Draw.loadPlugin(function (ui) {
             spacing_x_cm: String(spacingCm),
             spacing_y_cm: String(spacingCm),
             veg_diameter_cm: "",
-            plant_yield: "",
+            yield_per_plant_kg: "",
             yield_unit: YIELD_UNIT,
-            total_yield: "0",
-            plant_count: "0"
+            plant_count: "0",
+            planting_target_yield_kg: "0",          // CHANGE
+            planting_expected_yield_kg: "0",        // CHANGE
+            planting_actual_yield_kg: "0"
         });
 
         // Note: child geometry should be RELATIVE to parent module
-        const geo = new mxGeometry(relX, relY, w, h);                               // CHANGE
+        const geo = new mxGeometry(relX, relY, w, h);
         const group = new mxCell(groupVal, geo, groupFrameStyle());
         group.setVertex(true);
         group.setConnectable(false);
@@ -686,6 +871,38 @@ Draw.loadPlugin(function (ui) {
             return t;
         }
 
+        function collectSelectedTilerGroups(graph, fallbackTarget) {
+            const sel = graph.getSelectionCells ? (graph.getSelectionCells() || []) : [];
+            const out = new Map();
+
+            function addIfGroup(c) {
+                if (!c) return;
+                const g = isTilerGroup(c) ? c : findTilerGroupAncestor(graph, c);
+                if (g && g.id) out.set(g.id, g);
+            }
+
+            // Include selection-derived groups                                              
+            for (const c of sel) addIfGroup(c);
+
+            // Fallback: if selection has no groups, use the target under cursor             
+            if (out.size === 0) addIfGroup(fallbackTarget);
+
+            return Array.from(out.values());
+        }
+
+        function selectionGroupState(groups) {
+            let anyCollapsed = false;
+            let anyExpanded = false;
+            for (const g of groups) {
+                const collapsed = isCollapsedLOD(g);
+                if (collapsed) anyCollapsed = true;
+                else anyExpanded = true;
+                if (anyCollapsed && anyExpanded) break;
+            }
+            return { anyCollapsed, anyExpanded };
+        }
+
+
         graph.popupMenuHandler.factoryMethod = function (menu, cell, evt) {
             try {
                 mxLog.debug(
@@ -752,100 +969,68 @@ Draw.loadPlugin(function (ui) {
 
             // ----- MODULE CONTEXT MENU -----
             const targetMod = resolveModuleTarget(cell, evt);
-            if (targetMod && isRegularModule(targetMod)) {
-                menu.addItem("Set as Garden Module", null, function () {
-                    const model = graph.getModel();                                                      // CHANGE
-                    setCellAttr(model, targetMod, "garden_module", "1");                                 // CHANGE
-                    try { mxLog.debug("[PlantTiler][module] marked as garden " + targetMod.id); } catch (_) { }
-                    graph.refresh(targetMod);                                                            // unchanged
-                });
-            }
 
-            if (target && isTilerGroup(target)) {                                           // existing branch
-                // …existing "Set Plant Spacing" item…
-            
-                const isCollapsed = isCollapsedLOD(target);                                 // NEW
-                if (isCollapsed) {                                                          // NEW
-                    menu.addItem("Expand detail", null, function () {                       // NEW
-                        retileGroup(graph, target, { forceExpand: true });                  // NEW
-                    });                                                                     // NEW
-                } else {                                                                    // NEW
-                    menu.addItem("Collapse to summary", null, function () {                 // NEW
-                        retileGroup(graph, target, { forceCollapse: true });                // NEW
-                    });                                                                     // NEW
-                }                                                                           // NEW
+            // ----- Expand/Collapse (selection-aware) ---------------------------------- 
+            const selectedGroups = collectSelectedTilerGroups(graph, target);
+            const n = selectedGroups.length;
+            const noun = n > 1 ? "plantings" : "planting";
+            if (selectedGroups.length) {
+                const st = selectionGroupState(selectedGroups);
+
+                if (st.anyCollapsed) {
+                    menu.addItem(`Expand ${noun}`, null, function () {
+                        const model = graph.getModel();
+                        model.beginUpdate();
+                        try {
+                            for (const g of selectedGroups) {
+                                retileGroup(graph, g, { forceExpand: true });
+                                graph.refresh(g); // refresh each
+                            }
+                        } finally {
+                            model.endUpdate();
+                        }
+                    });
+                }
+
+                if (st.anyExpanded) {
+                    menu.addItem(`Collapse ${noun}`, null, function () {
+                        const model = graph.getModel();
+                        model.beginUpdate();
+                        try {
+                            for (const g of selectedGroups) {
+                                retileGroup(graph, g, { forceCollapse: true });                                         // CHANGE
+                                graph.refresh(g); // refresh each
+                            }
+                        } finally {
+                            model.endUpdate();
+                        }
+                    });
+                }
             }
 
             if (targetMod && isGardenModule(targetMod)) {
-                menu.addItem("Set as Regular Module", null, function () {
-                    const model = graph.getModel();                                                      // CHANGE
-                    setCellAttr(model, targetMod, "garden_module", null);                                // CHANGE (remove attr)
-                    try { mxLog.debug("[PlantTiler][module] reverted to regular " + targetMod.id); } catch (_) { }
-                    graph.refresh(targetMod);                                                            // unchanged
-                });
-
-                menu.addItem("Set City…", null, async function () {
-                    try {
-                        const cities = await loadCities();
-                        if (!cities.length) {
-                            mxUtils.alert("No cities found in database.");
-                            return;
-                        }
-                        const div = document.createElement("div");
-                        div.style.padding = "10px";
-                        div.style.minWidth = "240px";
-                        const label = document.createElement("div");
-                        label.textContent = "Select city:";
-                        label.style.marginBottom = "6px";
-                        div.appendChild(label);
-                        const select = document.createElement("select");
-                        select.style.width = "100%";
-                        cities.forEach((name) => {
-                            const o = document.createElement("option");
-                            o.value = name;
-                            o.textContent = name;
-                            select.appendChild(o);
-                        });
-                        div.appendChild(select);
-                        const ok = mxUtils.button("OK", function () {
-                            const chosen = select.value;
-                            ui.hideDialog();
-                            const model = graph.getModel();                                              // CHANGE
-                            setCellAttr(model, targetMod, "city_name", chosen);                          // CHANGE
-                            try { mxLog.debug("[PlantTiler][module] city set to " + chosen); } catch (_) { }
-                            graph.refresh(targetMod);
-                        });
-                        const cancel = mxUtils.button("Cancel", function () {
-                            ui.hideDialog();
-                        });
-                        const br = document.createElement("div");
-                        br.style.textAlign = "right";
-                        br.style.marginTop = "8px";
-                        br.appendChild(cancel);
-                        br.appendChild(ok);
-                        div.appendChild(br);
-                        ui.showDialog(div, 260, 140, true, true);
-                    } catch (e) {
-                        mxUtils.alert("Error loading cities: " + e.message);
-                    }
+                menu.addItem("Garden Settings…", null, async function () {                            // NEW
+                    await showGardenSettingsDialog(ui, graph, targetMod);                             // NEW
                 });
             }
 
-            // --- Add New Plant Group (requires city set) ---------------------------------- // CHANGE
-            if (hasCitySet(targetMod)) {                                                     // CHANGE
-                menu.addItem("Add New Plant Group", null, function () {                      // CHANGE
-                    try {                                                                     // CHANGE
-                        const pt = graph.getPointForEvent(evt);                               // CHANGE
-                        createEmptyTilerGroup(graph, targetMod, pt.x, pt.y);
-                        mxLog.debug("[PlantTiler][module] empty tiler group created");        // CHANGE
-                    } catch (e) {                                                             // CHANGE
-                        mxUtils.alert("Error creating tiler group: " + e.message);            // CHANGE
-                    }                                                                         // CHANGE
-                });                                                                           // CHANGE
-            } else {                                                                          // CHANGE
-                // Grey, non-clickable prompt when no city is set                             // CHANGE
-                menu.addItem("Set city to add plants", null, function () { }, null, null, false); // CHANGE
-            }                                                                                 // CHANGE
+            // --- Add New Plant Group (requires garden settings) ----------------------------------
+            if (targetMod && isGardenModule(targetMod)) {                                            // NEW
+                if (hasGardenSettingsSet(targetMod)) {                                               // CHANGE
+                    menu.addItem("Add New Plant Group", null, function () {
+                        try {
+                            const pt = graph.getPointForEvent(evt);
+                            createEmptyTilerGroup(graph, targetMod, pt.x, pt.y);
+                            mxLog.debug("[PlantTiler][module] empty tiler group created");
+                        } catch (e) {
+                            mxUtils.alert("Error creating tiler group: " + e.message);
+                        }
+                    });
+                } else {
+                    // Disabled hint (non-clickable)
+                    menu.addItem("Set garden settings to add plants", null, function () { }, null, null, false); // NEW
+                }
+            }                                                                                         // NEW
         };
 
         try {
@@ -881,11 +1066,11 @@ Draw.loadPlugin(function (ui) {
 
     function formatYield(value, unit) {
         // Simple formatting: keep three sig figs for small numbers
-        if (!Number.isFinite(value)) return `0 ${unit}`; // fixed template string
+        if (!Number.isFinite(value)) return `0 ${unit}`;
         const abs = Math.abs(value);
         const s =
             abs >= 10 ? value.toFixed(1) : abs >= 1 ? value.toFixed(2) : value.toFixed(3);
-        return `${s} ${unit}`; // fixed template string
+        return `${s} ${unit}`;
     }
 
     let WRAP_GUARD = false; // re-entrancy guard
@@ -898,14 +1083,17 @@ Draw.loadPlugin(function (ui) {
         const abbr = circleCell.getAttribute("abbr") || "?";
         const plantId = circleCell.getAttribute('plant_id') || '';
         const plantName = circleCell.getAttribute('plant_name') || '';
-        const titleName = plantName || abbr || '?';
+        const varietyName = circleCell.getAttribute('variety_name') || '';
+        const titleName = (varietyName && plantName)
+            ? `${plantName} - ${varietyName}`
+            : (plantName || abbr || '?');
 
         // Default X/Y from source circle (both seeded from spacing_cm)
         const spacingCm = circleCell.getAttribute("spacing_cm") || "30";
         const spacingXcm = circleCell.getAttribute("spacing_x_cm") || spacingCm;
         const spacingYcm = circleCell.getAttribute("spacing_y_cm") || spacingCm;
         const vegDiamCm = circleCell.getAttribute("veg_diameter_cm") || "";
-        const plantYield = circleCell.getAttribute("plant_yield") || "";
+        const plantYield = circleCell.getAttribute("yield_per_plant_kg") || "";
         const yieldUnit = circleCell.getAttribute("yield_unit") || YIELD_UNIT;
 
         const groupVal = createXmlValue("TilerGroup", {
@@ -914,14 +1102,17 @@ Draw.loadPlugin(function (ui) {
             plant_abbr: abbr,
             plant_id: plantId,                               // persist id on group
             plant_name: plantName,                           // persist name on group
+            variety_name: varietyName,
             spacing_cm: spacingCm,
             spacing_x_cm: spacingXcm,
             spacing_y_cm: spacingYcm,
             veg_diameter_cm: vegDiamCm,
-            plant_yield: plantYield,
+            yield_per_plant_kg: plantYield,
             yield_unit: yieldUnit,
-            total_yield: "0", // will be updated on retile
             plant_count: "1",
+            planting_target_yield_kg: circleCell.getAttribute("planting_target_yield_kg") || "0", // CHANGE
+            planting_expected_yield_kg: "0",                                                     // CHANGE
+            planting_actual_yield_kg: "0"
         });
 
         const group = new mxCell(
@@ -954,7 +1145,7 @@ Draw.loadPlugin(function (ui) {
     function computeGridStatsXY(groupCell, spacingXpx, spacingYpx) {
         const g = groupCell.getGeometry();
         const usableW = Math.max(0, g.width - GROUP_PADDING_PX * 2);
-        const usableH = Math.max(0, g.height - GROUP_PADDING_PX * 2);
+        const usableH = Math.max(0, g.height - GROUP_PADDING_PX * 2 - GROUP_LABEL_BAND_PX);
         if (usableW <= 0 || usableH <= 0) return { rows: 0, cols: 0, count: 0 };
         const cols = Math.max(1, Math.floor(usableW / spacingXpx));
         const rows = Math.max(1, Math.floor(usableH / spacingYpx));
@@ -1014,33 +1205,33 @@ Draw.loadPlugin(function (ui) {
     });
 
     // expand/collapse helpers
-    function expandGroupDetail(graph, groupCell) {                                 // NEW
-        const abbr = groupCell.getAttribute("plant_abbr") || "?";                  // NEW
+    function expandGroupDetail(graph, groupCell) {
+        const abbr = groupCell.getAttribute("plant_abbr") || "?";
         const sx = toPx(Number(groupCell.getAttribute("spacing_x_cm") ||
-                                groupCell.getAttribute("spacing_cm") || "30"));    // NEW
+            groupCell.getAttribute("spacing_cm") || "30"));
         const sy = toPx(Number(groupCell.getAttribute("spacing_y_cm") ||
-                                groupCell.getAttribute("spacing_cm") || "30"));    // NEW
-        const vegDiam = Number(groupCell.getAttribute("veg_diameter_cm") || 0);    // NEW
-        const iconDiam = Math.max(                                                 // NEW
+            groupCell.getAttribute("spacing_cm") || "30"));
+        const vegDiam = Number(groupCell.getAttribute("veg_diameter_cm") || 0);
+        const iconDiam = Math.max(
             vegDiam > 0 ? toPx(vegDiam) : clamp(DEFAULT_ICON_DIAM_RATIO * Math.min(sx, sy), MIN_ICON_DIAM_PX, MAX_ICON_DIAM_PX), 6
-        );                                                                         // NEW
-        const { rows, cols, count } = computeGridStatsXY(groupCell, sx, sy);       // NEW
-        if (count > MAX_TILES) {                                                   // NEW
-            collapseToSummary(graph, groupCell, abbr, sx, sy);                     // NEW
-            return;                                                                // NEW
-        }                                                                          // NEW
-        expandTiles(graph, groupCell, abbr, sx, sy, iconDiam);                     // NEW
-    }                                                                              // NEW
-    
-    function collapseGroupDetail(graph, groupCell) {                               // NEW
-        const abbr = groupCell.getAttribute("plant_abbr") || "?";                  // NEW
+        );
+        const { rows, cols, count } = computeGridStatsXY(groupCell, sx, sy);
+        if (count > MAX_TILES) {
+            collapseToSummary(graph, groupCell, abbr, sx, sy);
+            return;
+        }
+        expandTiles(graph, groupCell, abbr, sx, sy, iconDiam);
+    }
+
+    function collapseGroupDetail(graph, groupCell) {
+        const abbr = groupCell.getAttribute("plant_abbr") || "?";
         const sx = toPx(Number(groupCell.getAttribute("spacing_x_cm") ||
-                                groupCell.getAttribute("spacing_cm") || "30"));    // NEW
+            groupCell.getAttribute("spacing_cm") || "30"));
         const sy = toPx(Number(groupCell.getAttribute("spacing_y_cm") ||
-                                groupCell.getAttribute("spacing_cm") || "30"));    // NEW
-        collapseToSummary(graph, groupCell, abbr, sx, sy);                         // NEW
-    }          
-    
+            groupCell.getAttribute("spacing_cm") || "30"));
+        collapseToSummary(graph, groupCell, abbr, sx, sy);
+    }
+
     function retileVisibleExpandedGroups(graph) {
         const parent = graph.getDefaultParent();
         const all = graph.getChildVertices(parent) || [];
@@ -1077,83 +1268,85 @@ Draw.loadPlugin(function (ui) {
         // Reads per-plant yield & unit from group, multiplies by plant_count (or override),
         // stamps total_yield, logs, and (optionally) updates visible label with formatted total.
         const abbr = opts.abbr != null ? String(opts.abbr) : getXmlAttr(groupCell, "plant_abbr", "?");
-        const fullName = getXmlAttr(groupCell, 'plant_name', abbr);
+        const fullName = getGroupDisplayName(groupCell, abbr || '?');
         const unit = groupCell.getAttribute("yield_unit") || YIELD_UNIT;
-        const perYield = getNumberAttr(groupCell, "plant_yield", 0);
+        const perYield = getNumberAttr(groupCell, "yield_per_plant_kg", 0);
         const count =
             opts.countOverride != null
                 ? Number(opts.countOverride)
                 : getNumberAttr(groupCell, "plant_count", 0);
-        const totalYield = perYield * (Number.isFinite(count) ? count : 0);
-        setXmlAttr(groupCell, "Yield", totalYield);
+
+        const expectedYield = perYield * (Number.isFinite(count) ? count : 0);             // CHANGE
+
+        setXmlAttr(groupCell, "planting_expected_yield_kg", expectedYield);                // CHANGE (new canonical)
         try {
             mxLog.debug(
                 "[PlantTiler][yield] " +
-                JSON.stringify({ abbr, perYield, count, totalYield, unit })
+                JSON.stringify({ abbr, perYield, count, expectedYield, unit })
             );
         } catch (_) { }
 
         if (SHOW_YIELD_IN_GROUP_LABEL) {
             const val = groupCell.value;
             if (val && val.setAttribute) {
-                val.setAttribute("label", `${fullName} group — ${formatYield(totalYield, unit)}`);
+                val.setAttribute("label", `${fullName} group — ${formatYield(expectedYield, unit)}`);
             }
         }
 
-        return { perYield, count, totalYield, unit, abbr };
+        return { perYield, count, expectedYield, unit, abbr };
     }
 
-    function retileGroup(graph, groupCell, opts = {}) {                              // CHANGE
-        const abbr = groupCell.getAttribute("plant_abbr") || "?";                    // unchanged
+    function retileGroup(graph, groupCell, opts = {}) {
+        const abbr = groupCell.getAttribute("plant_abbr") || "?";
         const spacingXcm = Number(groupCell.getAttribute("spacing_x_cm") ||
-                                  groupCell.getAttribute("spacing_cm") || "30");     // unchanged
+            groupCell.getAttribute("spacing_cm") || "30");
         const spacingYcm = Number(groupCell.getAttribute("spacing_y_cm") ||
-                                  groupCell.getAttribute("spacing_cm") || "30");     // unchanged
-        const spacingXpx = toPx(spacingXcm);                                         // unchanged
-        const spacingYpx = toPx(spacingYcm);                                         // unchanged
-    
-        const vegDiamCm = Number(groupCell.getAttribute("veg_diameter_cm") || 0);    // unchanged
+            groupCell.getAttribute("spacing_cm") || "30");
+        const spacingXpx = toPx(spacingXcm);
+        const spacingYpx = toPx(spacingYcm);
+
+        const vegDiamCm = Number(groupCell.getAttribute("veg_diameter_cm") || 0);
         let iconDiam = vegDiamCm > 0 ? toPx(vegDiamCm)
-            : clamp(                                                                 // unchanged
+            : clamp(
                 DEFAULT_ICON_DIAM_RATIO * Math.min(spacingXpx, spacingYpx),
                 MIN_ICON_DIAM_PX,
                 MAX_ICON_DIAM_PX
             );
-        iconDiam = Math.max(iconDiam, 6);                                            // unchanged
-    
-        const collapsed = isCollapsedLOD(groupCell);                                 // unchanged
-        const forceExpand = !!opts.forceExpand;                                      // unchanged
-        const forceCollapse = !!opts.forceCollapse;                                  // unchanged
-    
-        const autoCollapse = shouldCollapseLOD(graph, groupCell, spacingXpx, spacingYpx); // NEW
-        const autoExpand   = shouldExpandLOD(graph, groupCell, spacingXpx, spacingYpx);   // NEW
-    
-        if (forceCollapse) {                                                         // unchanged
-            collapseToSummary(graph, groupCell, abbr, spacingXpx, spacingYpx);       // unchanged
-            return;                                                                  // unchanged
+        iconDiam = Math.max(iconDiam, 6);
+
+        const collapsed = isCollapsedLOD(groupCell);
+        const forceExpand = !!opts.forceExpand;
+        const forceCollapse = !!opts.forceCollapse;
+
+        const autoCollapse = shouldCollapseLOD(graph, groupCell, spacingXpx, spacingYpx);
+        const autoExpand = shouldExpandLOD(graph, groupCell, spacingXpx, spacingYpx);
+
+        if (forceCollapse) {
+            collapseToSummary(graph, groupCell, abbr, spacingXpx, spacingYpx);
+            return;
         }
-        if (forceExpand) {                                                           // unchanged
-            expandGroupDetail(graph, groupCell);                                     // unchanged
-            return;                                                                  // unchanged
+        if (forceExpand) {
+            expandGroupDetail(graph, groupCell);
+            return;
         }
-    
-        if (autoCollapse && !collapsed) {                                            // NEW
-            collapseToSummary(graph, groupCell, abbr, spacingXpx, spacingYpx);       // NEW
-            return;                                                                  // NEW
+
+        if (autoCollapse && !collapsed) {
+            collapseToSummary(graph, groupCell, abbr, spacingXpx, spacingYpx);
+            return;
         }
-        if (autoExpand && collapsed) {                                               // NEW
-            expandGroupDetail(graph, groupCell);                                     // NEW
-            return;                                                                  // NEW
+        if (autoExpand && collapsed) {
+            expandGroupDetail(graph, groupCell);
+            return;
         }
-    
-        // Default path: keep current state; only refresh contents/summary           // unchanged comment
-        if (!collapsed) {                                                            // unchanged behavior for expanded
-            expandTiles(graph, groupCell, abbr, spacingXpx, spacingYpx, iconDiam);   // unchanged
+
+        // Default path: keep current state; only refresh contents/summary        
+        if (!collapsed) {
+            expandTiles(graph, groupCell, abbr, spacingXpx, spacingYpx, iconDiam);
         } else {
-            collapseToSummary(graph, groupCell, abbr, spacingXpx, spacingYpx);       // unchanged
+            collapseToSummary(graph, groupCell, abbr, spacingXpx, spacingYpx);
         }
     }
-    
+
     // ---- Public API export (for other USL plugins) ---------------------------------
     window.USL = window.USL || {};
     window.USL.tiler = Object.assign({}, window.USL.tiler, {
@@ -1166,8 +1359,8 @@ Draw.loadPlugin(function (ui) {
     // -------------------- Boot --------------------
     (async function init() {
         try {
-            
-                } catch (e) {
+
+        } catch (e) {
             log("Init error:", e.message);
         }
     })();

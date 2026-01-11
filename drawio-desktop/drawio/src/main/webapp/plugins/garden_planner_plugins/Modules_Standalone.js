@@ -89,7 +89,7 @@ Draw.loadPlugin(function (ui) {
         const allowShrink = !!o.allowShrink;
         if (!isModule(moduleCell)) return;
 
-        const margin = getIntStyle(moduleCell, "module_margin", 12);
+        const margin = getIntStyle(moduleCell, "module_margin", 100);
         const mGeo = model.getGeometry(moduleCell);
         if (!mGeo) return;
 
@@ -205,27 +205,63 @@ Draw.loadPlugin(function (ui) {
         return child;
     }
 
+    function hasGardenSettingsSet(cell) {                                                     // NEW
+        const v = cell && cell.value;                                                         // NEW
+        if (!(v && v.nodeType === 1)) return false;                                           // NEW
+        const city = (v.getAttribute("city_name") || "").trim();                              // NEW
+        const units = (v.getAttribute("unit_system") || "").trim();                           // NEW
+        return !!(city && units);                                                             // NEW
+    }                                                                                         // NEW
 
-    // Set module type: 'regular' | 'garden' | 'team'
+    function emitGardenSettingsNeededIfMissing(graph, moduleCell) {                           // NEW
+        if (!graph || !moduleCell) return;                                                    // NEW
+        if (hasGardenSettingsSet(moduleCell)) return;                                         // NEW
+        graph.fireEvent(new mxEventObject(                                                    // NEW
+            "usl:gardenModuleNeedsSettings",                                                  // NEW
+            "cell", moduleCell                                                                // NEW
+        ));                                                                                   // NEW
+    }                                                                                         // NEW
+
+
     function setModuleType(cell, type) {
+        let becameGarden = false;                                                            // NEW
+
         model.beginUpdate();
         try {
-            // Ensure value is an Element and clear XML flags first                                       
             ensureXmlValue(cell);
             setXmlFlag(cell, "garden_module", false);
             setXmlFlag(cell, "team_module", false);
 
-            // Set the desired XML flag                                                                   
+            // Set the desired flag
             if (type === "garden") {
-                setXmlFlag(cell, "garden_module", true);
+                setXmlFlag(cell, "garden_module", true);                                     // FIX
+                becameGarden = true;                                                        // NEW
             } else if (type === "team") {
                 setXmlFlag(cell, "team_module", true);
             }
+
+            let st = getStyle(cell) || "";
+            st = st.replace(/(?:^|;)swimlaneFillColor=[^;]*(?=;|$)/g, "");
+            st = st.replace(/;;+/g, ";").replace(/^;|;$/g, "");
+
+            if (type === "garden") {
+                st += (st ? ";" : "") + "swimlaneFillColor=#B9E0A5";
+            } else if (type === "team") {
+                st += (st ? ";" : "") + "swimlaneFillColor=#FFF2CC";
+            } else {
+                st += (st ? ";" : "") + "swimlaneFillColor=default";
+            }
+
+            model.setStyle(cell, st);
         } finally {
             model.endUpdate();
         }
         graph.refresh(cell);
-    }
+
+        if (becameGarden) {                                                                  // FIX
+            setTimeout(() => emitGardenSettingsNeededIfMissing(graph, cell), 0);             // FIX
+        }                                                                              // NEW
+    }                                                                                    // NEW    
 
 
     function isRoleCard(cell) {
@@ -246,7 +282,7 @@ Draw.loadPlugin(function (ui) {
         const relY = y - moduleGeo.y;
 
         const role = new mxCell("Role", new mxGeometry(relX, relY, w, h),
-            "shape=swimlane;horizontal=1;whiteSpace=wrap;collapsible=1;rounded=1;fillColor=#fff2cc;strokeColor=#d6b656;role_card=1");
+            "shape=swimlane;horizontal=1;whiteSpace=wrap;collapsible=1;rounded=1;fillColor=#ffffff;strokeColor=#000000;role_card=1");
         role.vertex = true;
 
         // Avatar placeholder (80px tall gray rectangle)
@@ -296,7 +332,7 @@ Draw.loadPlugin(function (ui) {
                     try {
                         // Look for an existing image row in the roleCard
                         let children = model.getChildren(roleCard) || [];
-                        let imageRow = children.find(c => (getStyle(c).includes("role_imagerow=1"))); // (CHANGED)
+                        let imageRow = children.find(c => (getStyle(c).includes("role_imagerow=1")));
 
                         // If missing, create one at the top
                         if (!imageRow) {
@@ -380,11 +416,9 @@ Draw.loadPlugin(function (ui) {
     // EVENT HOOKS (LIGHTWEIGHT)
     // ------------------------
 
-    // (CHANGED) One-time guard to install only margin-related listeners
     if (!graph.__uslHandlersInstalled) {
         graph.__uslHandlersInstalled = true;
 
-        // (CHANGED) Disable heavy reparenting by short-circuiting the previous listeners       
         // NOTE: We keep edges/vertices default behavior (Draw.io handles containment).         
 
         graph.addListener(mxEvent.ADD_CELLS, function (sender, evt) {
@@ -414,6 +448,12 @@ Draw.loadPlugin(function (ui) {
                 if (pg && !pg.relative) {
                     x += pg.x || 0;
                     y += pg.y || 0;
+
+                    // Adjust for swimlane header so child coordinates match visual position   
+                    if (isModule(p) && isSwimlane(p)) {
+                        const header = getStartSize(p).height || 0;
+                        y += header;
+                    }
                 }
                 p = model.getParent(p);
             }
@@ -471,72 +511,79 @@ Draw.loadPlugin(function (ui) {
             }
             return false;
         }
+
         // Reparent only top-level cells that are not already under modules
         // and not children of tiler groups                                                
-        function reparentCellsIntoModules(cells) {                                         
-            if (!cells || !cells.length) return;                                           
+        function reparentCellsIntoModules(cells) {
+            if (!cells || !cells.length) return;
+
+            // Skip modules themselves; only auto-snap non-module vertices          
+            cells = cells.filter(function (c) {
+                return c && !isModule(c);
+            });
+            if (!cells.length) return;
 
             // 1) Only process top-level added cells (no ancestor also in "cells")         
-            let topLevel = getTopLevelAddedCells(cells);                                   
-            if (!topLevel.length) return;                                                  
+            let topLevel = getTopLevelAddedCells(cells);
+            if (!topLevel.length) return;
 
             // 2) Skip anything that already has a module ancestor                         
-            topLevel = topLevel.filter(c => !hasModuleAncestor(c));                        
-            if (!topLevel.length) return;                                                  
+            topLevel = topLevel.filter(c => !hasModuleAncestor(c));
+            if (!topLevel.length) return;
 
             // 3) Skip anything that has a tiler group ancestor (tiler internals)          
-            topLevel = topLevel.filter(c => !hasTilerGroupAncestor(c));                    
-            if (!topLevel.length) return;                                                  
+            topLevel = topLevel.filter(c => !hasTilerGroupAncestor(c));
+            if (!topLevel.length) return;
 
-            const modules = Object.values(model.cells)                                     
-                .filter(c => isModule(c));                                                 
-            if (!modules.length) return;                                                   
+            const modules = Object.values(model.cells)
+                .filter(c => isModule(c));
+            if (!modules.length) return;
 
-            topLevel.forEach(cell => {                                                     
-                if (!model.isVertex(cell)) return;                                         
+            topLevel.forEach(cell => {
+                if (!model.isVertex(cell)) return;
 
-                const b = getAbsBounds(cell);                                              
-                if (!b) return;                                                            
+                const b = getAbsBounds(cell);
+                if (!b) return;
 
-                const containing = modules.filter(m => rectInsideModule(b, m));            
-                if (containing.length === 0) return;                                       
+                const containing = modules.filter(m => rectInsideModule(b, m));
+                if (containing.length === 0) return;
 
-                containing.sort((a, b2) => {                                               
-                    const ga = graph.getCellGeometry(a);                                   
-                    const gb = graph.getCellGeometry(b2);                                  
-                    return (ga.width * ga.height) - (gb.width * gb.height);               
-                });                                                                        
+                containing.sort((a, b2) => {
+                    const ga = graph.getCellGeometry(a);
+                    const gb = graph.getCellGeometry(b2);
+                    return (ga.width * ga.height) - (gb.width * gb.height);
+                });
 
-                const targetModule = containing[0];                                        
-                const oldParent = model.getParent(cell);                                   
-                if (oldParent === targetModule) return;                                    
+                const targetModule = containing[0];
+                const oldParent = model.getParent(cell);
+                if (oldParent === targetModule) return;
 
-                const g = cell.getGeometry();                                              
-                if (g) {                                                                   
-                    const mg = graph.getCellGeometry(targetModule);                        
-                    if (mg) {                                                              
-                        const headerH = isSwimlane(targetModule)                           
-                            ? getStartSize(targetModule).height                            
-                            : 0;                                                           
+                const g = cell.getGeometry();
+                if (g) {
+                    const mg = graph.getCellGeometry(targetModule);
+                    if (mg) {
+                        const headerH = isSwimlane(targetModule)
+                            ? getStartSize(targetModule).height
+                            : 0;
 
-                        const g2 = g.clone();                                              
-                        g2.x = b.x - mg.x;                                                 
-                        g2.y = b.y - (mg.y + headerH);                                     
-                        model.setGeometry(cell, g2);                                       
-                    }                                                                      
-                }                                                                          
+                        const g2 = g.clone();
+                        g2.x = b.x - mg.x;
+                        g2.y = b.y - (mg.y + headerH);
+                        model.setGeometry(cell, g2);
+                    }
+                }
 
-                model.add(targetModule, cell);                                             
-            });                                                                            
+                model.add(targetModule, cell);
+            });
 
-            const touched = new Set();                                                     
-            topLevel.forEach(c => {                                                        
-                const p = model.getParent(c);                                              
-                if (p && isModule(p)) touched.add(p.id);                                   
-            });                                                                            
+            const touched = new Set();
+            topLevel.forEach(c => {
+                const p = model.getParent(c);
+                if (p && isModule(p)) touched.add(p.id);
+            });
 
-            touched.forEach(id => applyModuleMargins(model.getCell(id)));                  
-        }                                                                                  
+            touched.forEach(id => applyModuleMargins(model.getCell(id)));
+        }
 
 
         // After cells are added, defer reparenting to AFTER paste move     
@@ -557,9 +604,9 @@ Draw.loadPlugin(function (ui) {
 
 
         // Center-based containment: cell is "inside" if its center is inside module rect   
-        function rectInsideModule(rect, modCell) {                                            
-            const mg = graph.getCellGeometry(modCell);                                               
-            if (!mg) return false;                                                                   
+        function rectInsideModule(rect, modCell) {
+            const mg = graph.getCellGeometry(modCell);
+            if (!mg) return false;
 
             const cx = rect.x + rect.w / 2;  // center x                                             
             const cy = rect.y + rect.h / 2;  // center y                                             
@@ -569,77 +616,77 @@ Draw.loadPlugin(function (ui) {
                 cx <= mg.x + mg.width &&
                 cy >= mg.y &&
                 cy <= mg.y + mg.height
-            );                                                                                       
-        }                                                                                            
-        
+            );
+        }
 
 
-        graph.addListener(mxEvent.CELLS_MOVED, function (sender, evt) {                 
-            const cells = evt.getProperty("cells") || [];                               
-            if (!cells.length) return;                                                  
 
-            const seenModules = new Set();                                              
-            const toRoot = [];                                                          
+        graph.addListener(mxEvent.CELLS_MOVED, function (sender, evt) {
+            const cells = evt.getProperty("cells") || [];
+            if (!cells.length) return;
+
+            const seenModules = new Set();
+            const toRoot = [];
 
             // Determine which children have left their module                          
-            cells.forEach(c => {                                                        
-                const p = model.getParent(c);                                           
-                if (!p) return;                                                         
+            cells.forEach(c => {
+                const p = model.getParent(c);
+                if (!p) return;
 
-                if (isModule(p)) {                                                      
-                    const b = getAbsBounds(c);                                          
-                    if (!b) return;                                                     
+                if (isModule(p)) {
+                    const b = getAbsBounds(c);
+                    if (!b) return;
 
                     // If no longer inside module content, mark for reparenting         
-                    if (!rectInsideModule(b, p)) {                               
-                        toRoot.push({ cell: c, oldModule: p });                         
-                    } else {                                                            
-                        seenModules.add(p.id);                                          
-                    }                                                                   
+                    if (!rectInsideModule(b, p)) {
+                        toRoot.push({ cell: c, oldModule: p });
+                    } else {
+                        seenModules.add(p.id);
+                    }
                 } else if (isModule(model.getParent(p))) {                              // optional: grandchild case
                     // If you only want direct children handled, you can remove this     
-                    const mp = model.getParent(p);                                      
-                    if (mp && isModule(mp)) seenModules.add(mp.id);                     
-                }                                                                       
-            });                                                                         
+                    const mp = model.getParent(p);
+                    if (mp && isModule(mp)) seenModules.add(mp.id);
+                }
+            });
 
-            const root = graph.getDefaultParent();                                      
-            if (toRoot.length) {                                                        
-                model.beginUpdate();                                                    
-                try {                                                                   
-                    const rootGeo = model.getGeometry(root);                            
+            const root = graph.getDefaultParent();
+            if (toRoot.length) {
+                model.beginUpdate();
+                try {
+                    const rootGeo = model.getGeometry(root);
                     const rootX = (rootGeo && !rootGeo.relative) ? (rootGeo.x || 0) : 0;
                     const rootY = (rootGeo && !rootGeo.relative) ? (rootGeo.y || 0) : 0;
 
-                    toRoot.forEach(({ cell, oldModule }) => {                           
-                        const b = getAbsBounds(cell);                                   
-                        if (!b) return;                                                 
+                    toRoot.forEach(({ cell, oldModule }) => {
+                        const b = getAbsBounds(cell);
+                        if (!b) return;
 
-                        const g = cell.getGeometry();                                   
-                        if (!g) return;                                                 
+                        const g = cell.getGeometry();
+                        if (!g) return;
 
-                        const g2 = g.clone();                                           
+                        const g2 = g.clone();
                         // Place at same page coordinates, now relative to root         
-                        g2.x = b.x - rootX;                                             
-                        g2.y = b.y - rootY;                                             
-                        model.setGeometry(cell, g2);                                    
+                        g2.x = b.x - rootX;
+                        g2.y = b.y - rootY;
+                        model.setGeometry(cell, g2);
 
                         // Reparent into root (or whatever parent you prefer)           
-                        model.add(root, cell);                                          
+                        model.add(root, cell);
 
-                        seenModules.add(oldModule.id);                                  
-                    });                                                                 
-                } finally {                                                             
-                    model.endUpdate();                                                  
-                }                                                                       
-            }                                                                           
+                        seenModules.add(oldModule.id);
+                    });
+                } finally {
+                    model.endUpdate();
+                }
+            }
 
             // Shrink/expand modules after any reparenting                              
-            seenModules.forEach(id => {                                                 
-                const mod = model.getCell(id);                                          
-                if (mod) applyModuleMargins(mod, { allowShrink: true });                
-            });                                                                         
-        });                                                                             
+            seenModules.forEach(id => {
+                const mod = model.getCell(id);
+                if (mod) applyModuleMargins(mod, { allowShrink: true });
+            });
+        });
 
 
         graph.addListener(mxEvent.CELLS_RESIZED, function (sender, evt) {
@@ -657,10 +704,9 @@ Draw.loadPlugin(function (ui) {
     }
 
     // ------------------------
-    // MODULE CREATION / MARKING
+    // MODULE CREATION
     // ------------------------
 
-    // (CHANGED) Swimlane-style module per your spec
     function createModuleCell(graph, x, y) {
         const parent = graph.getDefaultParent();
         const w = 160, h = 100;
@@ -674,17 +720,6 @@ Draw.loadPlugin(function (ui) {
         return moduleCell;
     }
 
-    // (CHANGED) Mark existing cell as module using swimlane style
-    function markAsModule(cell) {
-        let st = getStyle(cell);
-        if (!/(^|;)swimlane(;|$)/.test(st)) st = "swimlane;" + st;
-        if (!/(^|;)whiteSpace=wrap(;|$)/.test(st)) st += ";whiteSpace=wrap";
-        if (!/(^|;)html=1(;|$)/.test(st)) st += ";html=1";
-        if (!/(^|;)swimlaneFillColor=/.test(st)) st += ";swimlaneFillColor=default";
-        if (!/(^|;)module=1(;|$)/.test(st)) st += ";module=1";
-        model.setStyle(cell, st);
-    }
-
     //  Role cards, menus, layouts etc… remain as you have them.
     // Ensure right-click does not alter selection unexpectedly                           
     graph.popupMenuHandler && (graph.popupMenuHandler.selectOnPopup = false);
@@ -693,19 +728,24 @@ Draw.loadPlugin(function (ui) {
     ui.menus.createPopupMenu = function (menu, cell, evt) {
         oldCreatePopupMenu.apply(this, arguments);
 
-        // --- Role Card specific action ------------------------------------------------
-        if (cell && isRoleCard(cell)) {
-            menu.addSeparator();
-            menu.addItem("Select Role Image", null, function () {
-                selectRoleImage(ui, graph, cell);
+        // Add Module on background or right-click on module
+        if (!cell) {
+            menu.addItem("Add Module", null, function () {
+                const pt = graph.getPointForEvent(evt);
+                model.beginUpdate();
+                try {
+                    const mod = createModuleCell(graph, pt.x, pt.y);
+                    applyModuleMargins(mod);
+                    graph.setSelectionCell(mod);
+                } finally {
+                    model.endUpdate();
+                }
             });
         }
 
         if (cell && isModule(cell)) {
             const isGarden = isGardenModule(cell);
             const isTeam = isTeamModule(cell);
-
-            menu.addSeparator();
 
             // Toggle options based on current type                                       
             if (!isGarden && !isTeam) {
@@ -720,26 +760,34 @@ Draw.loadPlugin(function (ui) {
                     setModuleType(cell, "regular");
                 });
             }
-
-            // Team module gets Add Role Card                                             
-            if (isTeam) {
-                menu.addItem("Add Role Card", null, function () {
-                    const pt = graph.getPointForEvent(evt);
-                    model.beginUpdate();
-                    try {
-                        const role = createRoleCard(graph, cell, pt.x, pt.y);
-                        graph.setSelectionCell(role);
-                        applyModuleMargins(cell);
-                    } finally {
-                        model.endUpdate();
-                    }
-                });
-            }
+            // Add Submodule (child module with relative coordinates)               
+            menu.addItem("Add Submodule", null, function () {
+                const pt = graph.getPointForEvent(evt);
+                const sub = placeChildInModule(
+                    cell,                                                           // parent module
+                    pt.x,                                                           // abs X
+                    pt.y,                                                           // abs Y
+                    function (relX, relY) {                                         // factory: create submodule
+                        const w = 160, h = 100;                                     // match createModuleCell defaults
+                        const subCell = new mxCell(
+                            "",
+                            new mxGeometry(relX, relY, w, h),
+                            "swimlane;whiteSpace=wrap;html=1;swimlaneFillColor=default;module=1"
+                        );
+                        subCell.vertex = true;
+                        return subCell;
+                    },
+                    { applyMargins: true }                                         // optional, keeps parent margins updated
+                );
+                if (sub) {
+                    graph.setSelectionCell(sub);
+                }
+            });
 
             // Keep your existing margin editor (using ui.prompt)                         
             menu.addItem("Set Module Margin (px)…", null, function () {
                 const target = cell;
-                const cur = getIntStyle(target, "module_margin", 100);                                
+                const cur = getIntStyle(target, "module_margin", 100);
                 if (graph.popupMenuHandler && graph.popupMenuHandler.hideMenu) {
                     graph.popupMenuHandler.hideMenu();
                 }
@@ -765,22 +813,29 @@ Draw.loadPlugin(function (ui) {
                 }, 0);
             });
 
-        }
+            // Team module gets Add Role Card                                             
+            if (isTeam) {
+                menu.addItem("Add Role Card", null, function () {
+                    const pt = graph.getPointForEvent(evt);
+                    model.beginUpdate();
+                    try {
+                        const role = createRoleCard(graph, cell, pt.x, pt.y);
+                        graph.setSelectionCell(role);
+                        applyModuleMargins(cell);
+                    } finally {
+                        model.endUpdate();
+                    }
+                });
+            }
 
-        // Add Module on background or right-click on module
-        if (!cell || cell && isModule(cell)) {
-            menu.addSeparator();
-            menu.addItem("Add Module", null, function () {
-                const pt = graph.getPointForEvent(evt);
-                model.beginUpdate();
-                try {
-                    const mod = createModuleCell(graph, pt.x, pt.y);
-                    applyModuleMargins(mod);
-                    graph.setSelectionCell(mod);
-                } finally {
-                    model.endUpdate();
-                }
-            });
+            // --- Role Card specific action ------------------------------------------------
+            if (cell && isRoleCard(cell)) {
+                menu.addSeparator();
+                menu.addItem("Select Role Image", null, function () {
+                    selectRoleImage(ui, graph, cell);
+                });
+            }
+
         }
     };
 
