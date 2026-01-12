@@ -874,7 +874,6 @@ Draw.loadPlugin(function (ui) {
             moduleCell.getAttribute("unit_system"));                                         // NEW
     }                                                                                        // NEW
 
-
     // -------------------- Auto-create dashboard on garden module event -------------------- // NEW
     if (!graph.__gardenDashboardAutoCreateInstalled) {                                         // NEW
         graph.__gardenDashboardAutoCreateInstalled = true;                                     // NEW
@@ -963,9 +962,6 @@ Draw.loadPlugin(function (ui) {
             recomputeAndRenderDashboard(dash);
         }, 0);
     });
-
-
-
 
     // -------------------- Context menu: Create Garden Dashboard --------------------
     const oldCreatePopupMenu = ui.menus.createPopupMenu;
