@@ -11,7 +11,7 @@ Several of the plugins depend on local database access, requiring the slightly m
 - Manage tasks with Automated, linked Kanban boards.
 - Build multi-person workflows using role cards and team modules.
 - Automatically track and visualize when diagram elements were created or edited, using time-based coloring, filtering, and navigation to explore change history directly on the canvas.
-- In addition to all the base features included ini Draw.io
+- In addition to all the base features included in Draw.io
 
 **Who This Is For**
 
