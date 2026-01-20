@@ -1,40 +1,47 @@
 Trellis for Drawio extends Draw.io with a coordinated suite of plugins that turn diagrams into interactive, computational garden plans.
 
-Several of the plugins depend on local database access and require this slightly modified version of Drawio. The only changes are a file system bridge for Database access, and new built-in plugins.
+Several of the plugins depend on local database access, requiring the slightly modified version of Draw.io included in this repository . The only changes are a file system bridge for Database access, and new built-in plugins.
 
-The system functions as a garden-planning IDE:
+**Features:**
 
-Create yearly business plans.
-Draw beds, garden zones, and modules.
-Drag crops into place and generate schedules based on climate, GDD, frost windows, and plant traits.
-Plan multi-crop successions and turnovers.
-Manage tasks with Automated, linked Kanban boards.
-Build multi-person workflows using role cards and team modules.
-Automatically track and visualize when diagram elements were created or edited, using time-based coloring, filtering, and navigation to explore change history directly on the canvas.
-In addition to all the base features included ini Draw.io
-Who This Is For
+-Create yearly business plans.
+-Draw beds, garden zones, and modules.
+-Drag crops into place and generate schedules based on climate, GDD, frost windows, and plant traits.
+-Plan multi-crop successions and turnovers.
+-Manage tasks with Automated, linked Kanban boards.
+-Build multi-person workflows using role cards and team modules.
+-Automatically track and visualize when diagram elements were created or edited, using time-based coloring, filtering, and navigation to explore change history directly on the canvas.
+-In addition to all the base features included ini Draw.io
 
-Home gardeners
-Market gardeners
-School garden programs and teachers
-Urban agriculture projects
-Designers seeking visual + computational diagrams
-Anyone who dislikes juggling spreadsheets and calendar apps
-Why Draw.io? -Draw.io offers:
+**Who This Is For**
 
-A fast, responsive graphical canvas
-XML-structured shapes (ideal for embedding data)
-A plugin system with full graph access
-Zero server dependencies
-Offline desktop and online webapp support
-Compatibility with existing Draw.io diagrams
-To run this:
+-Home gardeners
+-Market gardeners
+-School garden programs and teachers
+-Urban agriculture projects
+-Designers seeking visual + computational diagrams
+-Anyone who dislikes juggling spreadsheets and calendar apps
 
-npm install (in the root directory of this repo)
+**Why Draw.io?** 
+
+Draw.io offers:
+
+-A fast, responsive graphical canvas
+-XML-structured shapes (ideal for embedding data)
+-A plugin system with full graph access
+-Zero server dependencies
+-Offline desktop and online webapp support
+-Compatibility with existing Draw.io diagrams
+
+**To run this:**
+
+1. npm install (in the root directory of this repo)
 [internal use only] export DRAWIO_ENV=dev if you want to develop/debug in dev mode.
-npm start in the root directory of this repo runs the app. For debugging, use npm start --enable-logging.
-To Build This: (in the root directory of this repo)
+2. npm start (in the root directory of this repo runs the app. For debugging, use npm start --enable-logging.)
 
+**To Build The Project:** 
+
+In the root directory of this repo:
 "npm run release-win"
 "npm run release-win32"
 "npm run release-win-arm64"
