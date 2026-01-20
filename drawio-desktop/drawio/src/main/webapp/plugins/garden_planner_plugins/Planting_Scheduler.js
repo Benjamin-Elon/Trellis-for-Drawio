@@ -13,7 +13,7 @@
 // ---------------------------------------------------------------------------------------------
 
 (function () {
-    const DB_PATH = "C:/Users/user/Desktop/Gardening/Syntropy(3).sqlite";
+    const DB_PATH = "C:/Users/user/Desktop/Trellis for Drawio/drawio-desktop/Trellis_database.sqlite";
 
     // -------------------- Logging ---------------------------------------------------------
     function log() { try { mxLog.debug.apply(mxLog, ["[USL-Schedule]"].concat([].slice.call(arguments))); } catch (_) {/*noop*/ } }
@@ -67,6 +67,25 @@
             try { await window.dbBridge.close(opened.dbId); } catch (_) { }
         }
     }
+
+    async function execAll(sql, params) {
+        if (!window.dbBridge || typeof window.dbBridge.open !== 'function') {
+            throw new Error('dbBridge not available; check preload/main wiring');
+        }
+        const opened = await window.dbBridge.open(DB_PATH, { readOnly: false });
+        try {
+            if (typeof window.dbBridge.exec === 'function') {
+                await window.dbBridge.exec(opened.dbId, sql, params || []);
+            } else if (typeof window.dbBridge.run === 'function') {
+                await window.dbBridge.run(opened.dbId, sql, params || []);
+            } else {
+                throw new Error('dbBridge.exec/run not available');
+            }
+        } finally {
+            try { await window.dbBridge.close(opened.dbId); } catch (_) { }
+        }
+    }
+
 
     // -------------------- Models ----------------------------------------------------------
     class PlantModel {
@@ -198,6 +217,266 @@
             throw new Error(`Plant "${this.plant_name}": needs gdd_to_maturity or days_maturity.`);
         }
     }
+
+
+    class TaskTemplateModel {
+        static async ensureTables() {                                              // <-- CHANGED
+            const sql1 = `
+                CREATE TABLE IF NOT EXISTS PlantTaskTemplates (
+                  plant_id      INTEGER NOT NULL,                                  -- CHANGED
+                  method        TEXT    NOT NULL,                                  -- CHANGED
+                  template_json TEXT    NOT NULL,                                  -- CHANGED
+                  updated_at    TEXT    NOT NULL,                                  -- CHANGED
+                  PRIMARY KEY (plant_id, method)
+                );`;                                                               // <-- CHANGED
+            const sql2 = `
+                CREATE TABLE IF NOT EXISTS VarietyTaskTemplates (
+                  variety_id    INTEGER NOT NULL,                                  -- CHANGED
+                  method        TEXT    NOT NULL,                                  -- CHANGED
+                  template_json TEXT    NOT NULL,                                  -- CHANGED
+                  updated_at    TEXT    NOT NULL,                                  -- CHANGED
+                  PRIMARY KEY (variety_id, method)
+                );`;                                                               // <-- CHANGED
+            await execAll(sql1, []);                                               // <-- CHANGED
+            await execAll(sql2, []);                                               // <-- CHANGED
+        }
+
+        static _safeParseTemplateRow(row) {                                        // <-- CHANGED
+            if (!row) return null;
+            try {
+                const tpl = JSON.parse(row.template_json);                         // <-- CHANGED
+                return tpl && typeof tpl === 'object' ? tpl : null;
+            } catch (_) {
+                return null;
+            }
+        }
+
+        static async loadPlantTemplate(plantId, method) {                          // <-- CHANGED
+            await this.ensureTables();
+            const sql = `
+                SELECT template_json                                                -- CHANGED
+                FROM PlantTaskTemplates
+                WHERE plant_id = ? AND method = ?
+                LIMIT 1;`;
+            const rows = await queryAll(sql, [Number(plantId), String(method)]);
+            return this._safeParseTemplateRow(rows[0] || null);
+        }
+
+        static async loadVarietyTemplate(varietyId, method) {                      // <-- CHANGED
+            await this.ensureTables();
+            const sql = `
+                SELECT template_json                                                -- CHANGED
+                FROM VarietyTaskTemplates
+                WHERE variety_id = ? AND method = ?
+                LIMIT 1;`;
+            const rows = await queryAll(sql, [Number(varietyId), String(method)]);
+            return this._safeParseTemplateRow(rows[0] || null);
+        }
+
+        static async savePlantTemplate(plantId, method, template) {                // <-- CHANGED
+            await this.ensureTables();
+            const json = JSON.stringify(template ?? {});                           // <-- CHANGED
+            const now = new Date().toISOString();
+            const sql = `
+                INSERT INTO PlantTaskTemplates (plant_id, method, template_json, updated_at)  -- CHANGED
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(plant_id, method) DO UPDATE SET
+                  template_json = excluded.template_json,                           -- CHANGED
+                  updated_at = excluded.updated_at;`;
+            await execAll(sql, [Number(plantId), String(method), json, now]);      // <-- CHANGED
+        }
+
+        static async saveVarietyTemplate(varietyId, method, template) {            // <-- CHANGED
+            await this.ensureTables();
+            const json = JSON.stringify(template ?? {});                           // <-- CHANGED
+            const now = new Date().toISOString();
+            const sql = `
+                INSERT INTO VarietyTaskTemplates (variety_id, method, template_json, updated_at) -- CHANGED
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(variety_id, method) DO UPDATE SET
+                  template_json = excluded.template_json,                          -- CHANGED
+                  updated_at = excluded.updated_at;`;
+            await execAll(sql, [Number(varietyId), String(method), json, now]);    // <-- CHANGED
+        }
+
+        static async resolveFor({ plantId, varietyId, method }) {
+            // 1) variety+method
+            if (varietyId != null) {
+                const v = await this.loadVarietyTemplate(varietyId, method);
+                if (v) return v;
+            }
+            // 2) plant+method
+            if (plantId != null) {
+                const p = await this.loadPlantTemplate(plantId, method);
+                if (p) return p;
+            }
+            // 3) code default
+            return getDefaultTaskTemplateForMethod(method);
+        }
+
+        static async saveForSelection({ plantId, varietyId, method, template }) {
+            // If variety selected -> variety template; else -> plant template
+            if (varietyId != null) {
+                return this.saveVarietyTemplate(varietyId, method, template);
+            }
+            return this.savePlantTemplate(plantId, method, template);
+        }
+    }
+
+
+    // =====================================================================
+    // PlantVarietyModel (JSON overrides)                                    
+    // =====================================================================
+    class PlantVarietyModel {
+        constructor(row) {
+            Object.assign(this, row);
+            this.variety_id = Number(this.variety_id);
+            this.plant_id = Number(this.plant_id);
+        }
+
+        static async ensureTable() {
+            const sql = `
+                    CREATE TABLE IF NOT EXISTS PlantVarieties (
+                        variety_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+                        plant_id       INTEGER NOT NULL,
+                        variety_name   TEXT NOT NULL,
+                        overrides_json TEXT NOT NULL,
+                        created_at     TEXT NOT NULL,
+                        updated_at     TEXT NOT NULL
+                    );`;
+            await execAll(sql, []);
+
+            await execAll(
+                `CREATE INDEX IF NOT EXISTS idx_PlantVarieties_plant_id
+                     ON PlantVarieties (plant_id);`,
+                []
+            );
+
+            await execAll(
+                `CREATE UNIQUE INDEX IF NOT EXISTS idx_PlantVarieties_unique
+                     ON PlantVarieties (plant_id, variety_name);`,
+                []
+            );
+        }
+
+        static _parseOverrides(jsonStr) {
+            if (jsonStr == null || jsonStr === '') return {};
+            try {
+                const o = JSON.parse(jsonStr);
+                return (o && typeof o === 'object' && !Array.isArray(o)) ? o : {};
+            } catch (e) {
+                console.warn('Bad overrides_json in PlantVarieties', e);
+                return {};
+            }
+        }
+
+        overridesObject() {
+            return PlantVarietyModel._parseOverrides(this.overrides_json);
+        }
+
+        static async listByPlantId(plantId) {
+            await this.ensureTable();
+            const pid = Number(plantId);
+            if (!Number.isFinite(pid)) return [];
+
+            const sql = `
+                    SELECT variety_id, plant_id, variety_name, overrides_json, created_at, updated_at
+                    FROM PlantVarieties
+                    WHERE plant_id = ?
+                    ORDER BY variety_name COLLATE NOCASE;`;
+            const rows = await queryAll(sql, [pid]);
+            return rows.map(r => new PlantVarietyModel(r));
+        }
+
+        static async loadById(varietyId) {
+            await this.ensureTable();
+            const vid = Number(varietyId);
+            if (!Number.isFinite(vid)) return null;
+
+            const sql = `
+                    SELECT variety_id, plant_id, variety_name, overrides_json, created_at, updated_at
+                    FROM PlantVarieties
+                    WHERE variety_id = ?
+                    LIMIT 1;`;
+            const rows = await queryAll(sql, [vid]);
+            return rows[0] ? new PlantVarietyModel(rows[0]) : null;
+        }
+
+        static async create({ plantId, varietyName, overrides }) {
+            await this.ensureTable();
+            const pid = Number(plantId);
+            if (!Number.isFinite(pid)) throw new Error('create: invalid plantId');
+
+            const name = String(varietyName ?? '').trim();
+            if (!name) throw new Error('create: varietyName is required');
+
+            const obj = (overrides && typeof overrides === 'object') ? overrides : {};
+            const json = JSON.stringify(obj);
+            const now = new Date().toISOString();
+
+            const sql = `
+                    INSERT INTO PlantVarieties (plant_id, variety_name, overrides_json, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?);`;
+            await execAll(sql, [pid, name, json, now, now]);
+
+            // Return the created row (SQLite last_insert_rowid not exposed here)        
+            const rows = await queryAll(
+                `SELECT variety_id, plant_id, variety_name, overrides_json, created_at, updated_at
+                     FROM PlantVarieties
+                     WHERE plant_id = ? AND variety_name = ?
+                     LIMIT 1;`,
+                [pid, name]
+            );
+            return rows[0] ? new PlantVarietyModel(rows[0]) : null;
+        }
+
+        static async update({ varietyId, varietyName, overrides }) {
+            await this.ensureTable();
+            const vid = Number(varietyId);
+            if (!Number.isFinite(vid)) throw new Error('update: invalid varietyId');
+
+            const name = (varietyName == null) ? null : String(varietyName).trim();
+            const json = (overrides == null) ? null : JSON.stringify(
+                (overrides && typeof overrides === 'object') ? overrides : {}
+            );
+            const now = new Date().toISOString();
+
+            // Build dynamic update: only set provided fields                            
+            const sets = [];
+            const params = [];
+            if (name != null) { sets.push('variety_name = ?'); params.push(name); }
+            if (json != null) { sets.push('overrides_json = ?'); params.push(json); }
+            sets.push('updated_at = ?'); params.push(now);
+            params.push(vid);
+
+            const sql = `
+                    UPDATE PlantVarieties
+                    SET ${sets.join(', ')}
+                    WHERE variety_id = ?;`;
+            await execAll(sql, params);
+
+            return await this.loadById(vid);
+        }
+
+        static async deleteById(varietyId) {
+            await this.ensureTable();
+            const vid = Number(varietyId);
+            if (!Number.isFinite(vid)) return;
+            const sql = `DELETE FROM PlantVarieties WHERE variety_id = ?;`;
+            await execAll(sql, [vid]);
+        }
+    }
+
+    // =====================================================================
+    // helper to apply overrides to a base plant row          
+    // =====================================================================
+    function applyPlantOverrides(basePlantRow, overridesObj) {
+        const out = Object.assign({}, basePlantRow || {});
+        const o = (overridesObj && typeof overridesObj === 'object') ? overridesObj : {};
+        Object.keys(o).forEach(k => { out[k] = o[k]; });
+        return out;
+    }
+
 
     class CityClimate {
         constructor(row) {
@@ -365,8 +644,13 @@
 
 
     class ScheduleInputs {
-        constructor({ plant, city, method, startISO, seasonEndISO, succession, policy, seasonStartYear }) {
-            Object.assign(this, { plant, city, method, startISO, seasonEndISO, succession, policy, seasonStartYear: Number(seasonStartYear) });
+        constructor({ plant, city, method, startISO, seasonEndISO, succession, policy, seasonStartYear, varietyId = null, varietyName = '' }) { // <-- CHANGED
+            Object.assign(this, {
+                plant, city, method, startISO, seasonEndISO, succession, policy,
+                seasonStartYear: Number(seasonStartYear),
+                varietyId: (varietyId != null ? Number(varietyId) : null), // <-- NEW
+                varietyName: String(varietyName || '')                     // <-- NEW
+            }); // <-- CHANGED
             Object.freeze(this);
         }
 
@@ -1402,6 +1686,36 @@
         return el;
     }
 
+    function makeNullableNumber(initial, { min = null, step = null } = {}) {
+        const el = document.createElement('input');
+        el.type = 'number';
+        el.value = (initial == null || initial === '') ? '' : String(initial);
+        if (min != null) el.min = String(min);
+        if (step != null) el.step = String(step);
+        return el;
+    }
+
+    function readNullableNumber(inputEl) {
+        const s = String(inputEl?.value ?? '').trim();
+        if (s === '') return null;
+        const n = Number(s);
+        if (!Number.isFinite(n)) throw new Error('Invalid number');
+        return n;
+    }
+
+    function readIntGE0(inputEl) {
+        const n = Number(String(inputEl?.value ?? '').trim());
+        if (!Number.isFinite(n) || n < 0) throw new Error('Expected integer >= 0');
+        return Math.trunc(n);
+    }
+
+    function readNumGE0(inputEl) {
+        const n = Number(String(inputEl?.value ?? '').trim());
+        if (!Number.isFinite(n) || n < 0) throw new Error('Expected number >= 0');
+        return n;
+    }
+
+
     // -------------------- View helpers (schema → rows, layout) --------------------------  
     function buildFieldRows(schema, rowFactory = row) {
         const fieldRows = {};
@@ -1462,7 +1776,93 @@
         return out;
     }
 
+    function showCommitDialog(ui, {
+        container,
+        width,
+        height,
+        modal = true,
+        closable = true
+    } = {}) {
+        return new Promise((resolve) => {
+            let settled = false;
+            const originalHide = ui.hideDialog.bind(ui);
 
+            function settle(val) {
+                if (settled) return;
+                settled = true;
+                ui.hideDialog = originalHide;
+                resolve(val);
+            }
+
+            ui.hideDialog = function () {
+                // Only treat it as a cancel if THIS dialog is the active one                   
+                const active = ui.dialog && ui.dialog.container;
+                const isThis = active === container || container.contains(active);
+                try {
+                    originalHide();
+                } finally {
+                    if (isThis) settle(null);
+                }
+            };
+
+            // commit channel                                                                    
+            container.__commit = (val) => {
+                settle(val);
+                // Close after settling; hideDialog wrapper is already restored                 
+                try { originalHide(); } catch (_) { }
+            };
+
+            // explicit cancel channel (optional, but clearer at call sites)                      
+            container.__cancel = () => {
+                ui.hideDialog();
+            };
+
+            ui.showDialog(container, width, height, modal, closable);
+        });
+    }
+
+    function askText(ui, { title = 'Enter text', label = 'Value:', initial = '' } = {}) {
+        const wrap = document.createElement('div');
+        wrap.style.padding = '12px';
+        wrap.style.width = '420px';
+
+        const t = document.createElement('div');
+        t.textContent = title;
+        t.style.fontWeight = '600';
+        t.style.marginBottom = '10px';
+        wrap.appendChild(t);
+
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.value = String(initial || '');
+        input.style.width = '100%';
+        input.style.boxSizing = 'border-box';
+        input.style.padding = '8px';
+
+        const r = row(label, input);
+        wrap.appendChild(r.row);
+
+        const btns = document.createElement('div');
+        btns.style.marginTop = '12px';
+        btns.style.display = 'flex';
+        btns.style.justifyContent = 'flex-end';
+        btns.style.gap = '8px';
+
+        const cancelBtn = mxUtils.button('Cancel', () => wrap.__cancel());
+
+        const okBtn = mxUtils.button('OK', () => {
+            const val = String(input.value || '').trim();
+            wrap.__commit(val || null);
+        });
+
+        btns.appendChild(cancelBtn);
+        btns.appendChild(okBtn);
+        wrap.appendChild(btns);
+
+        setTimeout(() => { try { input.focus(); input.select(); } catch (_) { } }, 0);
+
+        return showCommitDialog(ui, { container: wrap, width: 440, height: 180, modal: true, closable: true });
+    }
 
 
     function renderPreviewTable(ui, rows) {
@@ -1532,8 +1932,430 @@
         ui.showDialog(div, 860, 480, true, true);
     }
 
+    async function openPlantEditorDialog(ui, { mode, plantId = null } = {}) {
+        const isEdit = mode === 'edit';
+        const existing = isEdit ? await PlantModel.loadById(Number(plantId)) : null;
+        if (isEdit && !existing) throw new Error('Plant not found');
+
+        const div = document.createElement('div');
+        div.style.padding = '12px';
+        div.style.width = '640px';
+        div.style.maxHeight = '70vh';
+        div.style.overflow = 'auto';
+
+        const title = document.createElement('div');
+        title.textContent = isEdit ? 'Edit plant' : 'Add plant';
+        title.style.fontWeight = '600';
+        title.style.marginBottom = '10px';
+        div.appendChild(title);
+
+        // --- Identity ---
+        const nameInput = document.createElement('input');
+        nameInput.type = 'text';
+        nameInput.value = existing?.plant_name ?? '';
+        nameInput.style.width = '100%';
+        nameInput.style.padding = '6px';
+
+        const abbrInput = document.createElement('input');
+        abbrInput.type = 'text';
+        abbrInput.value = existing?.abbr ?? '';
+        abbrInput.style.width = '100%';
+        abbrInput.style.padding = '6px';
+
+        div.appendChild(row('Plant name:', nameInput).row);
+        div.appendChild(row('Abbreviation (abbr):', abbrInput).row);
+
+        // --- Lifecycle ---
+        const typeSel = makeSelect([
+            { value: 'annual', label: 'Annual' },
+            { value: 'biennial', label: 'Biennial' },
+            { value: 'perennial', label: 'Perennial' }
+        ], (existing?.perennial === 1) ? 'perennial' : (existing?.biennial === 1 ? 'biennial' : 'annual'));
+
+        const lifespanInput = makeNullableNumber(existing?.lifespan_years ?? null, { min: 1, step: 1 });
+        const overwinterChk = makeCheckbox(existing?.overwinter_ok === 1);
+
+        div.appendChild(row('Lifecycle:', typeSel).row);
+        const lifeRow = row('Lifespan (years):', lifespanInput);
+        div.appendChild(lifeRow.row);
+        div.appendChild(row('Overwinter OK:', overwinterChk).row);
+
+        function syncLifecycleEnablement() {
+            const isPer = typeSel.value === 'perennial';
+            lifespanInput.disabled = !isPer;
+            if (!isPer) lifespanInput.value = '';
+        }
+        syncLifecycleEnablement();
+        typeSel.addEventListener('change', syncLifecycleEnablement);
+
+        // --- Methods ---
+        const directSowChk = makeCheckbox((existing?.direct_sow ?? 0) === 1);
+        const transplantChk = makeCheckbox((existing?.transplant ?? 0) === 1);
+        const successionChk = makeCheckbox((existing?.succession ?? 1) === 1);
+
+        div.appendChild(row('Direct sow:', directSowChk).row);
+        div.appendChild(row('Transplant:', transplantChk).row);
+        div.appendChild(row('Allow successions:', successionChk).row);
+
+        // --- Maturity budget ---
+        const hasGdd = Number(existing?.gdd_to_maturity ?? 0) > 0;
+        const budgetModeSel = makeSelect([
+            { value: 'gdd', label: 'GDD to maturity' },
+            { value: 'days', label: 'Days to maturity' }
+        ], hasGdd ? 'gdd' : 'days');
+
+        const gddInput = makeNullableNumber(existing?.gdd_to_maturity ?? null, { min: 0, step: 1 });
+        const daysMatInput = makeNullableNumber(existing?.days_maturity ?? null, { min: 0, step: 1 });
+
+        const gddRow = row('GDD to maturity:', gddInput);
+        const daysRow = row('Days to maturity:', daysMatInput);
+
+        div.appendChild(row('Maturity budget:', budgetModeSel).row);
+        div.appendChild(gddRow.row);
+        div.appendChild(daysRow.row);
+
+        function syncBudgetModeUI() {
+            const mode = budgetModeSel.value;
+            gddRow.row.style.display = (mode === 'gdd') ? '' : 'none';
+            daysRow.row.style.display = (mode === 'days') ? '' : 'none';
+        }
+        syncBudgetModeUI();
+        budgetModeSel.addEventListener('change', syncBudgetModeUI);
+
+        // --- Timing ---
+        const daysGermInput = makeNullableNumber(existing?.days_germ ?? 0, { min: 0, step: 1 });
+        const daysTransInput = makeNullableNumber(existing?.days_transplant ?? 0, { min: 0, step: 1 });
+        div.appendChild(row('Days to germ:', daysGermInput).row);
+        div.appendChild(row('Days to transplant:', daysTransInput).row);
+
+        // --- Yield ---
+        const yieldInput = makeNullableNumber(existing?.yield_per_plant_kg ?? null, { min: 0, step: 0.001 });
+        const hwInput = makeNullableNumber(existing?.harvest_window_days ?? null, { min: 0, step: 1 });
+        div.appendChild(row('Yield per plant (kg):', yieldInput).row);
+        div.appendChild(row('Harvest window (days):', hwInput).row);
+
+        // --- Temperature envelope ---
+        const tbaseInput = makeNullableNumber(existing?.tbase_c ?? null, { step: 0.1 });
+        const tminInput = makeNullableNumber(existing?.tmin_c ?? null, { step: 0.1 });
+        const toptLowInput = makeNullableNumber(existing?.topt_low_c ?? null, { step: 0.1 });
+        const toptHighInput = makeNullableNumber(existing?.topt_high_c ?? null, { step: 0.1 });
+        const tmaxInput = makeNullableNumber(existing?.tmax_c ?? null, { step: 0.1 });
+
+        div.appendChild(row('Tbase (C):', tbaseInput).row);
+        div.appendChild(row('Tmin (C):', tminInput).row);
+        div.appendChild(row('Topt low (C):', toptLowInput).row);
+        div.appendChild(row('Topt high (C):', toptHighInput).row);
+        div.appendChild(row('Tmax (C):', tmaxInput).row);
+
+        // --- Gates ---
+        const soilMinInput = makeNullableNumber(existing?.soil_temp_min_plant_c ?? null, { step: 0.1 });
+        const coolThreshInput = makeNullableNumber(existing?.start_cooling_threshold_c ?? null, { step: 0.1 });
+        div.appendChild(row('Soil temp min plant (C):', soilMinInput).row);
+        div.appendChild(row('Start cooling threshold (C):', coolThreshInput).row);
+
+        // --- Buttons ---
+        const btns = document.createElement('div');
+        btns.style.marginTop = '12px';
+        btns.style.display = 'flex';
+        btns.style.justifyContent = 'flex-end';
+        btns.style.gap = '8px';
+
+        const cancelBtn = mxUtils.button('Cancel', () => div.__cancel());
+
+        const saveBtn = mxUtils.button('Save', async () => {
+            try {
+                const plant_name = String(nameInput.value || '').trim();
+                if (!plant_name) throw new Error('Plant name is required');
+
+                const lifecycle = typeSel.value;
+                const annual = (lifecycle === 'annual') ? 1 : 0;
+                const biennial = (lifecycle === 'biennial') ? 1 : 0;
+                const perennial = (lifecycle === 'perennial') ? 1 : 0;
+
+                const lifespan_years = perennial ? readNullableNumber(lifespanInput) : null;
+                if (perennial && !(Number.isFinite(Number(lifespan_years)) && Number(lifespan_years) >= 1)) {
+                    throw new Error('Perennials require lifespan_years >= 1');
+                }
+
+                const direct_sow = directSowChk.checked ? 1 : 0;
+                const transplant = transplantChk.checked ? 1 : 0;
+                if (!direct_sow && !transplant) throw new Error('Enable direct_sow and/or transplant');
+
+                const succession = successionChk.checked ? 1 : 0;
+                const overwinter_ok = overwinterChk.checked ? 1 : 0;
+
+                const budgetMode = budgetModeSel.value;
+                const gdd_to_maturity = (budgetMode === 'gdd') ? readNullableNumber(gddInput) : null;
+                const days_maturity = (budgetMode === 'days') ? readNullableNumber(daysMatInput) : null;
+
+                if (budgetMode === 'gdd' && !(Number.isFinite(Number(gdd_to_maturity)) && Number(gdd_to_maturity) >= 0)) {
+                    throw new Error('GDD to maturity must be >= 0');
+                }
+                if (budgetMode === 'days' && !(Number.isFinite(Number(days_maturity)) && Number(days_maturity) >= 0)) {
+                    throw new Error('Days to maturity must be >= 0');
+                }
+
+                const patch = {
+                    plant_name,
+                    abbr: String(abbrInput.value || '').trim() || null,
+                    annual, biennial, perennial,
+                    lifespan_years,
+                    overwinter_ok,
+                    direct_sow, transplant, succession,
+                    gdd_to_maturity, days_maturity,
+                    days_germ: readIntGE0(daysGermInput),
+                    days_transplant: readIntGE0(daysTransInput),
+                    yield_per_plant_kg: readNullableNumber(yieldInput),
+                    harvest_window_days: (hwInput.value === '' ? null : readIntGE0(hwInput)),
+                    tbase_c: readNullableNumber(tbaseInput),
+                    tmin_c: readNullableNumber(tminInput),
+                    topt_low_c: readNullableNumber(toptLowInput),
+                    topt_high_c: readNullableNumber(toptHighInput),
+                    tmax_c: readNullableNumber(tmaxInput),
+                    soil_temp_min_plant_c: readNullableNumber(soilMinInput),
+                    start_cooling_threshold_c: readNullableNumber(coolThreshInput)
+                };
+
+                let saved = null;
+                if (isEdit) {
+                    saved = await PlantModel.update(Number(plantId), patch);
+                } else {
+                    saved = await PlantModel.create(patch);
+                }
+
+                div.__commit(saved);
+
+            } catch (e) {
+                mxUtils.alert('Save plant error: ' + (e?.message || String(e)));
+            }
+        });
+
+        btns.appendChild(cancelBtn);
+        btns.appendChild(saveBtn);
+        div.appendChild(btns);
+
+        return await showCommitDialog(ui, { container: div, width: 680, height: 620, modal: true, closable: true });
+    }
+
+
+    async function openVarietyEditorDialog(ui, { mode, plantId = null, varietyId = null } = {}) {
+        const isEdit = mode === 'edit';
+        const existing = isEdit ? await PlantVarietyModel.loadById(Number(varietyId)) : null;
+        if (isEdit && !existing) throw new Error('Variety not found');
+
+        const pid = Number(plantId);
+        if (!Number.isFinite(pid)) throw new Error('plantId is required');
+
+        const basePlant = await PlantModel.loadById(pid);
+        if (!basePlant) throw new Error('Base plant not found');
+        const baseDict = toPlainDict(basePlant);
+
+        // ---- parse initial overrides ----
+        let initialOverrides = {};
+        try {
+            const raw = existing?.overrides_json;
+            if (raw) {
+                const obj = JSON.parse(String(raw));
+                if (obj && typeof obj === 'object' && !Array.isArray(obj)) initialOverrides = obj;
+            }
+        } catch (_) { initialOverrides = {}; }
+
+        const div = document.createElement('div');
+        div.style.padding = '12px';
+        div.style.width = '720px';
+        div.style.maxHeight = '70vh';
+        div.style.overflow = 'auto';
+
+        const title = document.createElement('div');
+        title.textContent = isEdit ? 'Edit variety' : 'Add variety';
+        title.style.fontWeight = '600';
+        title.style.marginBottom = '10px';
+        div.appendChild(title);
+
+        // --- Variety name ---
+        const nameInput = document.createElement('input');
+        nameInput.type = 'text';
+        nameInput.value = String(existing?.variety_name ?? '');
+        nameInput.style.width = '100%';
+        nameInput.style.padding = '6px';
+        div.appendChild(row('Variety name:', nameInput).row);
+
+        // --- helpers ---
+        function fmtBaseVal(key) {
+            const v = baseDict[key];
+            if (v == null || v === '') return '(null)';
+            return String(v);
+        }
+
+        function makeOverrideRow(def) {
+            const wrap = document.createElement('div');
+            wrap.style.display = 'flex';
+            wrap.style.gap = '8px';
+            wrap.style.alignItems = 'center';
+
+            const chk = makeCheckbox(Object.prototype.hasOwnProperty.call(initialOverrides, def.key));
+
+            let input = null;
+            if (def.type === 'int_ge0') input = makeNullableNumber(initialOverrides[def.key] ?? null, { min: 0, step: 1 });
+            else if (def.type === 'num_ge0') input = makeNullableNumber(initialOverrides[def.key] ?? null, { min: 0, step: def.step ?? 0.1 });
+            else if (def.type === 'nullable_num') input = makeNullableNumber(
+                Object.prototype.hasOwnProperty.call(initialOverrides, def.key) ? initialOverrides[def.key] : null,
+                { step: def.step ?? 0.1 }
+            );
+            else if (def.type === 'bool01') {
+                input = makeCheckbox(Number(initialOverrides[def.key] ?? 0) === 1);
+            }
+
+            input.style.flex = '1';
+            input.disabled = !chk.checked;
+
+            const baseSpan = document.createElement('div');
+            baseSpan.textContent = 'Base: ' + fmtBaseVal(def.key);
+            baseSpan.style.fontSize = '12px';
+            baseSpan.style.opacity = '0.8';
+            baseSpan.style.minWidth = '170px';
+
+            chk.addEventListener('change', () => {
+                input.disabled = !chk.checked;
+                if (!chk.checked) {
+                    // reset UI to initial override value or blank
+                    if (def.type === 'bool01') input.checked = false;
+                    else input.value = '';
+                }
+            });
+
+            wrap.appendChild(chk);
+            wrap.appendChild(input);
+            wrap.appendChild(baseSpan);
+
+            return { chk, input, wrap };
+        }
+
+        function readOverrideValue(def, inputEl) {
+            if (def.type === 'bool01') return inputEl.checked ? 1 : 0;
+            if (def.type === 'int_ge0') return readIntGE0(inputEl);
+            if (def.type === 'num_ge0') return readNumGE0(inputEl);
+            if (def.type === 'nullable_num') return readNullableNumber(inputEl);
+            return null;
+        }
+
+        // --- schema ---
+        const OVERRIDE_SCHEMA = [
+            { section: 'Timing & yield', key: 'days_maturity', label: 'Days to maturity', type: 'int_ge0' },
+            { section: 'Timing & yield', key: 'gdd_to_maturity', label: 'GDD to maturity', type: 'num_ge0', step: 1 },
+            { section: 'Timing & yield', key: 'days_germ', label: 'Days to germ', type: 'int_ge0' },
+            { section: 'Timing & yield', key: 'days_transplant', label: 'Days to transplant', type: 'int_ge0' },
+            { section: 'Timing & yield', key: 'yield_per_plant_kg', label: 'Yield per plant (kg)', type: 'num_ge0', step: 0.001 },
+            { section: 'Timing & yield', key: 'harvest_window_days', label: 'Harvest window (days)', type: 'int_ge0' },
+
+            { section: 'Gates', key: 'soil_temp_min_plant_c', label: 'Soil temp min plant (C)', type: 'nullable_num', step: 0.1 },
+            { section: 'Gates', key: 'start_cooling_threshold_c', label: 'Start cooling threshold (C)', type: 'nullable_num', step: 0.1 },
+            { section: 'Gates', key: 'overwinter_ok', label: 'Overwinter OK', type: 'bool01' },
+
+            { section: 'Temperature envelope (advanced)', key: 'tbase_c', label: 'Tbase (C)', type: 'nullable_num', step: 0.1 },
+            { section: 'Temperature envelope (advanced)', key: 'tmin_c', label: 'Tmin (C)', type: 'nullable_num', step: 0.1 },
+            { section: 'Temperature envelope (advanced)', key: 'topt_low_c', label: 'Topt low (C)', type: 'nullable_num', step: 0.1 },
+            { section: 'Temperature envelope (advanced)', key: 'topt_high_c', label: 'Topt high (C)', type: 'nullable_num', step: 0.1 },
+            { section: 'Temperature envelope (advanced)', key: 'tmax_c', label: 'Tmax (C)', type: 'nullable_num', step: 0.1 }
+        ];
+
+        // --- render overrides grouped by section ---
+        const overridesTitle = document.createElement('div');
+        overridesTitle.textContent = 'Overrides';
+        overridesTitle.style.marginTop = '12px';
+        overridesTitle.style.fontWeight = '600';
+        div.appendChild(overridesTitle);
+
+        const rowsByKey = {};
+        let lastSection = null;
+        OVERRIDE_SCHEMA.forEach(def => {
+            if (def.section !== lastSection) {
+                lastSection = def.section;
+                const h = document.createElement('div');
+                h.textContent = def.section;
+                h.style.marginTop = '10px';
+                h.style.fontWeight = '600';
+                h.style.opacity = '0.9';
+                div.appendChild(h);
+            }
+
+            const { chk, input, wrap } = makeOverrideRow(def);
+            rowsByKey[def.key] = { def, chk, input };
+
+            const r = row(def.label + ':', wrap);
+            r.label.style.minWidth = '240px';
+            div.appendChild(r.row);
+        });
+
+        // --- Buttons ---
+        const btns = document.createElement('div');
+        btns.style.marginTop = '12px';
+        btns.style.display = 'flex';
+        btns.style.justifyContent = 'flex-end';
+        btns.style.gap = '8px';
+
+        const cancelBtn = mxUtils.button('Cancel', () => div.__cancel());
+
+        const saveBtn = mxUtils.button('Save', async () => {
+            try {
+                const varietyName = String(nameInput.value || '').trim();
+                if (!varietyName) throw new Error('Variety name is required');
+
+                // Build sparse overrides
+                const overrides = {};
+                for (const key of Object.keys(rowsByKey)) {
+                    const { def, chk, input } = rowsByKey[key];
+                    if (!chk.checked) continue;
+                    overrides[key] = readOverrideValue(def, input);
+                }
+
+                // Optional: envelope sanity warning (non-blocking)
+                const tmin = overrides.tmin_c ?? baseDict.tmin_c;
+                const tlow = overrides.topt_low_c ?? baseDict.topt_low_c;
+                const thigh = overrides.topt_high_c ?? baseDict.topt_high_c;
+                const tmax = overrides.tmax_c ?? baseDict.tmax_c;
+                if ([tmin, tlow, thigh, tmax].every(v => v != null && Number.isFinite(Number(v)))) {
+                    if (!(Number(tmin) <= Number(tlow) && Number(tlow) <= Number(thigh) && Number(thigh) <= Number(tmax))) {
+                        // warning only
+                        console.warn('Variety envelope order is unusual', { tmin, tlow, thigh, tmax });
+                    }
+                }
+
+                let saved = null;
+                if (isEdit) {
+                    saved = await PlantVarietyModel.update({
+                        varietyId: Number(varietyId),
+                        varietyName,
+                        overrides
+                    });
+                } else {
+                    saved = await PlantVarietyModel.create({
+                        plantId: pid,
+                        varietyName,
+                        overrides
+                    });
+                }
+
+                div.__commit(saved);
+            } catch (e) {
+                mxUtils.alert('Save variety error: ' + (e?.message || String(e)));
+            }
+        });
+
+        btns.appendChild(cancelBtn);
+        btns.appendChild(saveBtn);
+        div.appendChild(btns);
+
+        setTimeout(() => { try { nameInput.focus(); nameInput.select(); } catch (_) { } }, 0);
+
+        return await showCommitDialog(ui, { container: div, width: 760, height: 640, modal: true, closable: true });
+    }
+
+
+
     // -------------------- Dialog builder ---------------------------------------------------
     async function buildScheduleDialog(ui, cell, plants, cities, onSubmit, options) {
+        let plantsLocal = Array.isArray(plants) ? plants.slice() : [];
         const { selectedPlant: initialPlant, earliestFeasibleSowDate, lastHarvestDate, startNote } = options || {};
 
         // Helper to centralize plant mode (perennial vs annual/biennial)          
@@ -1542,21 +2364,134 @@
             return { perennial };
         }
 
+        async function reloadPlantsList() {
+            const prev = plantSel.value;
+            plantsLocal = await PlantModel.listBasic();
+            const opts = (plantsLocal || []).map(p => ({
+                value: String(p.plant_id),
+                label: p.plant_name + (p.abbr ? ` (${p.abbr})` : '')
+            }));
+            setSelectOptions(plantSel, opts, prev);
+            if (!findPlantById(Number(plantSel.value)) && opts[0]) {
+                plantSel.value = String(opts[0].value);
+            }
+        }
+
+
         const div = document.createElement('div');
         div.style.padding = '12px'; div.style.width = '600px';
 
         const inlineButton = (label, onClick) => { const b = mxUtils.button(label, onClick); b.style.marginLeft = '8px'; return b; };
 
         // Plant selector
-        const plantOpts = (plants || []).map(p => ({ value: String(p.plant_id), label: p.plant_name + (p.abbr ? ` (${p.abbr})` : '') }));
+        const plantOpts = (plantsLocal || []).map(p => ({ value: String(p.plant_id), label: p.plant_name + (p.abbr ? ` (${p.abbr})` : '') }));
         const plantSel = makeSelect(plantOpts, plantOpts[0]?.value);
-        const findPlantById = (id) => (plants || []).find(p => Number(p.plant_id) === Number(id)) || null;
-        const initId = initialPlant ? initialPlant.plant_id : (plantOpts[0] ? Number(plantOpts[0].value) : null);
+
+        const plantControlsWrap = document.createElement('div');
+        plantControlsWrap.style.display = 'flex';
+        plantControlsWrap.style.gap = '8px';
+        plantControlsWrap.style.alignItems = 'center';
+        plantControlsWrap.appendChild(plantSel);
+
+        const addPlantBtn = inlineButton('Add plant', async () => {
+            try {
+                const saved = await openPlantEditorDialog(ui, { mode: 'add' });
+                if (!saved) return;
+                await reloadPlantsList();
+                plantSel.value = String(saved.plant_id);
+                if (!findPlantById(Number(plantSel.value))) {
+                    mxUtils.alert('Saved plant was not found in refreshed list.');
+                    return;
+                }
+                plantSel.dispatchEvent(new Event('change'));
+            } catch (e) {
+                mxUtils.alert('Add plant error: ' + (e?.message || String(e)));
+            }
+        });
+
+        const editPlantBtn = inlineButton('Edit plant', async () => {
+            try {
+                const pid = Number(plantSel.value);
+                if (!Number.isFinite(pid)) return;
+                const saved = await openPlantEditorDialog(ui, { mode: 'edit', plantId: pid });
+                if (!saved) return;
+                await reloadPlantsList();
+                plantSel.value = String(saved.plant_id);
+                if (!findPlantById(Number(plantSel.value))) {
+                    mxUtils.alert('Saved plant was not found in refreshed list.');
+                    return;
+                }
+                plantSel.dispatchEvent(new Event('change'));
+            } catch (e) {
+                mxUtils.alert('Edit plant error: ' + (e?.message || String(e)));
+            }
+        });
+
+        plantControlsWrap.appendChild(addPlantBtn);
+        plantControlsWrap.appendChild(editPlantBtn);
+
+        const plantSelectRow = row('Select plant:', plantControlsWrap);
+        div.appendChild(plantSelectRow.row);
+
+        const findPlantById = (id) => (plantsLocal || []).find(p => Number(p.plant_id) === Number(id)) || null;
+
+        const fallbackId = (plantOpts[0] ? Number(plantOpts[0].value) : null);
+        const initId = Number.isFinite(Number(initialPlant?.plant_id))
+            ? Number(initialPlant.plant_id)
+            : fallbackId;
+
+        if (!Number.isFinite(initId)) {
+            mxUtils.alert('No plants available.');
+            return;
+        }
+
         plantSel.value = String(initId);
-        let selPlant = findPlantById(initId) || initialPlant;
-        if (!selPlant) { mxUtils.alert('No plants available.'); return; }
+        let selPlant = findPlantById(initId);
+        if (!selPlant) selPlant = await PlantModel.loadById(initId);
+        if (!selPlant) { mxUtils.alert('Plant not found.'); return; }
 
         let mode = getModeForPlant(selPlant);
+
+        let effectivePlant = selPlant;
+
+        function setSelectOptions(selectEl, opts, selectedValue) {
+            selectEl.innerHTML = '';
+            (opts || []).forEach(o => {
+                const opt = document.createElement('option');
+                opt.value = String(o.value);
+                opt.textContent = o.label;
+                selectEl.appendChild(opt);
+            });
+            if (selectedValue != null) selectEl.value = String(selectedValue);
+        }
+
+        async function resolveEffectivePlant(plantId, varietyId) {
+            const base = await PlantModel.loadById(Number(plantId));
+            if (!base) return null;
+            if (!varietyId) return base;
+
+            const v = await PlantVarietyModel.loadById(Number(varietyId));
+            if (!v) return base;
+
+            const overrides = (typeof v.overridesObject === 'function')
+                ? v.overridesObject()
+                : {};
+
+            const merged = applyPlantOverrides(toPlainDict(base), overrides);
+            return new PlantModel(merged);
+        }
+
+        async function refreshEffectivePlant() {
+            effectivePlant = await resolveEffectivePlant(
+                formState.plantId,
+                formState.varietyId
+            );
+            if (!effectivePlant) {
+                effectivePlant = selPlant;
+            }
+            mode = getModeForPlant(effectivePlant);
+        }
+
 
         const plantRow = document.createElement('div');
         const plantLbl = document.createElement('span'); plantLbl.textContent = 'Plant:';
@@ -1564,7 +2499,108 @@
         plantNameSpan.textContent = selPlant.plant_name;
         plantRow.appendChild(plantLbl); plantRow.appendChild(document.createTextNode(' ')); plantRow.appendChild(plantNameSpan);
         div.appendChild(plantRow); div.appendChild(document.createElement('br'));
-        const plantSelectRow = row('Select plant:', plantSel); div.appendChild(plantSelectRow.row);
+
+        // Variety selector + Add button                                       
+        const varietySel = document.createElement('select');
+        varietySel.style.width = '100%';
+        varietySel.style.padding = '6px';
+
+        const varietyControlsWrap = document.createElement('div');
+        varietyControlsWrap.style.display = 'flex';
+        varietyControlsWrap.style.gap = '8px';
+        varietyControlsWrap.style.alignItems = 'center';
+        varietyControlsWrap.appendChild(varietySel);
+
+        const addVarietyBtn = inlineButton('Add variety', async () => {
+            try {
+                syncStateFromControls();
+
+                const saved = await openVarietyEditorDialog(ui, { mode: 'add', plantId: formState.plantId });
+                if (!saved) return;
+
+                await reloadVarietyOptionsForPlant(formState.plantId);
+
+                const savedId = Number(saved?.variety_id ?? saved?.varietyId ?? saved?.id);
+                if (Number.isFinite(savedId)) {
+                    varietySel.value = String(savedId);
+                }
+
+                syncStateFromControls();
+                await refreshEffectivePlant();
+                resetMethodOptions(effectivePlant);
+                refreshSuccessionUI();
+                await recomputeAll('varietyChanged');
+                await refreshTaskTemplateFromSelection();
+            } catch (e) {
+                mxUtils.alert('Add variety error: ' + (e?.message || String(e)));
+            }
+        });
+        varietyControlsWrap.appendChild(addVarietyBtn);
+
+        const editVarietyBtn = inlineButton('Edit variety', async () => {
+            try {
+                syncStateFromControls();
+                if (!formState.varietyId) {
+                    setVarietyStatus('Select a variety to edit.');
+                    return;
+                }
+
+                setVarietyStatus('');
+                const saved = await openVarietyEditorDialog(ui, {
+                    mode: 'edit',
+                    plantId: formState.plantId,
+                    varietyId: formState.varietyId
+                });
+                if (!saved) return;
+
+                await reloadVarietyOptionsForPlant(formState.plantId);
+
+                const savedId = Number(saved?.variety_id ?? saved?.varietyId ?? formState.varietyId);
+                varietySel.value = String(savedId);
+
+                syncStateFromControls();
+                await refreshEffectivePlant();
+                resetMethodOptions(effectivePlant);
+                refreshSuccessionUI();
+                await recomputeAll('varietyChanged');
+                await refreshTaskTemplateFromSelection();
+            } catch (e) {
+                setVarietyStatus('Edit variety error: ' + (e?.message || String(e)));
+            }
+        });
+        varietyControlsWrap.appendChild(editVarietyBtn);
+
+        const varietyRow = row('Variety:', varietyControlsWrap);
+        div.appendChild(varietyRow.row);
+
+        const varietyStatus = document.createElement('div');
+        varietyStatus.style.fontSize = '12px';
+        varietyStatus.style.color = '#92400e';
+        varietyStatus.style.marginTop = '4px';
+        varietyStatus.textContent = '';
+        div.appendChild(varietyStatus);
+
+        function setVarietyStatus(msg) {
+            varietyStatus.textContent = msg || '';
+        }
+
+        function syncVarietyButtons() {
+            const hasVariety = !!(varietySel && varietySel.value);
+            editVarietyBtn.disabled = !hasVariety;
+            if (!hasVariety) setVarietyStatus('');
+        }
+
+        let currentVarieties = [];
+        async function reloadVarietyOptionsForPlant(plantId) {
+            currentVarieties = await PlantVarietyModel.listByPlantId(Number(plantId));
+            const opts = [{ value: '', label: '(base plant)' }]
+                .concat(currentVarieties.map(v => ({
+                    value: String(v.variety_id),
+                    label: String(v.variety_name)
+                })));
+            setSelectOptions(varietySel, opts, '');
+        }
+
 
         // City & Method
         const cityOpts = cities.map(c => ({ value: c.city_name, label: c.city_name }));
@@ -1613,11 +2649,11 @@
         startNoteSpan.textContent = startNote || '';
 
         // Succession inputs
-        const allowsSucc = Number(selPlant?.succession ?? 1) === 1;
+        const allowsSucc = Number(effectivePlant?.succession ?? 1) === 1;
         const succCheck = makeCheckbox(allowsSucc, !allowsSucc);
         const maxSuccInput = makeNumber(allowsSucc ? 5 : 1, { min: 1 });
         const overlapInput = makeNumber(2, { min: 0 });
-        const hwDefault = selPlant.defaultHW();               // may be null
+        const hwDefault = effectivePlant.defaultHW();               // may be null
         const hwInput = makeNumber(hwDefault ?? '', { min: 0 });
         const yieldTargetInput = makeNumber(1000, { min: 0 });
         const minYieldMultInput = makeNumber(0.50, { min: 0 }); minYieldMultInput.step = '0.01';
@@ -1627,9 +2663,14 @@
         const seasonYearInput = makeNumber(seasonStartYear0, { min: 1900 });
         seasonYearInput.step = '1';
 
+        let taskTemplate = null;
+        let taskRules = Array.isArray(taskTemplate?.rules) ? [...taskTemplate.rules] : [];
+        const saveDefaultChk = makeCheckbox(false);
+
         // --- Central form state ---------------------------------------------------- 
         const formState = {
             plantId: initId,
+            varietyId: null,
             cityName: citySel.value,
             method: methodSel.value,
             startISO: startInput.value,
@@ -1649,6 +2690,7 @@
 
         function syncStateFromControls() {
             formState.plantId = Number(plantSel.value);
+            formState.varietyId = (varietySel && varietySel.value) ? Number(varietySel.value) : null;
             formState.cityName = citySel.value;
             formState.method = methodSel.value;
             formState.startISO = startInput.value;
@@ -1698,12 +2740,18 @@
         succCheck.checked = allowsSucc && (existingCfg.enabled ?? allowsSucc);
         maxSuccInput.value = String(existingCfg.max ?? (allowsSucc ? 5 : 1));
         overlapInput.value = String(existingCfg.overlapDays ?? 2);
-        hwInput.value = (selPlant.defaultHW() ?? '').toString();
+        hwInput.value = (effectivePlant.defaultHW() ?? '').toString();
         minYieldMultInput.value = String(
             (Number.isFinite(existingCfg.minYieldMultiplier) ? existingCfg.minYieldMultiplier : 0.50)
         );
 
         syncStateFromControls();
+
+        await reloadVarietyOptionsForPlant(formState.plantId);
+        syncVarietyButtons();
+        await refreshEffectivePlant();
+        resetMethodOptions(effectivePlant);
+
 
         // Layout rows
         const useSuccRow = fieldRows.useSuccession;
@@ -1743,7 +2791,7 @@
 
         function applyModeToUI() {
             const perennial = mode.perennial;
-            const canSucc = Number(selPlant?.succession ?? 1) === 1;
+            const canSucc = Number(effectivePlant?.succession ?? 1) === 1;
             const useSucc = canSucc && succCheck.checked && !perennial;
 
             // Labels                                                                   
@@ -1812,21 +2860,21 @@
                 return; // perennial labels are managed by setPerennialMode       
             }
 
-            const canSucc = Number(selPlant?.succession ?? 1) === 1;
+            const canSucc = Number(effectivePlant?.succession ?? 1) === 1;
             const useSucc = canSucc && succCheck.checked;
 
             if (useSucc) {
-                firstSowRowObj.label.textContent = 'First sow date:';             // unchanged
+                firstSowRowObj.label.textContent = 'First sow date:';
                 lastHarvestRowObj.label.textContent = 'Last harvest date:';
             } else {
-                firstSowRowObj.label.textContent = 'Sow date:';                   // unchanged
+                firstSowRowObj.label.textContent = 'Sow date:';
                 lastHarvestRowObj.label.textContent = 'Harvest date:';
             }
         }
 
 
         function refreshSuccessionUI() {
-            const canSucc = Number(selPlant?.succession ?? 1) === 1;
+            const canSucc = Number(effectivePlant?.succession ?? 1) === 1;
             if (!canSucc) {
                 succCheck.checked = false;
                 maxSuccInput.value = '1';
@@ -1845,30 +2893,34 @@
 
                 syncStateFromControls();
 
+                await refreshEffectivePlant();
+                const p = effectivePlant;
+
+
                 const city = await CityClimate.loadByName(formState.cityName);
                 if (!city) return;
 
                 const seasonStartYear = formState.seasonStartYear;
 
-                const env = selPlant.cropTempEnvelope();
+                const env = p.cropTempEnvelope();
                 const dailyRates = city.dailyRates(env.Tbase, seasonStartYear);
                 const monthlyAvgTemp = city.monthlyMeans();
-                const budget = selPlant.firstHarvestBudget();
+                const budget = p.firstHarvestBudget();
 
                 const HW_DAYS = formState.harvestWindowDays;
                 if (!Number.isFinite(HW_DAYS)) return [];
 
-                const overwinterAllowed = selPlant.isPerennial() || Number(selPlant.overwinter_ok ?? 0) === 1;
+                const overwinterAllowed = p.isPerennial() || Number(p.overwinter_ok ?? 0) === 1;
                 const scanStart = asUTCDate(seasonStartYear, 1, 1);
                 const scanEndYear = overwinterAllowed ? (seasonStartYear + 1) : seasonStartYear;
                 const scanEndHard = asUTCDate(scanEndYear, 12, 31);
 
-                const soilGateThresholdC = (Number.isFinite(Number(selPlant.soil_temp_min_plant_c))
-                    ? Number(selPlant.soil_temp_min_plant_c)
+                const soilGateThresholdC = (Number.isFinite(Number(p.soil_temp_min_plant_c))
+                    ? Number(p.soil_temp_min_plant_c)
                     : null);
 
                 const methodVal = formState.method;
-                const daysTransplant = Number.isFinite(Number(selPlant.days_transplant)) ? Number(selPlant.days_transplant) : 0;
+                const daysTransplant = Number.isFinite(Number(p.days_transplant)) ? Number(p.days_transplant) : 0;
 
                 const lsf = pickFrostByRisk(city, 'p50');
 
@@ -1884,12 +2936,12 @@
                     scanEndHard,
                     soilGateThresholdC,
                     soilGateConsecutiveDays: 3,
-                    startCoolingThresholdC: asCoolingThresholdC(selPlant.start_cooling_threshold_c),
+                    startCoolingThresholdC: asCoolingThresholdC(p.start_cooling_threshold_c),
                     useSpringFrostGate: !overwinterAllowed,
                     lastSpringFrostDOY: lsf,
                     daysTransplant,
                     overwinterAllowed,
-                    successionEnabled: formState.useSuccession && Number(selPlant.succession ?? 1) === 1
+                    successionEnabled: formState.useSuccession && Number(p.succession ?? 1) === 1
                 });
 
                 console.log('[recomputeAnchors] result', {
@@ -1913,9 +2965,9 @@
                     formState.startISO = autoStartISO;
                 }
 
-                // NEW: let auto window drive season end when requested                      // CHANGE
-                if (forceWriteEnd && r.climateEndDate instanceof Date) {                    // CHANGE
-                    formState.seasonEndISO = r.climateEndDate.toISOString().slice(0, 10);   // CHANGE
+                // let auto window drive season end when requested                      
+                if (forceWriteEnd && r.climateEndDate instanceof Date) {
+                    formState.seasonEndISO = r.climateEndDate.toISOString().slice(0, 10);
                 }
 
                 // Push values to the read-only controls                              
@@ -1993,7 +3045,7 @@
             if (isPerennial) {
                 const endISO = computePerennialEndISO(
                     startInput.value,
-                    selPlant.lifespan_years
+                    effectivePlant.lifespan_years
                 );
 
                 seasonEndInput.value = endISO;
@@ -2012,6 +3064,14 @@
 
 
             switch (reason) {
+
+                case 'varietyChanged': {
+                    await recomputeAnchors(true, true);
+                    await recomputeLastHarvestFromSchedule();
+                    formState.lastHarvestSource = useSucc ? 'schedule' : 'auto';
+                    break;
+                }
+
                 case 'yearChanged': {
                     // New season → refresh both start and end from feasibility
                     await recomputeAnchors(true, true);
@@ -2086,42 +3146,62 @@
 
             formState.plantId = Number(plantSel.value);
 
-            resetMethodOptions(newPlant);
+            // reset varieties for new base plant                               
+            await reloadVarietyOptionsForPlant(formState.plantId);
+            varietySel.value = '';
+            formState.varietyId = null;
+            await refreshEffectivePlant();
+
+
+            resetMethodOptions(effectivePlant);
             formState.method = methodSel.value;
 
-            hwInput.value = (newPlant.defaultHW() ?? '').toString();
+            hwInput.value = (effectivePlant.defaultHW() ?? '').toString();
             formState.harvestWindowDays = (hwInput.value === '' ? null : Number(hwInput.value));
 
-            const canSucc = Number(newPlant?.succession ?? 1) === 1;
+            const canSucc = Number(effectivePlant?.succession ?? 1) === 1;
             succCheck.disabled = !canSucc; succCheck.checked = canSucc;
             maxSuccInput.value = canSucc ? '5' : '1';
             overlapInput.value = canSucc ? '2' : '0';
 
             syncStateFromControls();
 
-            if (newPlant.isPerennial()) {
-                setPerennialMode(true, newPlant);
+            if (effectivePlant.isPerennial()) {
+                setPerennialMode(true, effectivePlant);
             } else {
-                setPerennialMode(false, newPlant);
+                setPerennialMode(false, effectivePlant);
             }
 
             refreshSuccessionUI();
 
             // Let the orchestrator recompute feasibility + schedule                      
             await recomputeAll('plantChanged');
+            await refreshTaskTemplateFromSelection();
+        });
+
+        varietySel.addEventListener('change', async () => {
+            syncVarietyButtons();
+            syncStateFromControls();
+            await refreshEffectivePlant();
+            resetMethodOptions(effectivePlant);
+            hwInput.value = (effectivePlant.defaultHW() ?? '').toString();
+            refreshSuccessionUI();
+            await recomputeAll('varietyChanged');
+            await refreshTaskTemplateFromSelection();
+
         });
 
 
         startInput.addEventListener('input', () => {
-            firstSowDirty = true;                                                     // (keep)
-            syncStateFromControls();                                                  // (keep)
+            firstSowDirty = true;
+            syncStateFromControls();
             if (mode.perennial) {
-                seasonEndInput.value = computePerennialEndISO(                        // (keep)
-                    startInput.value,                                                 // (keep)
-                    selPlant.lifespan_years                                           // (keep)
+                seasonEndInput.value = computePerennialEndISO(
+                    startInput.value,
+                    effectivePlant.lifespan_years
                 );
-                formState.seasonEndISO = seasonEndInput.value;                        // (keep)
-                updateStartNote();                                                    // (keep)
+                formState.seasonEndISO = seasonEndInput.value;
+                updateStartNote();
             } else {
                 recomputeAll('startChanged');
             }
@@ -2140,10 +3220,14 @@
         });
 
         citySel.addEventListener('change', () => {
-            recomputeAll('cityChanged');
+            (async () => {
+                await recomputeAll('cityChanged');
+            })();
         });
-        methodSel.addEventListener('change', () => {
-            recomputeAll('methodChanged')
+        methodSel.addEventListener('change', async () => {
+            await recomputeAll('methodChanged');
+            syncStateFromControls();
+            await refreshTaskTemplateFromSelection();
         });
         succCheck.addEventListener('change', () => {
             refreshSuccessionUI();
@@ -2177,7 +3261,7 @@
             const { enforcePlantSuccessionPolicy = false } = options;
 
             // Prefer current selected plant instance if provided                              
-            const plant = selPlant || await PlantModel.loadById(formState.plantId);
+            const plant = await resolveEffectivePlant(formState.plantId, formState.varietyId);
             if (!plant) throw new Error('Plant not found for schedule.');
 
             const city = await CityClimate.loadByName(formState.cityName);
@@ -2206,6 +3290,12 @@
 
             const policy = PolicyFlags.fromPlant(plant, method);
 
+            // --- NEW: define varietyId/varietyName in this scope ---
+            const varietyId = (formState.varietyId != null) ? Number(formState.varietyId) : null;          // NEW
+            const varietyName = varietyId
+                ? String((currentVarieties || []).find(v => Number(v.variety_id) === varietyId)?.variety_name || '')
+                : '';                                                                                      // NEW
+
             const inputs = new ScheduleInputs({
                 plant,
                 city,
@@ -2214,8 +3304,11 @@
                 seasonEndISO: formState.seasonEndISO,
                 succession,
                 policy,
-                seasonStartYear: formState.seasonStartYear
+                seasonStartYear: formState.seasonStartYear,
+                varietyId,                    // now defined
+                varietyName                   // now defined
             });
+
 
             return { plant, city, method, succession, policy, inputs };
         }
@@ -2346,6 +3439,26 @@
                     { enforcePlantSuccessionPolicy: true }
                 );
 
+                // Build taskTemplate object from current rules
+                taskTemplate = {
+                    version: 1,
+                    rules: taskRules
+                };
+
+                // Save per-plan template onto cell
+                saveTaskTemplateToCell(cell, taskTemplate);
+
+                // Save template if requested
+                if (saveDefaultChk.checked) {
+                    await TaskTemplateModel.saveForSelection({
+                        plantId: formState.plantId,
+                        varietyId: formState.varietyId,
+                        method: formState.method,
+                        template: taskTemplate
+                    });
+                }
+
+
                 await applyScheduleToGraph(ui, cell, inputs, formState.yieldTargetKg);
                 ui.hideDialog();
             } catch (e) {
@@ -2358,9 +3471,258 @@
         btns.appendChild(rightBtns); div.appendChild(btns);
 
         refreshSuccessionUI();
-        recomputeAll('cityChanged');        // or 'yearChanged' or 'methodChanged'       
+        await recomputeAll('cityChanged');        // or 'yearChanged' or 'methodChanged'       
 
-        ui.showDialog(div, 600, 540, true, true);
+        // ============================================================================
+        // TASK TAB UI ADDITION
+        // ============================================================================
+
+        // 1. Load existing OR resolve from DB fallback chain                                
+
+        const rawTpl = cell?.getAttribute?.('task_template_json');
+        if (rawTpl) {
+            try { taskTemplate = JSON.parse(rawTpl); } catch (_) { taskTemplate = null; }
+        }
+
+        if (!taskTemplate) {
+            taskTemplate = await TaskTemplateModel.resolveFor({
+                plantId: formState.plantId,
+                varietyId: formState.varietyId,
+                method: formState.method
+            });
+        }
+
+        taskRules = Array.isArray(taskTemplate?.rules) ? [...taskTemplate.rules] : [];
+
+        // 2. Build the Tasks tab body
+        const tasksTab = document.createElement("div");
+        tasksTab.style.padding = "12px";
+
+        // List container
+        const tasksListDiv = document.createElement("div");
+
+        // Render list
+        function renderTasksList() {
+            tasksListDiv.innerHTML = "";
+            if (!taskRules.length) {
+                const empty = document.createElement("div");
+                empty.textContent = "No tasks defined.";
+                tasksListDiv.appendChild(empty);
+                return;
+            }
+
+            taskRules.forEach((rule, idx) => {
+                const wrap = document.createElement("div");
+                wrap.style.border = "1px solid #ddd";
+                wrap.style.margin = "6px 0";
+                wrap.style.padding = "6px";
+                wrap.style.display = "flex";
+                wrap.style.justifyContent = "space-between";
+
+                const summary = document.createElement("div");
+                summary.textContent =
+                    `${rule.title} • ${rule.durationDays} day(s) • ${rule.offsetDays} ` +
+                    `day(s) ${rule.offsetDirection} ${humanStageLabel(rule.anchorStage)}`;
+
+                const btnWrap = document.createElement("div");
+                btnWrap.style.display = "flex";
+                btnWrap.style.gap = "6px";
+
+                const editBtn = mxUtils.button("Edit", () => openTaskEditor(rule, idx));
+                const delBtn = mxUtils.button("Delete", () => {
+                    taskRules.splice(idx, 1);
+                    renderTasksList();
+                });
+
+                btnWrap.appendChild(editBtn);
+                btnWrap.appendChild(delBtn);
+
+                wrap.appendChild(summary);
+                wrap.appendChild(btnWrap);
+                tasksListDiv.appendChild(wrap);
+            });
+        }
+
+        tasksTab.appendChild(tasksListDiv);
+
+        // 3. Task editor (inline)
+        const taskEditorDiv = document.createElement("div");
+        tasksTab.appendChild(taskEditorDiv);
+
+        async function refreshTaskTemplateFromSelection() {
+            // Do not overwrite if the cell already has a per-plan template                  (optional policy)
+            const hasCellTpl = !!cell?.getAttribute?.('task_template_json');
+            if (hasCellTpl) return;
+
+            const resolved = await TaskTemplateModel.resolveFor({
+                plantId: formState.plantId,
+                varietyId: formState.varietyId,
+                method: formState.method
+            });
+
+            taskTemplate = resolved;
+            taskRules = Array.isArray(taskTemplate?.rules) ? [...taskTemplate.rules] : [];
+            taskEditorDiv.innerHTML = '';
+            renderTasksList();
+        }
+
+        function openTaskEditor(rule, index) {
+            taskEditorDiv.innerHTML = "";
+
+            const editing = !!rule;
+            const r = rule
+                ? JSON.parse(JSON.stringify(rule))
+                : {
+                    id: "rule_" + Date.now(),
+                    title: "",
+                    anchorStage: "SOW",
+                    offsetDays: 0,
+                    offsetDirection: "after",
+                    durationDays: 1,
+                    repeat: false,
+                    repeatEveryDays: 1,
+                    repeatUntilMode: "x_times",
+                    repeatUntilValue: 1
+                };
+
+            // Build form fields
+            const titleInput = document.createElement("input");
+            titleInput.type = "text";
+            titleInput.value = r.title;
+            const titleRow = row("Title", titleInput).row;
+
+            const offsetNum = makeNumber(r.offsetDays);
+            const offsetDir = makeSelect([
+                { value: "before", label: "before" },
+                { value: "after", label: "after" }
+            ], r.offsetDirection);
+            const anchorSel = makeSelect(
+                Object.keys(TASK_STAGE_LABELS).map(k => ({
+                    value: k,
+                    label: TASK_STAGE_LABELS[k]
+                })),
+                r.anchorStage
+            );
+            const offsetWrap = document.createElement("div");
+            offsetWrap.style.display = "flex";
+            offsetWrap.style.gap = "8px";
+            offsetWrap.appendChild(offsetNum);
+            offsetWrap.appendChild(offsetDir);
+            offsetWrap.appendChild(anchorSel);
+            const offsetRow = row("Start", offsetWrap).row;
+
+            const durationNum = makeNumber(r.durationDays);
+            const durationRow = row("Duration (days)", durationNum).row;
+
+            const repeatChk = makeCheckbox(r.repeat);
+            const repeatEveryNum = makeNumber(r.repeatEveryDays);
+            const repeatTimesNum = makeNumber(r.repeatUntilValue);
+            const repeatRow = row("Repeat", repeatChk).row;
+
+            const repeatConfigDiv = document.createElement("div");
+            repeatConfigDiv.style.marginLeft = "20px";
+            repeatConfigDiv.style.display = r.repeat ? "" : "none";
+
+            const repeatEveryRow = row("Every (days)", repeatEveryNum).row;
+            const repeatTimesRow = row("Times", repeatTimesNum).row;
+
+            repeatConfigDiv.appendChild(repeatEveryRow);
+            repeatConfigDiv.appendChild(repeatTimesRow);
+
+            repeatChk.addEventListener("change", () => {
+                repeatConfigDiv.style.display = repeatChk.checked ? "" : "none";
+            });
+
+            taskEditorDiv.appendChild(titleRow);
+            taskEditorDiv.appendChild(offsetRow);
+            taskEditorDiv.appendChild(durationRow);
+            taskEditorDiv.appendChild(repeatRow);
+            taskEditorDiv.appendChild(repeatConfigDiv);
+
+            const btnWrap = document.createElement("div");
+            btnWrap.style.marginTop = "8px";
+            btnWrap.style.display = "flex";
+            btnWrap.style.gap = "8px";
+
+            const saveBtn = mxUtils.button("Save", () => {
+                r.title = titleInput.value.trim();
+                r.offsetDays = Number(offsetNum.value);
+                r.offsetDirection = offsetDir.value;
+                r.anchorStage = anchorSel.value;
+                r.durationDays = Number(durationNum.value);
+                r.repeat = repeatChk.checked;
+                r.repeatEveryDays = Number(repeatEveryNum.value);
+                r.repeatUntilMode = "x_times";
+                r.repeatUntilValue = Number(repeatTimesNum.value);
+
+                if (editing) taskRules[index] = r;
+                else taskRules.push(r);
+
+                taskEditorDiv.innerHTML = "";
+                renderTasksList();
+            });
+
+            const cancelBtn = mxUtils.button("Cancel", () => {
+                taskEditorDiv.innerHTML = "";
+            });
+
+            btnWrap.appendChild(saveBtn);
+            btnWrap.appendChild(cancelBtn);
+            taskEditorDiv.appendChild(btnWrap);
+        }
+
+        // Add "Add Task" button
+        const addTaskBtn = mxUtils.button("Add Task", () => openTaskEditor(null, null));
+        addTaskBtn.style.marginTop = "12px";
+        tasksTab.appendChild(addTaskBtn);
+
+        // Save default checkbox
+        tasksTab.appendChild(
+            row("Save these tasks as default", saveDefaultChk).row
+        );
+
+
+        // ============================================================================
+        // TABS WRAPPER
+        // ============================================================================
+
+        const tabsContainer = document.createElement("div");
+        tabsContainer.style.display = "flex";
+        tabsContainer.style.flexDirection = "column";
+        tabsContainer.style.height = "100%";
+
+        const tabsHeader = document.createElement("div");
+        tabsHeader.style.display = "flex";
+        tabsHeader.style.gap = "8px";
+        tabsHeader.style.marginBottom = "8px";
+
+        const tabsBody = document.createElement("div");
+        tabsBody.style.flex = "1";
+        tabsBody.style.overflow = "auto";
+
+        function makeTabButton(label, targetEl) {
+            const b = mxUtils.button(label, () => {
+                tabsBody.innerHTML = "";
+                tabsBody.appendChild(targetEl);
+            });
+            b.style.minWidth = "100px";
+            return b;
+        }
+
+        const scheduleTabBtn = makeTabButton("Schedule", div);
+        const tasksTabBtn = makeTabButton("Tasks", tasksTab);
+
+        tabsHeader.appendChild(scheduleTabBtn);
+        tabsHeader.appendChild(tasksTabBtn);
+        tabsBody.appendChild(div);
+
+        tabsContainer.appendChild(tabsHeader);
+        tabsContainer.appendChild(tabsBody);
+
+        // INITIAL RENDER
+        renderTasksList();
+
+        ui.showDialog(tabsContainer, 620, 560, true, true);
 
         // -------------------- Centralized builder for schedule results (pure) ----------- 
         async function computeScheduleResult(inputs, seasonYieldTargetKg) {
@@ -2471,6 +3833,252 @@
 
 
 
+    // ============================================================================
+    // Task Template Model (In-Memory + Cell Persistence)
+    // ============================================================================
+
+    // canonical stage names
+    const TASK_STAGE_LABELS = {
+        SOW: "Sow",
+        GERM: "Germination",
+        TRANSPLANT: "Transplant",
+        HARVEST_START: "Harvest start",
+        HARVEST_END: "Harvest end"
+    };
+
+    function humanStageLabel(stage) {
+        return TASK_STAGE_LABELS[stage] || stage;
+    }
+
+    function prepAnchorFor(method) {
+        return method === "direct_sow" ? "SOW" : "TRANSPLANT";
+    }
+
+    function getDefaultTaskTemplateForMethod(method) {
+        // Base rules common to all methods (harvest + thin)                   
+        const common = [
+            {
+                id: "thin",
+                title: "Thin / check {plant}",
+                anchorStage: "GERM",
+                offsetDays: 7,
+                offsetDirection: "after",
+                durationDays: 7,
+                repeat: false
+            },
+            {
+                id: "harvest",
+                title: "Harvest – {plant}",
+                anchorStage: "HARVEST_START",
+                offsetDays: 0,
+                offsetDirection: "after",
+                durationDays: 0, // HARVEST_START → HARVEST_END
+                repeat: false
+            }
+        ];
+
+        if (method === "direct_sow") {
+            return {
+                version: 1,
+                rules: [
+                    {
+                        id: "prep",
+                        title: "Prep bed for {plant}",
+                        anchorStage: prepAnchorFor(method),
+                        offsetDays: 3,
+                        offsetDirection: "before",
+                        durationDays: 3,
+                        repeat: false
+                    },
+                    {
+                        id: "sow",
+                        title: "Sow {plant}",
+                        anchorStage: "SOW",
+                        offsetDays: 0,
+                        offsetDirection: "after",
+                        durationDays: 7,
+                        repeat: false
+                    },
+                    ...common
+                ]
+            };
+        }
+
+        if (method === "transplant_indoor") {
+            return {
+                version: 1,
+                rules: [
+                    {
+                        id: "prep",
+                        title: "Prep bed for {plant}",
+                        anchorStage: prepAnchorFor(method),
+                        offsetDays: 3,
+                        offsetDirection: "before",
+                        durationDays: 3,
+                        repeat: false
+                    },
+                    {
+                        id: "start",
+                        title: "Start {plant} indoors",
+                        anchorStage: "SOW", // indoor sow date
+                        offsetDays: 0,
+                        offsetDirection: "after",
+                        durationDays: 0,
+                        repeat: false
+                    },
+                    {
+                        id: "harden",
+                        title: "Harden off {plant}",
+                        anchorStage: "TRANSPLANT",
+                        offsetDays: 7,
+                        offsetDirection: "before",
+                        durationDays: 7,
+                        repeat: false
+                    },
+                    {
+                        id: "transplant",
+                        title: "Transplant {plant}",
+                        anchorStage: "TRANSPLANT",
+                        offsetDays: 0,
+                        offsetDirection: "after",
+                        durationDays: 7,
+                        repeat: false
+                    },
+                    ...common
+                ]
+            };
+        }
+
+        if (method === "transplant_outdoor") {
+            // Choose whether we include indoor work; here: minimal field-focused set.
+            return {
+                version: 1,
+                rules: [
+                    {
+                        id: "prep",
+                        title: "Prep bed for {plant}",
+                        anchorStage: prepAnchorFor(method),
+                        offsetDays: 3,
+                        offsetDirection: "before",
+                        durationDays: 3,
+                        repeat: false
+                    },
+                    {
+                        id: "harden",
+                        title: "Harden off {plant}",
+                        anchorStage: "TRANSPLANT",
+                        offsetDays: 7,
+                        offsetDirection: "before",
+                        durationDays: 7,
+                        repeat: false
+                    },
+                    {
+                        id: "transplant",
+                        title: "Transplant {plant}",
+                        anchorStage: "TRANSPLANT",
+                        offsetDays: 0,
+                        offsetDirection: "after",
+                        durationDays: 7,
+                        repeat: false
+                    },
+                    ...common
+                ]
+            };
+        }
+
+        // Fallback: original generic template (for unknown methods)            
+        return {
+            version: 1,
+            rules: [
+                {
+                    id: "prep",
+                    title: "Prep bed for {plant}",
+                    anchorStage: prepAnchorFor(method),
+                    offsetDays: 3,
+                    offsetDirection: "before",
+                    durationDays: 3,
+                    repeat: false
+                },
+                {
+                    id: "sow",
+                    title: "Sow {plant}",
+                    anchorStage: "SOW",
+                    offsetDays: 0,
+                    offsetDirection: "after",
+                    durationDays: 7,
+                    repeat: false
+                },
+                {
+                    id: "thin",
+                    title: "Thin / check {plant}",
+                    anchorStage: "GERM",
+                    offsetDays: 7,
+                    offsetDirection: "after",
+                    durationDays: 7,
+                    repeat: false
+                },
+                {
+                    id: "start",
+                    title: "Start {plant} indoors",
+                    anchorStage: "SOW",
+                    offsetDays: 0,
+                    offsetDirection: "after",
+                    durationDays: 0,
+                    repeat: false
+                },
+                {
+                    id: "harden",
+                    title: "Harden off {plant}",
+                    anchorStage: "TRANSPLANT",
+                    offsetDays: 7,
+                    offsetDirection: "before",
+                    durationDays: 7,
+                    repeat: false
+                },
+                {
+                    id: "transplant",
+                    title: "Transplant {plant}",
+                    anchorStage: "TRANSPLANT",
+                    offsetDays: 0,
+                    offsetDirection: "after",
+                    durationDays: 7,
+                    repeat: false
+                },
+                {
+                    id: "harvest",
+                    title: "Harvest – {plant}",
+                    anchorStage: "HARVEST_START",
+                    offsetDays: 0,
+                    offsetDirection: "after",
+                    durationDays: 0,
+                    repeat: false
+                }
+            ]
+        };
+    }
+
+
+    // Load template from cell or fallback
+    function loadTaskTemplateFromCell(cell, method) {
+        const raw = cell.getAttribute && cell.getAttribute("task_template_json");
+        if (raw) {
+            try {
+                return JSON.parse(raw);
+            } catch (_) {
+                console.warn("Invalid task_template_json");
+            }
+        }
+        return getDefaultTaskTemplateForMethod(method);
+    }
+
+    // Save template to cell
+    function saveTaskTemplateToCell(cell, template) {
+        const json = JSON.stringify(template);
+        cell.setAttribute("task_template_json", json);
+    }
+
+
+
 
 
 
@@ -2537,7 +4145,9 @@
         plant, city, method, Tbase, gddToMaturity,
         scheduleDates, multipliers, plants,
         timelines, expectedTotalYield, yieldTargetKg,
-        successionConfig
+        successionConfig,
+        varietyId = null,            // <-- NEW
+        varietyName = ''             // <-- NEW
     }) {
         const fmt = (d) => (d ? d.toISOString().slice(0, 10) : null);
 
@@ -2553,6 +4163,8 @@
         setAttr(cell, 'plant_name', plant.plant_name);
         setAttr(cell, 'city_name', city.city_name);
         setAttr(cell, 'method', method);
+        setAttr(cell, 'variety_id', String(varietyId ?? ''));                 // <-- NEW
+        setAttr(cell, 'variety_name', String(varietyName || ''));             // <-- NEW
 
         // Thermal anchors
         setAttr(cell, 'tbase_c', String(Tbase));
@@ -2611,7 +4223,6 @@
         if (!Number.isFinite(HW_DAYS))
             throw new Error('Harvest window is required for scheduling.');
 
-
         const schedule = buildSuccessionSchedule(inputs);
         if (!schedule.length) throw new Error('No feasible planting dates in the chosen season.');
 
@@ -2653,134 +4264,129 @@
         });
 
         // Build tasks from schedule/timelines without emitting events                     
-        function buildTasksForPlan({ method, plant, schedule, timelines, successionOffset = 0, totalSuccessions = null }) {
+        function buildTasksForPlan({
+            method,
+            plant,
+            schedule,
+            timelines,
+            successionOffset = 0,
+            totalSuccessions = null,
+            taskTemplate
+        }) {
             const tasks = [];
             const plantName = plant.plant_name || plant.abbr || 'Plant';
 
-            // If caller explicitly passes totalSuccessions, use it; otherwise fall back to
-            // "schedule length + offset" as an approximation.                                    
+            const rules = (taskTemplate && Array.isArray(taskTemplate.rules))
+                ? taskTemplate.rules
+                : getDefaultTaskTemplateForMethod(method).rules;
+
             const total = (Number.isFinite(totalSuccessions)
                 ? totalSuccessions
                 : (schedule.length + successionOffset));
 
             const showSuccLabel = total > 1;
 
+            function substituteTitle(template, { plantName, succIdx }) {
+                let t = template || '';
+                t = t.replace(/\{plant\}/g, plantName);
+                t = t.replace(/\{succ\}/g, String(succIdx));
+                return t;
+            }
+
+            function anchorDatesForTimeline(tl, sowDate) {
+                return {
+                    SOW: iso(sowDate),
+                    GERM: iso(tl.germ),
+                    TRANSPLANT: iso(tl.transplant),
+                    HARVEST_START: iso(tl.harvestStart),
+                    HARVEST_END: iso(tl.harvestEnd)
+                };
+            }
+
             for (let i = 0; i < schedule.length; i++) {
                 const tl = timelines[i];
+                const sowDate = schedule[i];
+                const anchors = anchorDatesForTimeline(tl, sowDate);
+
                 const succIdx = successionOffset + i + 1;
                 const succSuffix = showSuccLabel ? ` (S${succIdx})` : '';
 
-                const push = (title, startISO, endISO, extra = {}) => {
-                    if (!startISO && !endISO) return;
-                    const s = startISO || endISO;
-                    const e = endISO || startISO;
-                    const tasktitle = extra.titleOverride || kind;
-                    tasks.push({
-                        title: tasktitle,
-                        startISO: s,
-                        endISO: e,
-                        notes: extra.notes || undefined,
-                        plant_name: plant.plant_name,
+                for (const rule of rules) {
+                    const stage = rule.anchorStage || 'SOW';
+                    let anchorISO = anchors[stage];
+
+                    // Optional fallback for missing GERM: use SOW
+                    if (!anchorISO && stage === 'GERM') {
+                        anchorISO = anchors.SOW || null;
+                    }
+
+                    if (!anchorISO) continue; // cannot schedule this rule for this succession
+
+                    const offsetDays = Number(rule.offsetDays || 0);
+                    const dir = rule.offsetDirection === 'before' ? -1 : 1;
+
+                    const baseISO = shiftDays(anchorISO, dir * offsetDays);
+
+                    // Determine endISO based on duration and/or HARVEST_END special case
+                    let startISO = baseISO;
+                    let endISO = baseISO;
+
+                    const dur = Number(rule.durationDays || 0);
+
+                    if (dur > 0) {
+                        endISO = shiftDays(baseISO, dur);
+                    } else {
+                        // Special-case: harvest rule spans HARVEST_START → HARVEST_END if available
+                        if (stage === 'HARVEST_START' && anchors.HARVEST_END) {
+                            startISO = baseISO;
+                            endISO = anchors.HARVEST_END;
+                        }
+                    }
+
+                    // Handle repeat
+                    const repeat = !!rule.repeat;
+                    const every = Number(rule.repeatEveryDays || 0);
+                    const untilMode = rule.repeatUntilMode || 'x_times';
+                    const untilVal = Number(rule.repeatUntilValue || 0);
+
+                    const occurrences = [];
+
+                    if (!repeat || every <= 0 || untilVal <= 0) {
+                        occurrences.push({ startISO, endISO });
+                    } else if (untilMode === 'x_times') {
+                        let curStart = startISO;
+                        let curEnd = endISO;
+                        for (let k = 0; k < untilVal; k++) {
+                            occurrences.push({ startISO: curStart, endISO: curEnd });
+                            curStart = shiftDays(curStart, every);
+                            curEnd = shiftDays(curEnd, every);
+                        }
+                    } else {
+                        occurrences.push({ startISO, endISO });
+                    }
+
+                    const baseTitle = substituteTitle(rule.title || '', {
+                        plantName,
+                        succIdx
                     });
-                };
 
-                const SOW = iso(tl.sow);
-                const GERM = iso(tl.germ);
-                const TRANS = iso(tl.transplant);
-                const HSTART = iso(tl.harvestStart);
-                const HEND = iso(tl.harvestEnd);
+                    const finalTitle = baseTitle || (`Task for ${plantName}${succSuffix}`);
 
-                // PREP: 3 days prior up to field activity (sow or transplant)           
-                {
-                    const anchor = SOW || TRANS;
-                    if (anchor) {
-                        push(
-                            'PREP',
-                            shiftDays(anchor, -3),
-                            anchor,
-                            {
-                                titleOverride: `Prep bed for ${plantName}${succSuffix}`
-                            }
-                        );
+                    for (const occ of occurrences) {
+                        if (!occ.startISO && !occ.endISO) continue;
+                        const s = occ.startISO || occ.endISO;
+                        const e = occ.endISO || occ.startISO;
+
+                        tasks.push({
+                            title: finalTitle + succSuffix,
+                            startISO: s,
+                            endISO: e,
+                            plant_name: plantName,
+                            rule_id: rule.id || null,
+                            anchorStage: stage,
+                            successionIndex: succIdx
+                        });
                     }
-                }
-
-                // SOW: sow → sow+7                                                      
-                if (SOW) {
-                    push(
-                        'SOW',
-                        SOW,
-                        shiftDays(SOW, 7),
-                        {
-                            titleOverride: `Sow ${plantName}${succSuffix}`
-                        }
-                    );
-                }
-
-                // THIN: germ+7 → germ+14 (fallback to sow+7 → sow+14 if germ missing)   
-                {
-                    const thinStart = GERM ? shiftDays(GERM, 7)
-                        : (SOW ? shiftDays(SOW, 7) : null);
-                    const thinEnd = GERM ? shiftDays(GERM, 14)
-                        : (SOW ? shiftDays(SOW, 14) : null);
-                    if (thinStart || thinEnd) {
-                        push(
-                            'THIN',
-                            thinStart,
-                            thinEnd,
-                            {
-                                titleOverride: `Thin / check ${plantName}${succSuffix}`
-                            }
-                        );
-                    }
-                }
-
-                // START (indoor): sow → transplant                                      
-                if (method === 'transplant_indoor' && SOW) {
-                    push(
-                        'START',
-                        SOW,
-                        TRANS || SOW,
-                        {
-                            titleOverride: `Start ${plantName} indoors${succSuffix}`
-                        }
-                    );
-                }
-
-                // HARDEN: transplant-7 → transplant (only if transplant date exists)    
-                if (method === 'transplant_indoor' && TRANS) {
-                    push(
-                        'HARDEN',
-                        shiftDays(TRANS, -7),
-                        TRANS,
-                        {
-                            titleOverride: `Harden off ${plantName}${succSuffix}`
-                        }
-                    );
-                }
-
-                // TRANSPLANT: transplant → transplant+7                                 
-                if (TRANS) {
-                    push(
-                        'TRANSPLANT',
-                        TRANS,
-                        shiftDays(TRANS, 7),
-                        {
-                            titleOverride: `Transplant ${plantName}${succSuffix}`
-                        }
-                    );
-                }
-
-                // HARVEST: first → last (single window)                                 
-                if (HSTART || HEND) {
-                    push(
-                        'HARVEST',
-                        HSTART || HEND,
-                        HEND || HSTART,
-                        {
-                            titleOverride: `Harvest – ${plantName}${succSuffix}`
-                        }
-                    );
                 }
             }
 
@@ -2789,41 +4395,44 @@
 
 
 
-        function emitTasksForPlan({ method, plant, cell, schedule, timelines, plantsAlloc, successionOffset = 0, totalSuccessions = null }) {
+        function emitTasksForPlan({
+            method,
+            plant,
+            cell,
+            schedule,
+            timelines,
+            plantsAlloc,
+            successionOffset = 0,
+            totalSuccessions = null
+        }) {
+            // load template
+            const taskTemplate = loadTaskTemplateFromCell(cell, method);
+
             const tasks = buildTasksForPlan({
                 method,
                 plant,
                 schedule,
                 timelines,
                 successionOffset,
-                totalSuccessions
+                totalSuccessions,
+                taskTemplate
             });
 
-            const plantName = plant.plant_name || plant.abbr || 'Plant';
-            const targetGroupId = cell.id;
-
-            // Custom event for task manager to listen for                                       
             const detail = {
                 tasks,
-                plantName,
-                targetGroupId
+                plantName: plant.plant_name,
+                targetGroupId: cell.id,
+                successionIndex: successionOffset,
+                totalSuccessions: totalSuccessions
             };
 
             try {
-                const evtName = 'tasksCreated';
-                if (typeof window.CustomEvent === 'function') {
-                    window.dispatchEvent(new CustomEvent(evtName, { detail }));
-                } else {
-                    const ev = document.createEvent('CustomEvent');
-                    ev.initCustomEvent(evtName, false, false, detail);
-                    window.dispatchEvent(ev);
-                }
-            } catch (_) {
-                // swallow; schedule should still succeed even if event dispatch fails           
-            }
+                window.dispatchEvent(new CustomEvent("tasksCreated", { detail }));
+            } catch (_) { }
 
             return tasks;
         }
+
 
         const graph = ui.editor.graph;
         const model = graph.getModel();
@@ -2834,6 +4443,7 @@
 
         let createdTasks = [];
         let created = [];
+
         model.beginUpdate();
         try {
             // Stamp maturity definition by unit
@@ -2854,7 +4464,9 @@
                 timelines: timelinesF,
                 expectedTotalYield,
                 yieldTargetKg: Number(seasonYieldTargetKg ?? 0),
-                successionConfig: succession
+                successionConfig: succession,
+                varietyId: inputs.varietyId,                // <-- NEW
+                varietyName: inputs.varietyName             // <-- NEW
             });
 
             setAttr(cell, 'plant_yield', plant.yieldPerPlant());
@@ -2882,12 +4494,16 @@
             const dy = 0;
             created = [cell];
 
+            const taskTplJson = cell.getAttribute && cell.getAttribute('task_template_json');
+
             for (let i = 1; i < scheduleF.length; i++) {
                 const sib = createSiblingTilerGroup(graph, cell, `${abbr} group`, i * dx, dy);
                 setAttr(sib, 'label', plant.plant_name + ' group');
                 setAttr(sib, 'plant_name', plant.plant_name);
                 setAttr(sib, 'plant_id', String(plant.plant_id));
                 setAttr(sib, 'plant_abbr', abbr);
+                setAttr(sib, 'variety_id', String(inputs.varietyId ?? ''));             // <-- NEW
+                setAttr(sib, 'variety_name', String(inputs.varietyName || ''));         // <-- NEW
                 setAttr(sib, 'plant_yield', plant.yieldPerPlant());
                 setAttr(sib, 'yield_unit', unit);
                 setAttr(sib, 'city_name', city.city_name);
@@ -2898,6 +4514,11 @@
                 // also persist cfg on each sibling
                 const cfgAttrs = succession.toAttrs();
                 Object.keys(cfgAttrs).forEach(k => setAttr(sib, k, cfgAttrs[k]));
+
+                // copy task template to sibling
+                if (taskTplJson) {
+                    setAttr(sib, 'task_template_json', taskTplJson);
+                }
 
                 copySpacingAttrs(cell, sib);
 
@@ -2918,7 +4539,6 @@
 
         } finally {
             model.endUpdate();
-            mxUtils.alert('Schedule set.');
         }
 
         // Build & send tasks now that the graph is committed:
@@ -2956,6 +4576,7 @@
             }
         }
     }
+
 
 
 

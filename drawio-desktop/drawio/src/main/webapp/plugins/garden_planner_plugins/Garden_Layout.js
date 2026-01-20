@@ -6,7 +6,7 @@ Draw.loadPlugin(function (ui) {
     const graph = ui.editor.graph;
 
     // -------------------- Config --------------------
-    const DB_PATH = "C:/Users/user/Desktop/Gardening/Syntropy(3).sqlite";
+    const DB_PATH = "C:/Users/user/Desktop/Trellis for Drawio/drawio-desktop/Trellis_database.sqlite";
     const PX_PER_CM = 5;
     const DRAW_SCALE = 0.18;
     const DEFAULT_ICON_DIAM_RATIO = 0.55;
