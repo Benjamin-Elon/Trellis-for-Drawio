@@ -44,6 +44,8 @@ Draw.loadPlugin(function (ui) {
         "spacing=0;spacingTop=0;spacingLeft=0;spacingRight=0;spacingBottom=0;" +
         "strokeColor=#666666;fillColor=#f7f7f7;fontSize=12;";
 
+    const PLAN_YEAR_EVENT = "usl:planYearRequested"; // NEW
+
     // -------------------- Helpers --------------------
     function getStyleSafe(cell) {
         return cell && typeof cell.getStyle === "function"
@@ -619,6 +621,18 @@ Draw.loadPlugin(function (ui) {
         yearLabel.style.borderRadius = "6px";
         yearLabel.style.background = "#fff";
 
+        const planBtn = document.createElement("button");                 // NEW
+        planBtn.textContent = "Plan";                                     // NEW
+        planBtn.style.height = BTN_SIZE + "px";                           // NEW
+        planBtn.style.border = "1px solid #777";                          // NEW
+        planBtn.style.borderRadius = "6px";                               // NEW
+        planBtn.style.background = "#fff";                                // NEW
+        planBtn.style.cursor = "pointer";                                 // NEW
+        planBtn.style.padding = "0 8px";                                  // NEW
+        planBtn.style.fontFamily = "Arial";                               // NEW
+        planBtn.style.fontSize = "12px";                                  // NEW
+
+
         const exportBtn = document.createElement("button");
         exportBtn.textContent = "Export";
         exportBtn.style.height = BTN_SIZE + "px";
@@ -684,6 +698,26 @@ Draw.loadPlugin(function (ui) {
             recomputeAndRenderDashboard(dashCell);
         });
 
+        planBtn.addEventListener("click", (ev) => {                        // NEW
+            ev.preventDefault();                                           // NEW
+            ev.stopPropagation();                                          // NEW
+
+            const moduleCell = findModuleAncestor(graph, dashCell);        // NEW
+            if (!moduleCell) return;                                       // NEW
+
+            const year = getDashboardYear(dashCell);                       // NEW
+
+            try {                                                          // NEW
+                window.dispatchEvent(new CustomEvent(PLAN_YEAR_EVENT, {     // NEW
+                    detail: {
+                        moduleCellId: moduleCell.getId ? moduleCell.getId() : moduleCell.id,
+                        dashCellId: dashCell.getId ? dashCell.getId() : dashCell.id,
+                        year: year
+                    }
+                }));
+            } catch (_) { }
+        });                                                                // NEW        
+
         exportBtn.addEventListener("click", (ev) => {
             ev.preventDefault();
             ev.stopPropagation();
@@ -709,6 +743,7 @@ Draw.loadPlugin(function (ui) {
         header.appendChild(prev);
         header.appendChild(yearLabel);
         header.appendChild(next);
+        header.appendChild(planBtn);    // NEW
         header.appendChild(exportBtn);
 
         wrap.appendChild(header);
@@ -716,7 +751,7 @@ Draw.loadPlugin(function (ui) {
 
         graph.container.appendChild(wrap);
 
-        const entry = { wrap, header, content, prev, next, exportBtn, yearLabel, syncYearLabel };
+        const entry = { wrap, header, content, prev, next, planBtn, exportBtn, yearLabel, syncYearLabel }; // CHANGE
         overlayByDashId.set(dashId, entry);
 
         function isOverlayControlTarget(el) {
@@ -783,6 +818,12 @@ Draw.loadPlugin(function (ui) {
         entry.exportBtn.style.padding =
             padYPx + "px " + padXPx + "px";
         entry.exportBtn.style.borderRadius = radiusPx + "px";
+
+        entry.planBtn.style.height = btnPx + "px";                         // NEW
+        entry.planBtn.style.fontSize = fontPx + "px";                      // NEW
+        entry.planBtn.style.padding = padYPx + "px " + padXPx + "px";      // NEW
+        entry.planBtn.style.borderRadius = radiusPx + "px";                // NEW
+
     }
 
 

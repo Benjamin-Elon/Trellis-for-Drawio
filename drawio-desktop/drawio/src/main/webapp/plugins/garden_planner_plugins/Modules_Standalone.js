@@ -264,7 +264,7 @@ Draw.loadPlugin(function (ui) {
     }                                                                                    // NEW    
 
 
-    function isRoleCard(cell) {
+        function isRoleCard(cell) {
         const st = getStyle(cell);
         if (!st) return false;
         if (/(^|;)role_card=1(;|$)/.test(st)) return true;             // primary signal
@@ -282,7 +282,7 @@ Draw.loadPlugin(function (ui) {
         const relY = y - moduleGeo.y;
 
         const role = new mxCell("Role", new mxGeometry(relX, relY, w, h),
-            "shape=swimlane;horizontal=1;whiteSpace=wrap;collapsible=1;rounded=1;fillColor=#ffffff;strokeColor=#000000;role_card=1");
+            "shape=swimlane;horizontal=1;whiteSpace=wrap;collapsible=1;rounded=1;fillColor=#fff2cc;strokeColor=#d6b656;role_card=1");
         role.vertex = true;
 
         // Avatar placeholder (80px tall gray rectangle)
@@ -332,7 +332,7 @@ Draw.loadPlugin(function (ui) {
                     try {
                         // Look for an existing image row in the roleCard
                         let children = model.getChildren(roleCard) || [];
-                        let imageRow = children.find(c => (getStyle(c).includes("role_imagerow=1")));
+                        let imageRow = children.find(c => (getStyle(c).includes("role_imagerow=1"))); // (CHANGED)
 
                         // If missing, create one at the top
                         if (!imageRow) {
@@ -410,7 +410,6 @@ Draw.loadPlugin(function (ui) {
         }
         return null;
     };
-
 
     // ------------------------
     // EVENT HOOKS (LIGHTWEIGHT)

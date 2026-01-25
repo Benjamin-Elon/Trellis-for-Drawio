@@ -4758,10 +4758,11 @@
         });
     }
 
+    const USL_DEBUG_HARVEST_WINDOWS = true;
 
 
 
-
+   
 
     // -------------------- Public API --------------------------------------------------------
     window.USL = window.USL || {};
@@ -4773,6 +4774,93 @@
     // -------------------- Plugin entry: add popup menu item --------------------------------
     Draw.loadPlugin(function (ui) {
         const graph = ui.editor.graph;
+
+        // --- Harvest window bridge (installed once) ---
+        if (!window.__uslHarvestWindowsBridgeInstalled) {
+            window.__uslHarvestWindowsBridgeInstalled = true;
+            console.log('[USL][Scheduler] harvest windows bridge installed'); // debug
+
+            window.addEventListener("usl:harvestWindowsNeeded", async (ev) => {
+                const d = ev?.detail;
+                if (!d) return;
+
+                const moduleCellId = String(d.moduleCellId || "").trim();
+                const year = Number(d.year);
+                const crops = Array.isArray(d.crops) ? d.crops : [];
+                if (!moduleCellId || !Number.isFinite(year) || year < 1900 || year > 3000) return;
+                if (!crops.length) return;
+
+                const moduleCell = graph.getModel().getCell(moduleCellId);
+                if (!moduleCell) return;
+
+                const cityName = String(moduleCell.getAttribute?.("city_name") || "").trim();
+                if (!cityName) {
+                    emitHarvestWindowsSuggested(moduleCellId, year, crops.map(c => ({
+                        cropId: c.cropId, harvestStart: null, harvestEnd: null, shelfLifeDays: null,
+                        reason: "Module city_name not set"
+                    })));
+                    return;
+                }
+
+                const results = [];
+                for (const req of crops) {
+                    results.push(await suggestHarvestWindowForCropReq(req, cityName, year));
+                }
+                emitHarvestWindowsSuggested(moduleCellId, year, results);
+            });
+        }
+
+        function emitHarvestWindowsSuggested(moduleCellId, year, results) {
+            if (USL_DEBUG_HARVEST_WINDOWS) {
+                console.groupCollapsed('[USL][Scheduler] emit usl:harvestWindowsSuggested');
+                console.log('moduleCellId:', moduleCellId);
+                console.log('year:', year);
+                console.log('results:', JSON.parse(JSON.stringify(results)));
+                console.groupEnd();
+            }
+    
+            try {
+                window.dispatchEvent(new CustomEvent("usl:harvestWindowsSuggested", {
+                    detail: { moduleCellId, year, results }
+                }));
+            } catch (e) {
+                console.error('[USL][Scheduler] Failed to dispatch usl:harvestWindowsSuggested', e);
+            }
+        }
+        // NEW
+    
+    
+    
+        function isoToYmd(iso) {                                                            // NEW
+            const s = String(iso || "").trim();
+            const m = s.match(/^(\d{4}-\d{2}-\d{2})/);
+            return m ? m[1] : null;
+        }                                                                                   // NEW
+    
+        function firstHarvestStartFromRows(rows) {                                           // NEW
+            if (!Array.isArray(rows) || !rows.length) return null;
+    
+            // Try common field names you likely have in schedule rows
+            const keys = ["harvestStartISO", "harvest_start_iso", "harvest_start", "harvestStart", "harvest_start_date"];
+            for (const k of keys) {
+                const v = rows[0] && rows[0][k];
+                const ymd = isoToYmd(v);
+                if (ymd) return ymd;
+            }
+    
+            // Fallback: scan any row for a harvest-start-like field
+            for (const r of rows) {
+                for (const k of Object.keys(r || {})) {
+                    if (!/harvest/i.test(k) || !/start/i.test(k)) continue;
+                    const ymd = isoToYmd(r[k]);
+                    if (ymd) return ymd;
+                }
+            }
+    
+            return null;
+        }                                                                                   // NEW
+        
+
         if (graph.popupMenuHandler) graph.popupMenuHandler.selectOnPopup = false;
 
         const oldCreateMenu = graph.popupMenuHandler.factoryMethod;
@@ -4892,6 +4980,104 @@
 
             }
         };
+
+
+        window.addEventListener("usl:harvestWindowsNeeded", async (ev) => {                 // NEW
+            const d = ev && ev.detail ? ev.detail : null;
+            if (!d) return;
+
+            const moduleCellId = String(d.moduleCellId || "").trim();
+            const year = Number(d.year);
+            const crops = Array.isArray(d.crops) ? d.crops : [];
+            if (!moduleCellId || !Number.isFinite(year) || year < 1900 || year > 3000) return;
+            if (!crops.length) return;
+
+            const moduleCell = graph.getModel().getCell(moduleCellId);
+            if (!moduleCell) return;
+
+            const cityName = String(moduleCell.getAttribute ? (moduleCell.getAttribute("city_name") || "") : "").trim();
+            if (!cityName) {
+                // respond with reasons (don’t hard-fail silently)
+                emitHarvestWindowsSuggested(moduleCellId, year, crops.map(c => ({
+                    cropId: c.cropId, harvestStart: null, harvestEnd: null, shelfLifeDays: null,
+                    reason: "Module city_name not set"
+                })));
+                return;
+            }
+
+            const results = [];
+            for (const req of crops) {
+                results.push(await suggestHarvestWindowForCropReq(req, cityName, year));
+            }
+
+            emitHarvestWindowsSuggested(moduleCellId, year, results);
+        });
+
+        async function suggestHarvestWindowForCropReq(req, cityName, year) {                 // REPLACE existing
+            const cropId = String(req && req.cropId || "");
+            const plantId = (req && req.plantId != null) ? Number(req.plantId) : NaN;
+            const varietyId = (req && req.varietyId != null && req.varietyId !== "") ? Number(req.varietyId) : null;
+
+            if (!cropId || !Number.isFinite(plantId)) {
+                return { cropId, harvestStart: null, harvestEnd: null, shelfLifeDays: null, reason: "Missing cropId/plantId" };
+            }
+
+            try {
+                // Use core models directly (no dialog/form helpers)
+                const plant = await resolveEffectivePlant(plantId, varietyId);
+                if (!plant) return { cropId, harvestStart: null, harvestEnd: null, shelfLifeDays: null, reason: "Plant not found" };
+
+                const city = await CityClimate.loadByName(cityName);
+                if (!city) return { cropId, harvestStart: null, harvestEnd: null, shelfLifeDays: null, reason: "City not found" };
+
+                const method = String(req.method || "direct_sow");
+
+                // Use plant defaults (harvest window, succession policy, etc.)
+                const succession = new SuccessionConfig({
+                    enabled: Number(plant.succession ?? 1) !== 1 ? false : true,
+                    max: 1,
+                    overlapDays: 0,
+                    harvestWindowDays: Number(plant.harvest_window_days ?? plant.defaultHW?.() ?? 0) || 0,
+                    minYieldMultiplier: 1.0
+                }).withPlantDefaults(plant);
+
+                const inputs = new ScheduleInputs({
+                    plant,
+                    city,
+                    method,
+                    startISO: `${year}-01-01`,
+                    seasonEndISO: `${year}-12-31`,
+                    succession,
+                    policy: PolicyFlags.fromPlant(plant, method),
+                    seasonStartYear: year,
+                    varietyId,
+                    varietyName: "" // optional
+                });
+
+                const yieldTargetKg = Number(req && req.yieldTargetKg) || 0;
+
+                const { rows, lastScheduledHarvestEndISO } = await computeScheduleResult(inputs, yieldTargetKg);
+                if (!rows || !rows.length) {
+                    return { cropId, harvestStart: null, harvestEnd: null, shelfLifeDays: null, reason: "No feasible schedule rows" };
+                }
+
+                const harvestStart = firstHarvestStartFromRows(rows);
+                const harvestEnd =
+                    isoToYmd(lastScheduledHarvestEndISO) ||
+                    isoToYmd(rows[rows.length - 1]?.harvestEndISO) ||
+                    isoToYmd(rows[rows.length - 1]?.harvest_end_iso) ||
+                    null;
+
+                const shelfLifeDays =
+                    (plant && Number.isFinite(Number(plant.shelf_life_days))) ? Number(plant.shelf_life_days) : null;
+
+                return { cropId, harvestStart, harvestEnd, shelfLifeDays };
+            } catch (e) {
+                return { cropId, harvestStart: null, harvestEnd: null, shelfLifeDays: null, reason: String(e?.message || e) };
+            }
+        }
+
+
     });
 
 })();

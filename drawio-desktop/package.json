@@ -20,7 +20,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git@github.com:jgraph/drawio-desktop.git"
+    "url": "git+ssh://git@github.com/jgraph/drawio-desktop.git"
   },
   "keywords": [
     "draw.io",
@@ -35,6 +35,8 @@
   },
   "homepage": "https://github.com/jgraph/drawio",
   "dependencies": {
+    "@babel/parser": "^7.28.6",
+    "@babel/traverse": "^7.28.6",
     "@cantoo/pdf-lib": "^2.5.3",
     "better-sqlite3": "^12.5.0",
     "commander": "^13.1.0",
@@ -54,5 +56,8 @@
     "electron": "^38.7.0",
     "electron-builder": "^26.0.20",
     "sumchecker": "^3.0.1"
+  },
+  "directories": {
+    "doc": "doc"
   }
 }

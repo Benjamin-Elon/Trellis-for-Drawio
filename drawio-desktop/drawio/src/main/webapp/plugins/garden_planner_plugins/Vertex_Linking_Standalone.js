@@ -7,6 +7,7 @@
 Draw.loadPlugin(function (ui) {
     const graph = ui.editor.graph;
     let model = graph.getModel();
+
     const LINK_ATTR = 'linkedTo';
     const HL_TAG_KEY = 'manualLinkHL';
     const HL_OLD_COLOR = 'manualLinkOldColor';
@@ -39,6 +40,26 @@ Draw.loadPlugin(function (ui) {
         model.execute(change);
     }
 
+    function getAttr(cell, key) {
+        const v = cell && cell.value;
+        return (v && v.getAttribute) ? v.getAttribute(key) : null;
+    }
+
+    function isKanbanCard(cell) {
+        return !!cell && getAttr(cell, 'kanban_card') === '1';
+    }
+
+    function findLaneAncestor(cell) {
+        const m = graph.getModel();
+        let cur = cell ? m.getParent(cell) : null;
+        while (cur) {
+            if (getAttr(cur, 'lane_key')) return cur;
+            cur = m.getParent(cur);
+        }
+        return null;
+    }
+
+
     function setStylesUndoable(cells, key, value) {
         if (!cells || !cells.length) return;
         graph.setCellStyles(key, value, cells); // produces mxStyleChange (undoable)
@@ -50,6 +71,56 @@ Draw.loadPlugin(function (ui) {
         const m = s.match(new RegExp('(?:^|;)' + key + '=([^;]*)'));
         return m ? m[1] : null;
     }
+    function isRealColor(c) {
+        if (!c) return false;
+        const v = String(c).trim().toLowerCase();
+        if (v === 'none' || v === 'default') return false;
+        return true;
+    }
+
+    function getLaneColorForCard(card) {
+        if (!isKanbanCard(card)) return null;
+        const lane = findLaneAncestor(card);
+        if (!lane) {
+            console.log('[ManualLinker] getLaneColorForCard: no lane for card',
+                card && card.id);
+            return null;
+        }
+
+        const style = lane.getStyle ? lane.getStyle() : '';
+        const laneFill = getRawStyleValue(lane, 'swimlaneFillColor');
+        const laneFillColor = getRawStyleValue(lane, 'fillColor');
+        const laneStroke = getRawStyleValue(lane, 'strokeColor');
+
+        let picked = null;
+        if (isRealColor(laneFill)) picked = laneFill;
+        else if (isRealColor(laneFillColor)) picked = laneFillColor;
+        else if (isRealColor(laneStroke)) picked = laneStroke;
+
+        console.log('[ManualLinker] getLaneColorForCard', {
+            cardId: card && card.id,
+            laneId: lane && lane.id,
+            laneStyle: style,
+            laneFill,
+            laneFillColor,
+            laneStroke,
+            pickedColor: picked
+        });
+
+        return picked;
+    }
+
+    function getLinkLaneColor(a, b) {
+        const c = getLaneColorForCard(a) || getLaneColorForCard(b) || null;
+        console.log('[ManualLinker] getLinkLaneColor', {
+            aId: a && a.id,
+            bId: b && b.id,
+            color: c
+        });
+        return c;
+    }
+
+
 
     function captureOriginalStrokeIfMissing(cell) {
         const val = ensureValueIsElement(cell);
@@ -158,12 +229,45 @@ Draw.loadPlugin(function (ui) {
 
 
 
-    // Center of a vertex from the current view state
+    // Center of a vertex from the current view state (with Kanban fallback)        
     function getCellCenter(cell) {
-        const st = graph.getView().getState(cell);
-        if (!st) return null;
-        return { x: st.x + st.width / 2, y: st.y + st.height / 2, w: st.width, h: st.height };
+        if (!cell) return null;
+
+        const view = graph.getView();
+        const m = graph.getModel();
+
+        // First try the cell itself                                               
+        let st = view.getState(cell);
+        if (st && m.isVisible(cell)) {
+            return {
+                x: st.x + st.width / 2,
+                y: st.y + st.height / 2,
+                w: st.width,
+                h: st.height
+            };
+        }
+
+        // Fallback: if this is a Kanban task card that is currently hidden,       
+        // anchor overlays to its parent lane instead of dropping the link.        
+        if (isKanbanCard(cell)) {
+            const lane = findLaneAncestor(cell);
+            if (lane) {
+                const laneState = view.getState(lane);
+                if (laneState && m.isVisible(lane)) {
+                    return {
+                        x: laneState.x + laneState.width / 2,
+                        y: laneState.y + laneState.height / 2,
+                        w: laneState.width,
+                        h: laneState.height
+                    };
+                }
+            }
+        }
+
+        // No usable geometry                                                      
+        return null;
     }
+
 
     // Decide which side of `src` is closest to `dst` by comparing deltas
     function sideToward(srcCenter, dstCenter) {
@@ -285,6 +389,210 @@ Draw.loadPlugin(function (ui) {
     }
 
 
+    // ------------------ LANE STATUS EDGE VISIBILITY POLICY ------------------      
+
+    const UPCOMING_LANES = new Set([
+        'UPCOMING_YEAR',
+        'UPCOMING_MONTH',
+        'UPCOMING_WEEK'
+    ]);
+
+    const ACTIVE_LANES = new Set([
+        'TODO_STAGED',
+        'TODO',
+        'DOING'
+    ]);
+
+    const DONE_LANES = new Set([
+        'DONE',
+        'DONE_WEEK',
+        'DONE_MONTH',
+        'DONE_YEAR',
+        'ARCHIVED'
+    ]);
+
+    function mapStatusToKey(raw) {
+        if (!raw) return null;
+        raw = String(raw).trim().toUpperCase();
+
+        if (raw.includes('UPCOMING')) {
+            if (raw.includes('YEAR')) return 'UPCOMING_YEAR';
+            if (raw.includes('MONTH')) return 'UPCOMING_MONTH';
+            return 'UPCOMING_WEEK';
+        }
+
+        if (raw.includes('STAGED')) return 'TODO_STAGED';
+        if (raw === 'TODO') return 'TODO';
+        if (raw === 'DOING') return 'DOING';
+
+        if (raw.includes('DONE')) {
+            if (raw.includes('WEEK')) return 'DONE_WEEK';
+            if (raw.includes('MONTH')) return 'DONE_MONTH';
+            if (raw.includes('YEAR')) return 'DONE_YEAR';
+            return 'DONE';
+        }
+
+        if (raw.includes('ARCHIVED')) return 'ARCHIVED';
+
+        return raw;
+    }
+
+    function parseDateMaybe(d) {
+        if (!d) return null;
+        const t = Date.parse(d);
+        return Number.isFinite(t) ? t : null;
+    }
+
+    function getStartDate(cell) {
+        return parseDateMaybe(getAttr(cell, 'start'));
+    }
+
+    // Primary: read status from lane_key; fallback to card.status if present        
+    function getLaneStatusKeyForTask(card) {
+        if (!card) return null;
+        const lane = findLaneAncestor(card);
+        let laneRaw = lane ? getAttr(lane, 'lane_key') : null;
+    
+        if (laneRaw) {
+            const key = String(laneRaw).trim().toUpperCase();
+            console.log('[LaneStatus] from lane_key', { cardId: card.id, laneId: lane && lane.id, laneRaw, key }); 
+            return key || null;
+        }
+    
+        const statusRaw = getAttr(card, 'status');
+        const mapped = mapStatusToKey(statusRaw);
+        console.log('[LaneStatus] from status', { cardId: card.id, statusRaw, mapped });
+        return mapped;
+    }
+    
+
+    function isTilerGroup(cell) {                                            
+        return !!cell && getAttr(cell, 'tiler_group') === '1';            
+    }
+
+/**                                                                             
+ * Decide whether to show the edge from `source` → `target` using lane          
+ * status and start dates.                                                      
+ */
+function shouldShowEdgeInternal(source, target) {
+
+    const sid = source ? source.id : null;
+    const tid = target ? target.id : null;
+
+    const sourceIsTiler = isTilerGroup(source);
+    const targetIsTask  = isKanbanCard(target);
+    
+    console.log("[EdgePolicy] ENTER", {
+        sourceId: sid,
+        targetId: tid,
+        sourceIsTiler,
+        targetIsTask
+    });
+
+    // For anything other than tiler-group → task-card, always show edge:
+    if (!sourceIsTiler || !targetIsTask) {
+        console.log("[EdgePolicy] NOT tiler→task → SHOW");
+        return true;
+    }
+
+    // Status is defined by the TARGET task (its lane/status), not the tiler.
+    const key = getLaneStatusKeyForTask(target); 
+
+    console.log("[EdgePolicy] laneKey", {
+        taskId: tid,
+        laneKey: key,
+        rawStatus: getAttr(target, 'status'),
+        laneAncestor: (function(){
+            const lane = findLaneAncestor(target);
+            return lane ? { id: lane.id, lane_key: getAttr(lane,'lane_key')} : null;
+        })()
+    });
+
+    if (!key) {
+        console.log("[EdgePolicy] NO LANE KEY → SHOW");
+        return true;
+    }
+
+    // ACTIVE lanes: always show edges to tasks in active lanes
+    if (ACTIVE_LANES.has(key)) {
+        console.log("[EdgePolicy] ACTIVE lane → SHOW");
+        return true;
+    }
+
+    // For non-active lanes (UPCOMING + DONE), compute best card PER LANE KEY.   
+    const model = graph.getModel();                                             
+    const ids = Array.from(getLinkSet(source));                                 
+    const now = Date.now();                                                     
+
+    // UPCOMING: earliest future start date per upcoming lane key                
+    const bestUpcomingByKey = new Map(); // key -> { cell, time }               
+
+    // DONE: most recent start date per done lane key (fallback to first).      
+    const bestDoneByKey = new Map();    // key -> { cell, time }                
+    const firstDoneByKey = new Map();   // key -> cell                          
+
+    for (const id of ids) {                                                    
+        const other = model.getCell(id);                                       
+        if (!other || !model.isVertex(other)) continue;                        
+
+        const otherKey = getLaneStatusKeyForTask(other);                       
+        if (!otherKey) continue;                                               
+
+        const t = getStartDate(other);                                         
+
+        // --- UPCOMING group: per-lane earliest future start date ---          
+        if (UPCOMING_LANES.has(otherKey)) {                                    
+            if (t == null || t < now) continue;                                
+            const current = bestUpcomingByKey.get(otherKey);                   
+            if (!current || t < current.time) {                                
+                bestUpcomingByKey.set(otherKey, { cell: other, time: t });     
+            }
+        }
+        // --- DONE/ARCHIVED group: per-lane most recent start date ---         
+        else if (DONE_LANES.has(otherKey)) {                                   
+            if (!firstDoneByKey.has(otherKey)) {                               
+                firstDoneByKey.set(otherKey, other);                           
+            }
+            const current = bestDoneByKey.get(otherKey);                       
+            if (t != null) {                                                   
+                if (!current || current.time == null || t > current.time) {    
+                    bestDoneByKey.set(otherKey, { cell: other, time: t });     
+                }
+            }
+        }
+    }
+
+    const bestUpcomingEntry = bestUpcomingByKey.get(key) || null;              
+    const bestDoneEntry = bestDoneByKey.get(key) ||                            
+        (firstDoneByKey.has(key) ? { cell: firstDoneByKey.get(key), time: null } : null); 
+
+    console.log("[EdgePolicy] BEST per lane", {                                 
+        laneKey: key,                                                           
+        bestUpcomingId: bestUpcomingEntry ? bestUpcomingEntry.cell.id : null,   
+        bestDoneId: bestDoneEntry ? bestDoneEntry.cell.id : null               
+    });
+
+    // UPCOMING lanes: only show edge to the chosen upcoming card for this lane 
+    if (UPCOMING_LANES.has(key)) {                                             
+        const show = !!bestUpcomingEntry && bestUpcomingEntry.cell === target;  
+        console.log("[EdgePolicy] UPCOMING lane →", show ? "SHOW" : "HIDE");   
+        return show;                                                           
+    }
+
+    // DONE / ARCHIVED lanes: only show edge to the chosen done card for this lane 
+    if (DONE_LANES.has(key)) {                                                 
+        const show = !!bestDoneEntry && bestDoneEntry.cell === target;         
+        console.log("[EdgePolicy] DONE lane →", show ? "SHOW" : "HIDE");       
+        return show;                                                           
+    }
+
+    // Fallback: hide
+    console.log("[EdgePolicy] FALLBACK → HIDE");
+    return false;
+}
+
+
+
     // -------------------- View-only Link Overlay Manager --------------------               (replaces previous block)
     // Pure DOM-based overlays using mxPolyline + mxText; no model changes, no undo impact. 
     const linkOverlays = (function () {
@@ -332,10 +640,10 @@ Draw.loadPlugin(function (ui) {
         }
 
         // Create or update text label near the source side                               
-        function createOrUpdateLabel(entry, pts) {                                         
-            const pane = getOverlayPane();                                                 
-            const label = entry.label || '';                                               
-            if (!pane || !pts || pts.length < 2 || !label.trim()) {                       
+        function createOrUpdateLabel(entry, pts) {
+            const pane = getOverlayPane();
+            const label = entry.label || '';
+            if (!pane || !pts || pts.length < 2 || !label.trim()) {
                 // No label or no geometry → remove any existing label                     
                 if (entry.labelElt && entry.labelElt.node && entry.labelElt.node.parentNode) {
                     entry.labelElt.node.parentNode.removeChild(entry.labelElt.node);
@@ -350,26 +658,26 @@ Draw.loadPlugin(function (ui) {
             const p1 = pts[1];
 
             // Defensive: ensure we have finite coordinates                               
-            if (!isFinite(p0.x) || !isFinite(p0.y) || !isFinite(p1.x) || !isFinite(p1.y)) { 
-                return;                                                                   
+            if (!isFinite(p0.x) || !isFinite(p0.y) || !isFinite(p1.x) || !isFinite(p1.y)) {
+                return;
             }
 
             const r = (typeof LABEL_NEAR_SRC_RATIO === 'number'
                 ? LABEL_NEAR_SRC_RATIO
-                : 0.15);                                                            
-            const lx = p0.x + r * (p1.x - p0.x);                                           
-            const ly = p0.y + r * (p1.y - p0.y);                                           
+                : 0.15);
+            const lx = p0.x + r * (p1.x - p0.x);
+            const ly = p0.y + r * (p1.y - p0.y);
 
-            if (!isFinite(lx) || !isFinite(ly)) {                                          
-                return;                                                                    
+            if (!isFinite(lx) || !isFinite(ly)) {
+                return;
             }
 
             if (entry.labelElt && entry.labelElt.node &&
                 entry.labelElt.node.parentNode === pane) {
                 // Update existing mxText
                 entry.labelElt.value = label;
-                entry.labelElt.bounds.x = lx;                                              
-                entry.labelElt.bounds.y = ly;                                              
+                entry.labelElt.bounds.x = lx;
+                entry.labelElt.bounds.y = ly;
                 entry.labelElt.redraw();
             } else {
                 // Remove old, if any
@@ -402,16 +710,16 @@ Draw.loadPlugin(function (ui) {
                         trgId: entry.trgId
                     };
                     txt.node.style.pointerEvents = 'all';                        // ensure click
-                    mxEvent.addListener(txt.node, 'mousedown', function (evt) { 
-                        const isShift = mxEvent.isShiftDown(evt);                
-                        const isLeft = (evt.button === 0);                       
-                                                                              
-                        if (isShift && isLeft) {                                 
-                            navigateOverlayLink(                                 
-                                txt.node.__manualLinkMeta, evt                   
-                            );                                                   
-                        }                                                        
-                    });                                                          
+                    mxEvent.addListener(txt.node, 'mousedown', function (evt) {
+                        const isShift = mxEvent.isShiftDown(evt);
+                        const isLeft = (evt.button === 0);
+
+                        if (isShift && isLeft) {
+                            navigateOverlayLink(
+                                txt.node.__manualLinkMeta, evt
+                            );
+                        }
+                    });
                 }
 
                 entry.labelElt = txt;
@@ -460,16 +768,16 @@ Draw.loadPlugin(function (ui) {
                         trgId: entry.trgId
                     };
                     poly.node.style.pointerEvents = 'stroke';                     // ensure hit
-                    mxEvent.addListener(poly.node, 'mousedown', function (evt) { 
-                        const isShift = mxEvent.isShiftDown(evt);                
-                        const isLeft = (evt.button === 0);                       
-                                                                              
-                        if (isShift && isLeft) {                                 
-                            navigateOverlayLink(                                 
-                                poly.node.__manualLinkMeta, evt                  
-                            );                                                   
-                        }                                                        
-                    });                                                          
+                    mxEvent.addListener(poly.node, 'mousedown', function (evt) {
+                        const isShift = mxEvent.isShiftDown(evt);
+                        const isLeft = (evt.button === 0);
+
+                        if (isShift && isLeft) {
+                            navigateOverlayLink(
+                                poly.node.__manualLinkMeta, evt
+                            );
+                        }
+                    });
                 }
 
                 entry.poly = poly;
@@ -614,31 +922,31 @@ Draw.loadPlugin(function (ui) {
     }
 
 
-     // Navigate between endpoints of an overlay link                        
-     function navigateOverlayLink(meta, evt) {                               
-        if (!meta) return;                                                  
-        const m = graph.getModel();                                         
-        const src = m.getCell(meta.srcId);                                  
-        const trg = m.getCell(meta.trgId);                                  
-        if (!src && !trg) return;                                           
-                                                                            
-        const curSel = graph.getSelectionCell();                            
-        let next = null;                                                    
-        if (curSel && src && curSel === src && trg) next = trg;            
-        else if (curSel && trg && curSel === trg && src) next = src;       
-        else next = src || trg;                                             
-                                                                            
-        if (next) {                                                         
-            selectAndReveal(next);                                          
-            graph.scrollCellToVisible(next, true);                          
-        }                                                                   
-                                                                            
-        if (evt) {                                                          
-            mxEvent.consume(evt);                                           
-            if (evt.stopPropagation) evt.stopPropagation();                 
-            if (evt.preventDefault) evt.preventDefault();                   
-        }                                                                   
-    }                                                                       
+    // Navigate between endpoints of an overlay link                        
+    function navigateOverlayLink(meta, evt) {
+        if (!meta) return;
+        const m = graph.getModel();
+        const src = m.getCell(meta.srcId);
+        const trg = m.getCell(meta.trgId);
+        if (!src && !trg) return;
+
+        const curSel = graph.getSelectionCell();
+        let next = null;
+        if (curSel && src && curSel === src && trg) next = trg;
+        else if (curSel && trg && curSel === trg && src) next = src;
+        else next = src || trg;
+
+        if (next) {
+            selectAndReveal(next);
+            graph.scrollCellToVisible(next, true);
+        }
+
+        if (evt) {
+            mxEvent.consume(evt);
+            if (evt.stopPropagation) evt.stopPropagation();
+            if (evt.preventDefault) evt.preventDefault();
+        }
+    }
 
 
 
@@ -777,17 +1085,21 @@ Draw.loadPlugin(function (ui) {
         if (!cell || !cell.id) return;
         const st = graph.getView().getState(cell);
         if (!st || !st.shape || !st.shape.node) return;
-        const node = st.shape.node;
+
+        const root = st.shape.node;
+        // NEW: pick actual drawable child (path/rect) instead of the <g> container
+        let target = root.querySelector('path, rect');        
+        if (!target) target = root;                           
 
         if (!highlightDomCache.has(cell.id)) {
             highlightDomCache.set(cell.id, {
-                stroke: node.style.stroke || '',
-                strokeWidth: node.style.strokeWidth || ''
+                stroke: target.style.stroke || '',            
+                strokeWidth: target.style.strokeWidth || ''   
             });
         }
 
-        node.style.stroke = color || '#ff0000';
-        node.style.strokeWidth = '3px';
+        target.style.stroke = color || '#ff0000';             
+        target.style.strokeWidth = '3px';                     
         markHighlighted(cell);
     }
 
@@ -798,13 +1110,18 @@ Draw.loadPlugin(function (ui) {
             if (!cell) continue;
             const st = view.getState(cell);
             if (!st || !st.shape || !st.shape.node) continue;
-            const node = st.shape.node;
-            node.style.stroke = prev.stroke;
-            node.style.strokeWidth = prev.strokeWidth;
+
+            const root = st.shape.node;                       
+            let target = root.querySelector('path, rect');    
+            if (!target) target = root;                       
+
+            target.style.stroke = prev.stroke;                
+            target.style.strokeWidth = prev.strokeWidth;      
         }
         highlightDomCache.clear();
         highlightedIds.clear();
     }
+
 
 
 
@@ -857,12 +1174,24 @@ Draw.loadPlugin(function (ui) {
                 const otherIsPrimary = isPrimary(other);
                 highlight(other, otherIsPrimary ? YELLOW : RED);
 
-                const edgeColor = (selIsPrimary || otherIsPrimary) ? YELLOW : RED;
+                // If link touches a Kanban task card, edge color = lane fillColor  
+                const laneColor = getLinkLaneColor(cell, other);
+                const edgeColor = laneColor
+                    ? laneColor
+                    : ((selIsPrimary || otherIsPrimary) ? YELLOW : RED);
+
                 const label = getRawTextLabel ? getRawTextLabel(other) : '';
                 const exitHint = exitMap.get(other.id);
 
-                linkOverlays.setLinkOverlay(cell, other, exitHint, edgeColor, label);
+                // Decide visibility using internal lane-based policy               
+                const shouldShow = shouldShowEdgeInternal(cell, other);
+                if (shouldShow) {
+                    linkOverlays.setLinkOverlay(
+                        cell, other, exitHint, edgeColor, label
+                    );
+                }
             }
+
 
         } finally {
             model.endUpdate();
@@ -874,7 +1203,7 @@ Draw.loadPlugin(function (ui) {
         mouseDown(sender, me) {
             const evt = me.getEvent();
 
-            
+
             // Ctrl/Meta+Click: toggle the deepest vertex under mouse and consume
             if (mxEvent.isControlDown(evt) || mxEvent.isMetaDown(evt)) {
                 const pt = mxUtils.convertPoint(graph.container, me.getX(), me.getY());
@@ -896,16 +1225,16 @@ Draw.loadPlugin(function (ui) {
             // Shift+Click:
             // - If vertex: do NOTHING here → let normal selection occur
             // - If overlay line/label: navigate between endpoints                
-            if (mxEvent.isShiftDown(evt)) {                                   
-                const cell = me.getCell();                                   
+            if (mxEvent.isShiftDown(evt)) {
+                const cell = me.getCell();
 
                 // If clicking a vertex, let normal multi-select logic handle it
-                if (cell && model.isVertex(cell)) {                                                                      
+                if (cell && model.isVertex(cell)) {
                     return; // do not consume; selection proceeds            
-                }                                                            
+                }
 
                 // Non-vertex with Shift: nothing special now                
-                return;                                                      
+                return;
             }
 
 

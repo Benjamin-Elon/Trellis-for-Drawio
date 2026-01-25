@@ -1303,25 +1303,6 @@ Draw.loadPlugin(function (ui) {
   graph.popupMenuHandler.factoryMethod = function (menu, cell, evt) {
     oldFactory.apply(this, arguments);
 
-    menu.addSeparator();
-
-    const changeLabel = (graph.__ccMode === MODE_CHANGE) ? 'Hide ChangeMap' : 'Show ChangeMap';
-    const createLabel = (graph.__ccMode === MODE_CREATE) ? 'Hide CreateMap' : 'Show CreateMap';
-
-    menu.addItem(changeLabel, null, function () {
-      toggleMode(MODE_CHANGE);
-      showPanel();
-      syncPanelFromState();
-    });
-
-    menu.addItem(createLabel, null, function () {
-      toggleMode(MODE_CREATE);
-      showPanel();
-      syncPanelFromState();
-    });
-
-    menu.addSeparator();
-
     const panelLabel = isPanelVisible() ? 'Hide Map Panel' : 'Show Map Panel';
     menu.addItem(panelLabel, null, function () {
       togglePanel();
