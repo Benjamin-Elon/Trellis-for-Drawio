@@ -58,8 +58,9 @@ In the root directory of this repo:
 
 **High priority TODO Features:**
 - Extend Dashboard plugin to include year planning
-- Add users plugin and extend changeMap plugin
-- Extend garden layout plugin to show scale
+- Add users plugin and extend changeMap plugin with user selector
+- Extend garden layout plugin to show scale on selected cells
 - Extend planner to include bed turnover mode
-- Add Gantt plugin
-- Extend scheduler with proper perrenial scheduling.
+- Add task deatailing for kanban boards
+- Add Gantt chart plugin for timeline schedule view
+- Extend scheduler with proper perennial scheduling.
