@@ -1,3 +1,8 @@
+// ----------- USAGE -----------
+// Using command line (in the directory that this file is located) run:
+// node extract-functions.js "PATH TO JS/TYPESCRIPT FILE"
+
+
 import fs from "fs";
 import { parse } from "@babel/parser";
 import traverseModule from "@babel/traverse";
