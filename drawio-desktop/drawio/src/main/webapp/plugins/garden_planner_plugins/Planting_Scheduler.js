@@ -13,7 +13,10 @@
 // ---------------------------------------------------------------------------------------------
 
 (function () {
-    const DB_PATH = "C:/Users/user/Desktop/Trellis for Drawio/drawio-desktop/Trellis_database.sqlite";
+
+    console.log("[Scheduler] file instance:", "Planting_Scheduler.js", "STAMP=2026-01-25Txx:yy");
+
+    const DB_PATH = "C:/Users/user/Desktop/Gardening/Syntropy(3).sqlite";
 
     // -------------------- Logging ---------------------------------------------------------
     function log() { try { mxLog.debug.apply(mxLog, ["[USL-Schedule]"].concat([].slice.call(arguments))); } catch (_) {/*noop*/ } }
@@ -751,6 +754,10 @@
         addDays(d, k) { return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + k)); }
         withinWindow(d) { return d >= this.ctx.scanStart && d <= this.ctx.scanEndHard; }
 
+        normalizeUtcMidnight(d) {
+            return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+          }          
+
         soilGateOK(startDate) {
             const { soilGateConsecutiveDays, soilGateThresholdC, monthlyAvg } = this.ctx;   //(optional)
 
@@ -877,16 +884,21 @@
             };
         }
 
-
         findNextFeasible(startCandidate, maxDays = 366) {
-            let d = new Date(Math.max(startCandidate, this.ctx.scanStart));
+            const startMs = Math.max(
+              this.normalizeUtcMidnight(startCandidate).getTime(),
+              this.normalizeUtcMidnight(this.ctx.scanStart).getTime()
+            );
+            let d = new Date(startMs);
+          
             for (let i = 0; i <= maxDays && d <= this.ctx.scanEndHard; i++) {
-                const feas = this.isSowFeasible(d);
-                if (feas.ok) return { date: d, info: feas };
-                d = this.addDays(d, 1);
+              const feas = this.isSowFeasible(d);
+              if (feas.ok) return { date: d, info: feas };
+              d = this.addDays(d, 1);
             }
             return { date: null, info: null };
-        }
+          }
+          
 
         nextPlantingDate(prevSow, overlapDays, minHarvestDays = 3) {
             const C = this.ctx;
@@ -907,6 +919,181 @@
         }
     }
 
+// dialog helpers
+
+    async function resolveEffectivePlant(plantId, varietyId) {
+        const base = await PlantModel.loadById(Number(plantId));
+        if (!base) return null;
+        if (!varietyId) return base;
+
+        const v = await PlantVarietyModel.loadById(Number(varietyId));
+        if (!v) return base;
+
+        const overrides = (typeof v.overridesObject === 'function')
+            ? v.overridesObject()
+            : {};
+
+        const merged = applyPlantOverrides(toPlainDict(base), overrides);
+        return new PlantModel(merged);
+    }
+
+
+    // -------------------- Centralized builder for schedule results (pure) ----------- 
+    async function computeScheduleResult(inputs, seasonYieldTargetKg) {
+        const { plant, method, succession } = inputs;
+        const { startDate, seasonEnd, env, dailyRates, monthlyAvg } = inputs.derived();
+
+        const budget = plant.firstHarvestBudget();
+        const HW_DAYS = succession.harvestWindowDays;
+        if (!Number.isFinite(HW_DAYS)) {
+            return { rows: [], lastScheduledHarvestEndISO: null };
+        }
+
+        const schedule = buildSuccessionSchedule(inputs);
+        if (!schedule.length) {
+            return { rows: [], lastScheduledHarvestEndISO: null };
+        }
+
+        const stageDays = {
+            maturityDays: (budget.mode === 'days')
+                ? budget.amount
+                : (Number(plant.days_maturity) || 0),
+            transplantDays: Number.isFinite(Number(plant.days_transplant))
+                ? Number(plant.days_transplant)
+                : 0,
+            germinationDays: Number.isFinite(Number(plant.days_germ))
+                ? Number(plant.days_germ)
+                : 0,
+            harvest_window_days: HW_DAYS
+        };
+
+        const timelines = computeStageTimelinesForSchedule({
+            schedule, budget, stageDays,
+            dailyRatesMap: dailyRates, seasonEnd
+        });
+
+        const multipliers = deriveYieldMultipliersFromTemp({
+            schedule, budget,
+            dailyRatesMap: dailyRates,
+            cropTemp: env,
+            monthlyAvgTemp: monthlyAvg,
+            seasonEnd,
+            Tbase: env.Tbase,
+            window: 'harvest',
+            HW_DAYS: HW_DAYS
+        });
+
+        // Filter by min field index                                                    
+        const keep = [];
+        for (let i = 0; i < schedule.length; i++) {
+            const fi = Number.isFinite(multipliers[i]) ? multipliers[i] : 0;
+            if (fi >= succession.minYieldMultiplier) keep.push(i);
+        }
+        if (!keep.length) {
+            return { rows: [], lastScheduledHarvestEndISO: null };
+        }
+
+        const scheduleF = keep.map(i => schedule[i]);
+        const timelinesF = keep.map(i => timelines[i]);
+        const multipliersF = keep.map(i => multipliers[i]);
+
+        const { plants: plantsAlloc } = distributePlantsToMeetTarget({
+            N: scheduleF.length,
+            seasonYieldTarget: Number(seasonYieldTargetKg ?? 0),
+            yieldPerPlant: plant.yieldPerPlant(),
+            multipliers: multipliersF
+        });
+
+        const plantName = plant.plant_name || (plant.abbr || '?');
+        const rows = scheduleF.map((sow, k) => {
+            const tl = timelinesF[k];
+            return {
+                idx: k + 1,
+                plant: plantName,
+                method,
+                sow: fmtISO(sow),
+                germ: fmtISO(tl.germ),
+                trans: fmtISO(tl.transplant),
+                harvStart: fmtISO(tl.harvestStart),
+                harvEnd: fmtISO(tl.harvestEnd),
+                mult: (Number.isFinite(multipliersF[k])
+                    ? multipliersF[k].toFixed(3)
+                    : ''),
+                plantsReq: (Array.isArray(plantsAlloc) ? plantsAlloc[k] : '')
+            };
+        });
+
+        const lastRow = rows[rows.length - 1] || null;
+        const lastScheduledHarvestEndISO = lastRow ? lastRow.harvEnd : null;
+
+        console.log('[computeScheduleResult] summary', {
+            N_schedule: schedule.length,
+            N_kept: rows.length,
+            firstRow: rows[0] || null,
+            lastRow,
+            lastScheduledHarvestEndISO
+        });
+
+        return { rows, lastScheduledHarvestEndISO };
+    }
+
+
+    // -------------------- Centralized builder for schedule context -------------------- 
+    async function buildScheduleContextFromForm(formState, selPlant, options = {}) {
+        const { enforcePlantSuccessionPolicy = false } = options;
+
+        // Prefer current selected plant instance if provided                              
+        const plant = await resolveEffectivePlant(formState.plantId, formState.varietyId);
+        if (!plant) throw new Error('Plant not found for schedule.');
+
+        const city = await CityClimate.loadByName(formState.cityName);
+        if (!city) throw new Error('City not found for schedule.');
+
+        const method = formState.method;
+
+        let succession = SuccessionConfig.fromUI(plant, {
+            useSucc: formState.useSuccession,
+            maxSucc: formState.maxSucc,
+            overlapDays: formState.overlapDays,
+            harvestWindowDays: formState.harvestWindowDays,
+            minYieldMultiplier: formState.minYieldMultiplier
+        }).withPlantDefaults(plant);
+
+        // Optionally enforce plant-level succession policy (used by OK handler)          
+        if (enforcePlantSuccessionPolicy && Number(plant.succession ?? 1) !== 1) {
+            succession = new SuccessionConfig({
+                enabled: false,
+                max: 1,
+                overlapDays: 0,
+                harvestWindowDays: succession.harvestWindowDays,
+                minYieldMultiplier: succession.minYieldMultiplier
+            });
+        }
+
+        const policy = PolicyFlags.fromPlant(plant, method);
+
+        // --- NEW: define varietyId/varietyName in this scope ---
+        const varietyId = (formState.varietyId != null) ? Number(formState.varietyId) : null;          // NEW
+        const varietyName = varietyId
+            ? String((currentVarieties || []).find(v => Number(v.variety_id) === varietyId)?.variety_name || '')
+            : '';                                                                                      // NEW
+
+        const inputs = new ScheduleInputs({
+            plant,
+            city,
+            method,
+            startISO: formState.startISO,
+            seasonEndISO: formState.seasonEndISO,
+            succession,
+            policy,
+            seasonStartYear: formState.seasonStartYear,
+            varietyId,                    // now defined
+            varietyName                   // now defined
+        });
+
+
+        return { plant, city, method, succession, policy, inputs };
+    }
 
 
 
@@ -2465,22 +2652,6 @@
             if (selectedValue != null) selectEl.value = String(selectedValue);
         }
 
-        async function resolveEffectivePlant(plantId, varietyId) {
-            const base = await PlantModel.loadById(Number(plantId));
-            if (!base) return null;
-            if (!varietyId) return base;
-
-            const v = await PlantVarietyModel.loadById(Number(varietyId));
-            if (!v) return base;
-
-            const overrides = (typeof v.overridesObject === 'function')
-                ? v.overridesObject()
-                : {};
-
-            const merged = applyPlantOverrides(toPlainDict(base), overrides);
-            return new PlantModel(merged);
-        }
-
         async function refreshEffectivePlant() {
             effectivePlant = await resolveEffectivePlant(
                 formState.plantId,
@@ -3256,64 +3427,6 @@
         });
 
 
-        // -------------------- Centralized builder for schedule context -------------------- 
-        async function buildScheduleContextFromForm(formState, selPlant, options = {}) {
-            const { enforcePlantSuccessionPolicy = false } = options;
-
-            // Prefer current selected plant instance if provided                              
-            const plant = await resolveEffectivePlant(formState.plantId, formState.varietyId);
-            if (!plant) throw new Error('Plant not found for schedule.');
-
-            const city = await CityClimate.loadByName(formState.cityName);
-            if (!city) throw new Error('City not found for schedule.');
-
-            const method = formState.method;
-
-            let succession = SuccessionConfig.fromUI(plant, {
-                useSucc: formState.useSuccession,
-                maxSucc: formState.maxSucc,
-                overlapDays: formState.overlapDays,
-                harvestWindowDays: formState.harvestWindowDays,
-                minYieldMultiplier: formState.minYieldMultiplier
-            }).withPlantDefaults(plant);
-
-            // Optionally enforce plant-level succession policy (used by OK handler)          
-            if (enforcePlantSuccessionPolicy && Number(plant.succession ?? 1) !== 1) {
-                succession = new SuccessionConfig({
-                    enabled: false,
-                    max: 1,
-                    overlapDays: 0,
-                    harvestWindowDays: succession.harvestWindowDays,
-                    minYieldMultiplier: succession.minYieldMultiplier
-                });
-            }
-
-            const policy = PolicyFlags.fromPlant(plant, method);
-
-            // --- NEW: define varietyId/varietyName in this scope ---
-            const varietyId = (formState.varietyId != null) ? Number(formState.varietyId) : null;          // NEW
-            const varietyName = varietyId
-                ? String((currentVarieties || []).find(v => Number(v.variety_id) === varietyId)?.variety_name || '')
-                : '';                                                                                      // NEW
-
-            const inputs = new ScheduleInputs({
-                plant,
-                city,
-                method,
-                startISO: formState.startISO,
-                seasonEndISO: formState.seasonEndISO,
-                succession,
-                policy,
-                seasonStartYear: formState.seasonStartYear,
-                varietyId,                    // now defined
-                varietyName                   // now defined
-            });
-
-
-            return { plant, city, method, succession, policy, inputs };
-        }
-
-
         // recomputeLastHarvestFromSchedule:
         //  - concern: full schedule under current constraint
         //  - NEVER changes seasonEndISO, only lastScheduleEndISO / lastHarvestISO
@@ -3723,105 +3836,6 @@
         renderTasksList();
 
         ui.showDialog(tabsContainer, 620, 560, true, true);
-
-        // -------------------- Centralized builder for schedule results (pure) ----------- 
-        async function computeScheduleResult(inputs, seasonYieldTargetKg) {
-            const { plant, method, succession } = inputs;
-            const { startDate, seasonEnd, env, dailyRates, monthlyAvg } = inputs.derived();
-
-            const budget = plant.firstHarvestBudget();
-            const HW_DAYS = succession.harvestWindowDays;
-            if (!Number.isFinite(HW_DAYS)) {
-                return { rows: [], lastScheduledHarvestEndISO: null };
-            }
-
-            const schedule = buildSuccessionSchedule(inputs);
-            if (!schedule.length) {
-                return { rows: [], lastScheduledHarvestEndISO: null };
-            }
-
-            const stageDays = {
-                maturityDays: (budget.mode === 'days')
-                    ? budget.amount
-                    : (Number(plant.days_maturity) || 0),
-                transplantDays: Number.isFinite(Number(plant.days_transplant))
-                    ? Number(plant.days_transplant)
-                    : 0,
-                germinationDays: Number.isFinite(Number(plant.days_germ))
-                    ? Number(plant.days_germ)
-                    : 0,
-                harvest_window_days: HW_DAYS
-            };
-
-            const timelines = computeStageTimelinesForSchedule({
-                schedule, budget, stageDays,
-                dailyRatesMap: dailyRates, seasonEnd
-            });
-
-            const multipliers = deriveYieldMultipliersFromTemp({
-                schedule, budget,
-                dailyRatesMap: dailyRates,
-                cropTemp: env,
-                monthlyAvgTemp: monthlyAvg,
-                seasonEnd,
-                Tbase: env.Tbase,
-                window: 'harvest',
-                HW_DAYS: HW_DAYS
-            });
-
-            // Filter by min field index                                                    
-            const keep = [];
-            for (let i = 0; i < schedule.length; i++) {
-                const fi = Number.isFinite(multipliers[i]) ? multipliers[i] : 0;
-                if (fi >= succession.minYieldMultiplier) keep.push(i);
-            }
-            if (!keep.length) {
-                return { rows: [], lastScheduledHarvestEndISO: null };
-            }
-
-            const scheduleF = keep.map(i => schedule[i]);
-            const timelinesF = keep.map(i => timelines[i]);
-            const multipliersF = keep.map(i => multipliers[i]);
-
-            const { plants: plantsAlloc } = distributePlantsToMeetTarget({
-                N: scheduleF.length,
-                seasonYieldTarget: Number(seasonYieldTargetKg ?? 0),
-                yieldPerPlant: plant.yieldPerPlant(),
-                multipliers: multipliersF
-            });
-
-            const plantName = plant.plant_name || (plant.abbr || '?');
-            const rows = scheduleF.map((sow, k) => {
-                const tl = timelinesF[k];
-                return {
-                    idx: k + 1,
-                    plant: plantName,
-                    method,
-                    sow: fmtISO(sow),
-                    germ: fmtISO(tl.germ),
-                    trans: fmtISO(tl.transplant),
-                    harvStart: fmtISO(tl.harvestStart),
-                    harvEnd: fmtISO(tl.harvestEnd),
-                    mult: (Number.isFinite(multipliersF[k])
-                        ? multipliersF[k].toFixed(3)
-                        : ''),
-                    plantsReq: (Array.isArray(plantsAlloc) ? plantsAlloc[k] : '')
-                };
-            });
-
-            const lastRow = rows[rows.length - 1] || null;
-            const lastScheduledHarvestEndISO = lastRow ? lastRow.harvEnd : null;
-
-            console.log('[computeScheduleResult] summary', {
-                N_schedule: schedule.length,
-                N_kept: rows.length,
-                firstRow: rows[0] || null,
-                lastRow,
-                lastScheduledHarvestEndISO
-            });
-
-            return { rows, lastScheduledHarvestEndISO };
-        }
 
 
         // inner helpers (closure over UI controls)
@@ -4776,11 +4790,14 @@
         const graph = ui.editor.graph;
 
         // --- Harvest window bridge (installed once) ---
-        if (!window.__uslHarvestWindowsBridgeInstalled) {
-            window.__uslHarvestWindowsBridgeInstalled = true;
+        if (!graph.__uslHarvestWindowsBridgeInstalled) {
+            graph.__uslHarvestWindowsBridgeInstalled = true;
             console.log('[USL][Scheduler] harvest windows bridge installed'); // debug
 
             window.addEventListener("usl:harvestWindowsNeeded", async (ev) => {
+                console.log("[Scheduler] suggest fn head:", String(suggestHarvestWindowForCropReq).slice(0, 120));
+                console.log("[Scheduler] normalize in listener scope:", typeof normalizeUtcMidnight);
+                
                 const d = ev?.detail;
                 if (!d) return;
 
@@ -4829,38 +4846,119 @@
         }
         // NEW
     
-    
-    
-        function isoToYmd(iso) {                                                            // NEW
-            const s = String(iso || "").trim();
-            const m = s.match(/^(\d{4}-\d{2}-\d{2})/);
-            return m ? m[1] : null;
-        }                                                                                   // NEW
-    
-        function firstHarvestStartFromRows(rows) {                                           // NEW
-            if (!Array.isArray(rows) || !rows.length) return null;
-    
-            // Try common field names you likely have in schedule rows
-            const keys = ["harvestStartISO", "harvest_start_iso", "harvest_start", "harvestStart", "harvest_start_date"];
-            for (const k of keys) {
-                const v = rows[0] && rows[0][k];
-                const ymd = isoToYmd(v);
-                if (ymd) return ymd;
-            }
-    
-            // Fallback: scan any row for a harvest-start-like field
-            for (const r of rows) {
-                for (const k of Object.keys(r || {})) {
-                    if (!/harvest/i.test(k) || !/start/i.test(k)) continue;
-                    const ymd = isoToYmd(r[k]);
-                    if (ymd) return ymd;
-                }
-            }
-    
-            return null;
-        }                                                                                   // NEW
-        
+        console.log("[Scheduler] defining normalizeUtcMidnight now");
 
+        function normalizeUtcMidnight(d) {
+            return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+          }
+          
+          function toYmdUTC(d) {
+            if (!d) return null;
+            return normalizeUtcMidnight(d).toISOString().slice(0, 10);
+          }
+          
+          function findPrevFeasible(planner, endCandidate, maxDays) {
+            let d = normalizeUtcMidnight(endCandidate);
+            const C = planner.ctx;
+          
+            if (d > C.scanEndHard) d = normalizeUtcMidnight(C.scanEndHard);
+            if (d < C.scanStart) return { date: null, info: null };
+          
+            for (let i = 0; i <= maxDays && d >= C.scanStart; i++) {
+              const info = planner.isSowFeasible(d);
+              if (info.ok) return { date: d, info };
+              d = planner.addDays(d, -1);
+            }
+            return { date: null, info: null };
+          }
+          
+          async function suggestHarvestWindowForCropReq(req, cityName, year) {
+            const cropId = String(req?.cropId || "");
+            const plantId = (req?.plantId != null) ? Number(req.plantId) : NaN;
+            const varietyId = (req?.varietyId != null && req.varietyId !== "") ? Number(req.varietyId) : null;
+          
+            if (!cropId || !Number.isFinite(plantId)) {
+              return { cropId, harvestStart: null, harvestEnd: null, shelfLifeDays: null, reason: "Missing cropId/plantId" };
+            }
+          
+            try {
+              const plant = await resolveEffectivePlant(plantId, varietyId);
+              if (!plant) return { cropId, harvestStart: null, harvestEnd: null, shelfLifeDays: null, reason: "Plant not found" };
+          
+              const city = await CityClimate.loadByName(cityName);
+              if (!city) return { cropId, harvestStart: null, harvestEnd: null, shelfLifeDays: null, reason: "City not found" };
+          
+              const method = String(req?.method || "direct_sow");
+          
+              let hw = Number(plant.harvest_window_days ?? (typeof plant.defaultHW === "function" ? plant.defaultHW() : NaN));
+              if (!Number.isFinite(hw) || hw <= 0) hw = 14; // planning fallback
+          
+              const succession = new SuccessionConfig({
+                enabled: false,
+                max: 1,
+                overlapDays: 0,
+                harvestWindowDays: hw,
+                minYieldMultiplier: 1.0
+              }).withPlantDefaults(plant);
+          
+              const policy = PolicyFlags.fromPlant(plant, method);
+          
+              const inputs = new ScheduleInputs({
+                plant, city, method,
+                startISO: `${year}-01-01`,
+                seasonEndISO: `${year}-12-31`,
+                succession, policy,
+                seasonStartYear: year,
+                varietyId, varietyName: ""
+              });
+          
+              const planner = new Planner(inputs);
+              const C = planner.ctx;
+          
+              const maxSpanDays = Math.ceil((C.scanEndHard.getTime() - C.scanStart.getTime()) / 86400000) + 2;
+          
+              const first = planner.findNextFeasible(C.scanStart, maxSpanDays);
+              if (!first?.date || !first?.info?.ok) {
+                return { cropId, harvestStart: null, harvestEnd: null, shelfLifeDays: null, reason: "No feasible sow date found in scan window" };
+              }
+          
+              const last = findPrevFeasible(planner, C.scanEndHard, maxSpanDays);
+              if (!last?.date || !last?.info?.ok) {
+                return {
+                  cropId,
+                  harvestStart: toYmdUTC(first.info.harvestStart),
+                  harvestEnd: toYmdUTC(first.info.harvestEnd),
+                  shelfLifeDays: null,
+                  reason: "No late-season feasible sow date found"
+                };
+              }
+          
+              const shelfLifeDays =
+                Number.isFinite(Number(plant.shelf_life_days)) ? Number(plant.shelf_life_days) : null;
+          
+              // ordering sanity
+              if (last.info.harvestEnd < first.info.harvestStart) {
+                return {
+                  cropId,
+                  harvestStart: toYmdUTC(first.info.harvestStart),
+                  harvestEnd: toYmdUTC(first.info.harvestEnd),
+                  shelfLifeDays,
+                  reason: "Late harvest end < early harvest start (constraints)"
+                };
+              }
+          
+              return {
+                cropId,
+                harvestStart: toYmdUTC(first.info.harvestStart),
+                harvestEnd: toYmdUTC(last.info.harvestEnd),
+                shelfLifeDays
+              };
+            } catch (e) {
+              return { cropId, harvestStart: null, harvestEnd: null, shelfLifeDays: null, reason: String(e?.message || e) };
+            }
+          }
+          
+        
         if (graph.popupMenuHandler) graph.popupMenuHandler.selectOnPopup = false;
 
         const oldCreateMenu = graph.popupMenuHandler.factoryMethod;
@@ -4980,103 +5078,6 @@
 
             }
         };
-
-
-        window.addEventListener("usl:harvestWindowsNeeded", async (ev) => {                 // NEW
-            const d = ev && ev.detail ? ev.detail : null;
-            if (!d) return;
-
-            const moduleCellId = String(d.moduleCellId || "").trim();
-            const year = Number(d.year);
-            const crops = Array.isArray(d.crops) ? d.crops : [];
-            if (!moduleCellId || !Number.isFinite(year) || year < 1900 || year > 3000) return;
-            if (!crops.length) return;
-
-            const moduleCell = graph.getModel().getCell(moduleCellId);
-            if (!moduleCell) return;
-
-            const cityName = String(moduleCell.getAttribute ? (moduleCell.getAttribute("city_name") || "") : "").trim();
-            if (!cityName) {
-                // respond with reasons (don’t hard-fail silently)
-                emitHarvestWindowsSuggested(moduleCellId, year, crops.map(c => ({
-                    cropId: c.cropId, harvestStart: null, harvestEnd: null, shelfLifeDays: null,
-                    reason: "Module city_name not set"
-                })));
-                return;
-            }
-
-            const results = [];
-            for (const req of crops) {
-                results.push(await suggestHarvestWindowForCropReq(req, cityName, year));
-            }
-
-            emitHarvestWindowsSuggested(moduleCellId, year, results);
-        });
-
-        async function suggestHarvestWindowForCropReq(req, cityName, year) {                 // REPLACE existing
-            const cropId = String(req && req.cropId || "");
-            const plantId = (req && req.plantId != null) ? Number(req.plantId) : NaN;
-            const varietyId = (req && req.varietyId != null && req.varietyId !== "") ? Number(req.varietyId) : null;
-
-            if (!cropId || !Number.isFinite(plantId)) {
-                return { cropId, harvestStart: null, harvestEnd: null, shelfLifeDays: null, reason: "Missing cropId/plantId" };
-            }
-
-            try {
-                // Use core models directly (no dialog/form helpers)
-                const plant = await resolveEffectivePlant(plantId, varietyId);
-                if (!plant) return { cropId, harvestStart: null, harvestEnd: null, shelfLifeDays: null, reason: "Plant not found" };
-
-                const city = await CityClimate.loadByName(cityName);
-                if (!city) return { cropId, harvestStart: null, harvestEnd: null, shelfLifeDays: null, reason: "City not found" };
-
-                const method = String(req.method || "direct_sow");
-
-                // Use plant defaults (harvest window, succession policy, etc.)
-                const succession = new SuccessionConfig({
-                    enabled: Number(plant.succession ?? 1) !== 1 ? false : true,
-                    max: 1,
-                    overlapDays: 0,
-                    harvestWindowDays: Number(plant.harvest_window_days ?? plant.defaultHW?.() ?? 0) || 0,
-                    minYieldMultiplier: 1.0
-                }).withPlantDefaults(plant);
-
-                const inputs = new ScheduleInputs({
-                    plant,
-                    city,
-                    method,
-                    startISO: `${year}-01-01`,
-                    seasonEndISO: `${year}-12-31`,
-                    succession,
-                    policy: PolicyFlags.fromPlant(plant, method),
-                    seasonStartYear: year,
-                    varietyId,
-                    varietyName: "" // optional
-                });
-
-                const yieldTargetKg = Number(req && req.yieldTargetKg) || 0;
-
-                const { rows, lastScheduledHarvestEndISO } = await computeScheduleResult(inputs, yieldTargetKg);
-                if (!rows || !rows.length) {
-                    return { cropId, harvestStart: null, harvestEnd: null, shelfLifeDays: null, reason: "No feasible schedule rows" };
-                }
-
-                const harvestStart = firstHarvestStartFromRows(rows);
-                const harvestEnd =
-                    isoToYmd(lastScheduledHarvestEndISO) ||
-                    isoToYmd(rows[rows.length - 1]?.harvestEndISO) ||
-                    isoToYmd(rows[rows.length - 1]?.harvest_end_iso) ||
-                    null;
-
-                const shelfLifeDays =
-                    (plant && Number.isFinite(Number(plant.shelf_life_days))) ? Number(plant.shelf_life_days) : null;
-
-                return { cropId, harvestStart, harvestEnd, shelfLifeDays };
-            } catch (e) {
-                return { cropId, harvestStart: null, harvestEnd: null, shelfLifeDays: null, reason: String(e?.message || e) };
-            }
-        }
-
 
     });
 
