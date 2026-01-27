@@ -14,6 +14,48 @@ const traverse = traverseModule.default ?? traverseModule;
 
 // ---------- helpers ----------
 
+function escapeForTemplateLiteral(s) {
+  // escape backticks and ${} so template literals are safe
+  return String(s ?? "")
+    .replace(/`/g, "\\`")
+    .replace(/\$\{/g, "\\${");
+}
+
+function toJsLiteral(value, indent = 0) {
+  const pad = "  ".repeat(indent);
+  const pad2 = "  ".repeat(indent + 1);
+
+  if (value === null) return "null";
+  if (value === undefined) return "undefined";
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (typeof value === "string") return JSON.stringify(value);
+
+  if (Array.isArray(value)) {
+    if (value.length === 0) return "[]";
+    return "[\n" + value.map(v => pad2 + toJsLiteral(v, indent + 1)).join(",\n") + "\n" + pad + "]";
+  }
+
+  if (typeof value === "object") {
+    const keys = Object.keys(value);
+    if (keys.length === 0) return "{}";
+
+    // Special-case: src as template literal for readability
+    const lines = [];
+    for (const k of keys) {
+      const v = value[k];
+      if (k === "src" && typeof v === "string") {
+        lines.push(`${pad2}${JSON.stringify(k)}: \`\n${escapeForTemplateLiteral(v)}\n\``);
+      } else {
+        lines.push(`${pad2}${JSON.stringify(k)}: ${toJsLiteral(v, indent + 1)}`);
+      }
+    }
+    return "{\n" + lines.join(",\n") + "\n" + pad + "}";
+  }
+
+  return "null";
+}
+
+
 function trimCommonIndent(block) {
   if (block == null) return null;
   let s = String(block);
@@ -39,30 +81,38 @@ function escapeHeader(s) {
   return String(s ?? "").replace(/\s+/g, " ").trim();
 }
 
-function buildClipboardTextFromProjected(projected) {
+function buildClipboardTextFromNodes(nodes, opts) {
+  const { includeChildren, includedIds, fullDetailIds, callRefMode, idToNode } = opts;
   const parts = [];
 
+  function refFor(id) {
+    const n = idToNode.get(id);
+    if (!n) return callRefMode === "id" ? id : "(unknown)";
+    if (callRefMode === "id") return id;
+    if (callRefMode === "name") return n.name ?? "(anonymous)";
+    return `${n.name ?? "(anonymous)"} (${id})`;
+  }
+
   function walk(n, indent) {
-    const pad = "  ".repeat(indent);
+    if (!includedIds.has(n.id)) return;
 
-    // Full-detail nodes have src or srcLines or srcPath depending on your current choice.
-    // In your current version you have srcLines.
-    const isFull = Array.isArray(n.srcLines) || typeof n.src === "string";
+    const pad = includeChildren ? "  ".repeat(indent) : "";
+    const title = `${escapeHeader(n.name)}  (${escapeHeader(n.id)})`;
 
-    if (isFull) {
-      const title = `${escapeHeader(n.name)}  (${escapeHeader(n.id)})`;
+    if (fullDetailIds.has(n.id)) {
+      const prettySrc = prettyPrintNode(n.astNode) ?? trimCommonIndent(n.src) ?? "";
       parts.push(`${pad}// ==== ${title} ====`);
+      parts.push(prettySrc);
 
-      const src =
-        typeof n.src === "string"
-          ? n.src
-          : (Array.isArray(n.srcLines) ? n.srcLines.join("\n") : "");
+      const calls = (n.calls ?? []).filter((id) => includedIds.has(id)).map(refFor);
+      const calledBy = (n.calledBy ?? []).filter((id) => includedIds.has(id)).map(refFor);
 
-      parts.push(src);
-      parts.push(""); // blank line separator
+      if (calls.length) parts.push(`${pad}// calls: ${calls.join(", ")}`);
+      if (calledBy.length) parts.push(`${pad}// calledBy: ${calledBy.join(", ")}`);
+
+      parts.push("");
     } else {
-      // Structural-only: optional headers for navigation context
-      if (n.name) parts.push(`${pad}// -- ${escapeHeader(n.name)} --`);
+      if (includeChildren) parts.push(`${pad}// -- ${title} --`);
     }
 
     if (Array.isArray(n.children)) {
@@ -70,10 +120,10 @@ function buildClipboardTextFromProjected(projected) {
     }
   }
 
-  for (const root of projected) walk(root, 0);
-
+  for (const root of nodes) walk(root, 0);
   return parts.join("\n");
 }
+  
 
 
 function prettyPrintNode(astNode) {
@@ -290,24 +340,31 @@ function projectTree(nodes, opts) {
 
     // FULL-DETAIL: emit code, not metadata
     if (isFull) {
-      const prettySrc = prettyPrintNode(n.astNode) ?? trimCommonIndent(n.src) ?? null;
-
+      const src = prettyPrintNode(n.astNode) ?? trimCommonIndent(n.src) ?? null;
+    
       const out = {
         id: n.id,
         name: n.name,
-        srcLines: (prettySrc ?? "").split("\n"),
+        type: n.type,
+        startLine: n.startLine,
+        endLine: n.endLine,
+        params: n.params ?? "",
+    
+        src, // EMBEDDED HERE
+    
         calls: filterIds(n.calls).map(refFor),
         calledBy: filterIds(n.calledBy).map(refFor),
       };
-
+    
       if (includeChildren) {
         out.children = (n.children ?? []).map(projectNode);
       } else if (includeChildCountWhenOmittingChildren) {
         out.childCount = (n.children ?? []).length;
       }
-
+    
       return out;
     }
+    
 
     // STRUCTURAL-ONLY: minimal metadata (configurable by includeFieldsStructural)
     const out = {};
@@ -790,9 +847,9 @@ try {
   const fullIds0 = bfsRadius(seedIds, fullRadius, callsById, calledById);              // NEW
   const contextIds0 = bfsRadius(seedIds, contextRadius, callsById, calledById);        // NEW
 
-  const fullDetailIds = new Set(fullIds0); // CHANGED
-  const includedIds = addAncestors(contextIds0, parentById); // keep this
-
+  const includedIds = addAncestors(new Set([...contextIds0, ...fullIds0]), parentById);
+  const fullDetailIds = new Set(fullIds0);
+  
   // Filter the root tree to only included ids
   const filteredRoots = filterTreeByIncludedIds(roots, includedIds);                   // NEW
 
@@ -828,17 +885,23 @@ try {
   });
 
 
-  const clipAns = await rl.question("Copy full-detail code to clipboard? [y/N]\n> ");
+  const clipAns = await rl.question("Copy ENTIRE output tree to clipboard? [y/N]\n> ");
   const doClip = normalizeYesNo(clipAns, false);
-
+  
   if (doClip) {
-    const clipText = buildClipboardTextFromProjected(projected);
-    await clipboardy.write(clipText);
-    console.error(`Copied ${clipText.length} chars to clipboard.`);
+    const jsText = `export default ${toJsLiteral(projected, 0)};\n`;
+    await clipboardy.write(jsText);
+    console.error(`Copied ${jsText.length} chars to clipboard.`);
+  } else {
+    console.log(pretty ? JSON.stringify(projected, null, 2) : JSON.stringify(projected));
+  }  
+
+  
+
+
+  if (!doClip) {
+    console.log(pretty ? JSON.stringify(projected, null, 2) : JSON.stringify(projected));
   }
-
-
-  console.log(pretty ? JSON.stringify(projected, null, 2) : JSON.stringify(projected));
-} finally {
+  } finally {
   rl.close();
 }

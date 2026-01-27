@@ -39,6 +39,7 @@
     "@babel/traverse": "^7.28.6",
     "@cantoo/pdf-lib": "^2.5.3",
     "better-sqlite3": "^12.5.0",
+    "clipboardy": "^5.1.0",
     "commander": "^13.1.0",
     "compression": "^1.8.1",
     "crc": "^4.3.2",
