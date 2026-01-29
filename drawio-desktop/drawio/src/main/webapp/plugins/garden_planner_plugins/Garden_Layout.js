@@ -92,13 +92,34 @@ Draw.loadPlugin(function (ui) {
         ].join(";");
     }
 
+    let __dbPathCached = null; // NEW
+
+    async function getDbPath() { // NEW
+      if (__dbPathCached) return __dbPathCached;
+    
+      if (!window.dbBridge || typeof window.dbBridge.resolvePath !== "function") {
+        throw new Error("dbBridge.resolvePath not available; add dbResolvePath wiring");
+      }
+    
+      const r = await window.dbBridge.resolvePath({
+        dbName: "Trellis_database.sqlite"
+        // seedRelPath omitted -> main uses its default ../../trellis_database/Trellis_database.sqlite
+        // reset: true // only for testing if you want to re-copy seed
+      });
+    
+      __dbPathCached = r.dbPath;
+      return __dbPathCached;
+    }
+    
+
     // -------------------- DB (open → query → close) --------------------
     async function queryAll(sql, params) {
         if (!window.dbBridge || typeof window.dbBridge.open !== "function") {
             throw new Error("dbBridge not available; check preload/main wiring");
         }
-        const opened = await window.dbBridge.open(DB_PATH, { readOnly: true });
-        try {
+        const dbPath = await getDbPath();                            // NEW
+        const opened = await window.dbBridge.open(dbPath, { readOnly: true }); // CHANGE
+                try {
             const res = await window.dbBridge.query(opened.dbId, sql, params);
             return Array.isArray(res?.rows) ? res.rows : [];
         } finally {

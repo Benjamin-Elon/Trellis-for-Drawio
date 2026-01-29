@@ -162,6 +162,22 @@ contextBridge.exposeInMainWorld('dbBridge', {
 	 * @param {object} [opts] { readOnly?: boolean, pragma?: object }
 	 * @returns {Promise<{ ok: true, dbId: string }>}
 	 */
+	resolvePath(opts = {}) {                                                   // NEW
+		return new Promise((resolve, reject) => {
+		  requestViaIPC(
+			{
+			  action: 'dbResolvePath',
+			  seedRelPath: (opts.seedRelPath == null) ? null : String(opts.seedRelPath), // NEW
+			  dbName: String(opts.dbName || 'Trellis_database.sqlite'),
+			  reset: !!opts.reset
+			},
+			(data) => resolve({ ok: true, dbPath: data.dbPath }),
+			(msg)  => reject(new Error(msg || 'dbResolvePath failed'))
+		  );
+		});
+	  },	  
+	  
+
 	open(dbPath, opts = {}) {
 	  return new Promise((resolve, reject) => {
 		requestViaIPC(
