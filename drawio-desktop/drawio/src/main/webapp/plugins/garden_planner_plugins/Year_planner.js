@@ -19,7 +19,6 @@ Draw.loadPlugin(function (ui) {
     graph.__yearPlannerInstalled = true;
 
     // -------------------- Config --------------------
-    const DB_PATH = "C:/Users/user/Desktop/Gardening/Syntropy(3).sqlite";
     const PLAN_YEARS_ATTR = "plan_year_json";
     const PLAN_TEMPLATES_ATTR = "plan_year_templates";      // (diagram-scoped)
     const PLAN_UNIT_DEFAULTS_ATTR = "plan_unit_defaults";   // (diagram-scoped, per plantId)
@@ -311,6 +310,12 @@ Draw.loadPlugin(function (ui) {
         if (u === "g") return 0.001;
         if (u === "lb" || u === "lbs") return 0.45359237;
 
+        if (u === "plant" || u === "plants") {                                       // NEW
+            const kgPerPlant = Number(crop && crop.kgPerPlant);                       // NEW
+            if (!Number.isFinite(kgPerPlant) || kgPerPlant <= 0) return NaN;          // NEW
+            return kgPerPlant;                                                        // NEW
+        }                                                                              // NEW
+
         const packs = (crop && crop.packages) ? crop.packages : [];
         const p = packs.find(x => String(x.unit || "").trim().toLowerCase() === u);
         if (!p) return NaN;
@@ -369,7 +374,7 @@ Draw.loadPlugin(function (ui) {
             for (const line of market) {
                 const qty = Number(line && line.qty);
                 if (!Number.isFinite(qty) || qty <= 0) {
-                    pushWarn(warns, `CSA component skipped (qty missing) for ${crop.plant || crop.id}`);
+                    pushWarn(warns, `Market line skipped (qty missing) for ${crop.plant || crop.id}`);
                     continue;
                 }
 
@@ -402,7 +407,7 @@ Draw.loadPlugin(function (ui) {
 
                     const qty = Number(comp.qty);
                     if (!Number.isFinite(qty) || qty <= 0) {
-                        pushWarn(warns, `Market line skipped (qty missing) for ${crop.plant || crop.id}`);
+                        pushWarn(warns, `CSA component skipped (qty missing) for ${crop.plant || crop.id}`);
                         continue;
                     }
 
@@ -508,8 +513,13 @@ Draw.loadPlugin(function (ui) {
             }
             // packages must resolve
             for (const p of (c.packages || [])) {
-                const kg = resolveUnitToKgPerUnit(c, p.unit);
-                if (!Number.isFinite(kg)) errs.push(`Crop "${c.plant || c.id}" package unit "${p.unit}" does not resolve to kg.`);
+                const u = String(p.unit || "").trim();
+                if (!u) errs.push(`Crop "${c.plant || c.id}" has a package with blank unit.`);
+                const baseType = String(p.baseType || "").trim().toLowerCase();
+                const baseQty = Number(p.baseQty);
+                if (!Number.isFinite(baseQty) || baseQty <= 0) errs.push(`Crop "${c.plant || c.id}" package "${u}" baseQty must be > 0.`);
+                if (baseType !== "kg" && baseType !== "plant" && baseType !== "plants") errs.push(`Crop "${c.plant || c.id}" package "${u}" baseType must be kg or plant.`);
+                if ((baseType === "plant" || baseType === "plants") && !(Number(c.kgPerPlant) > 0)) errs.push(`Crop "${c.plant || c.id}" package "${u}" uses plant but kg/plant is missing.`);
             }
             // market lines must have valid dates + unit
             for (const mkt of (c.market || [])) {
@@ -539,7 +549,7 @@ Draw.loadPlugin(function (ui) {
     // -------------------- Modal UI (row-based MVP) --------------------
     let planModalEl = null;
 
-    function closePlanModal() {
+    function closePlanModal() {                 // GLOBAL
         if (planModalEl) { planModalEl.remove(); planModalEl = null; }
         if (__harvestSuggestedHandler) {
             window.removeEventListener("usl:harvestWindowsSuggested", __harvestSuggestedHandler);
@@ -800,6 +810,49 @@ Draw.loadPlugin(function (ui) {
         body.style.fontFamily = "Arial";
         body.style.fontSize = "12px";
 
+
+        // ---- modal-scoped variety close listener ----
+        const onVarietyEditorClosedGraph = function (sender, evt) {
+            const cropId = String(evt.getProperty("cropId") || "").trim();
+            const action = String(evt.getProperty("action") || "");
+            const varietyIdRaw = evt.getProperty("varietyId");
+            const varietyId = (varietyIdRaw == null || varietyIdRaw === "") ? null : Number(varietyIdRaw);
+            const varietyName = String(evt.getProperty("varietyName") || "");
+
+            if (!cropId) return;
+
+            const crop = (plan.crops || []).find(c => String(c.id) === cropId);
+            if (!crop) return;
+
+            __varietyCacheByPlant.delete(String(crop.plantId || ""));
+
+            if (action !== "cancel" && action !== "error" && varietyId != null && Number.isFinite(varietyId)) {
+                crop.varietyId = varietyId;
+                crop.variety = varietyName || "";
+            }
+
+            refreshVarietyDropdownForCrop(crop, true).then(() => {
+                renderCrops();
+                renderCsaSection();
+                renderPreview();
+            }).catch(e => console.warn("[YearPlanner] variety refresh failed", e));
+        };
+
+        graph.addListener("usl:varietyEditorClosed", onVarietyEditorClosedGraph);
+
+        function cleanupPlanModalListeners() {
+            try { graph.removeListener(onVarietyEditorClosedGraph); } catch (_) { }
+        }
+
+        function closeThisModal() {
+            cleanupPlanModalListeners();
+            closePlanModal(); // GLOBAL removes DOM + harvest listener
+        }
+
+        closeBtn.addEventListener("click", (ev) => { ev.preventDefault(); closeThisModal(); });
+        wrap.addEventListener("click", (ev) => { if (ev.target === wrap) closeThisModal(); });
+
+
         // UI skeleton (same as your current row-based MVP) -------------------
         const globalRow = document.createElement("div");
         globalRow.style.display = "flex";
@@ -935,6 +988,9 @@ Draw.loadPlugin(function (ui) {
         card.appendChild(body);
         wrap.appendChild(card);
 
+        document.body.appendChild(wrap);
+        planModalEl = wrap; // GLOBAL
+
         function mkInput(type, val, wPx) {
             const i = document.createElement("input");
             i.type = type;
@@ -961,6 +1017,76 @@ Draw.loadPlugin(function (ui) {
             s.value = String(value ?? "");
             return s;
         }
+
+        function listUnitOptionsForCrop(crop) {                                            // NEW
+            const opts = [];                                                               // NEW
+            const seen = new Set();                                                        // NEW
+            const add = (v, label) => {                                                    // NEW
+                const key = String(v || "").trim().toLowerCase();                          // NEW
+                if (!key || seen.has(key)) return;                                         // NEW
+                seen.add(key);                                                             // NEW
+                opts.push({ value: String(v), label: String(label ?? v) });                // NEW
+            };                                                                              // NEW
+
+            add("kg", "kg");                                                               // NEW
+            add("g", "g");                                                                 // NEW
+            add("lb", "lb");                                                               // NEW
+            add("plant", "plant");                                                         // NEW
+
+            for (const p of (crop && crop.packages) ? crop.packages : []) {                // NEW
+                const u = String(p && p.unit || "").trim();                                // NEW
+                if (!u) continue;                                                          // NEW
+                add(u, u);                                                                 // NEW
+            }                                                                              // NEW
+
+            return opts;                                                                   // NEW
+        }                                                                                  // NEW
+
+        function readYieldOverrideKgFromOverridesJson(overridesJson) {                 // NEW
+            const obj = safeJsonParse(overridesJson, null);                            // NEW
+            if (!obj || typeof obj !== "object") return null;                          // NEW
+
+            // Preferred key (your stated convention)
+            const v1 = Number(obj.yield_per_plant_kg);                                 // NEW
+            if (Number.isFinite(v1) && v1 > 0) return v1;                              // NEW
+
+            // Optional: support alternate nesting if you used it elsewhere
+            const v2 = Number(obj?.overrides?.yield_per_plant_kg);                     // NEW
+            if (Number.isFinite(v2) && v2 > 0) return v2;                              // NEW
+
+            return null;                                                               // NEW
+        }                                                                              // NEW        
+
+        function shouldAutoReplaceNumber(cur, lastAuto) {                     // CHANGE
+            const c = Number(cur);
+            const a = Number(lastAuto);
+            if (!Number.isFinite(c)) return Number.isFinite(a);               // CHANGE: only auto-replace NaN if we previously auto-set
+            if (Number.isFinite(a) && c === a) return true;
+            return false;
+        }                                                                                        // NEW
+
+        function setKgPerPlantAuto(crop, nextKg) {                                          // NEW
+            if (!crop) return;                                                             // NEW
+            if (!Number.isFinite(Number(nextKg)) || Number(nextKg) <= 0) return;           // NEW
+            if (shouldAutoReplaceNumber(crop.kgPerPlant, crop.__kgpp_lastAuto)) {          // NEW
+                crop.kgPerPlant = Number(nextKg);                                          // NEW
+                crop.__kgpp_lastAuto = Number(nextKg);                                     // NEW
+            }                                                                              // NEW
+        }                                                                                  // NEW
+
+        function mkUnitSelectForCrop(crop, value, wPx) {                                   // NEW
+            const opts = listUnitOptionsForCrop(crop);                                     // NEW
+            const sel = mkSelect(opts, value ?? "kg", wPx);                                // NEW
+            return sel;                                                                    // NEW
+        }                                                                                  // NEW
+
+        function pickDefaultUnitForCrop(crop) {
+            const firstPack = (crop && Array.isArray(crop.packages) && crop.packages[0])
+                ? String(crop.packages[0].unit || "").trim()
+                : "";
+            return firstPack || "kg";
+        }                                                                                       // NEW
+
 
         function labelCrop(c) {
             const a = (c.plant || "").trim();
@@ -1026,6 +1152,8 @@ Draw.loadPlugin(function (ui) {
             const shelf = Number.isFinite(Number(c.shelfLifeDays)) ? Number(c.shelfLifeDays) : 0;
             return addDaysYmd(c.harvestEnd, shelf) || c.harvestEnd;
         }
+
+
 
         function autoFillAndClampCsa(plan) {
             plan.csa = plan.csa || { enabled: false, boxesPerWeek: 0, start: "", end: "", components: [] };
@@ -1196,10 +1324,10 @@ Draw.loadPlugin(function (ui) {
             if (!Number.isFinite(pid)) return [];
             // PlantVarieties schema matches what you posted in Scheduler       // NEW
             const sql = `
-                      SELECT variety_id, plant_id, variety_name
-                      FROM PlantVarieties
-                      WHERE plant_id = ?
-                      ORDER BY variety_name COLLATE NOCASE;`;
+            SELECT variety_id, plant_id, variety_name, overrides_json
+            FROM PlantVarieties
+            WHERE plant_id = ?
+            ORDER BY variety_name COLLATE NOCASE;`; // CHANGE
             return await queryAll(sql, [pid]);
         }
 
@@ -1210,12 +1338,13 @@ Draw.loadPlugin(function (ui) {
             if (!force && __varietyCacheByPlant.has(key)) return __varietyCacheByPlant.get(key);
 
             const rows = await queryVarietiesByPlantId(key);
-            const byId = new Map();
+            const byId = new Map();                                                            // CHANGE
             const opts = [{ value: "", label: "(base plant)" }].concat(
                 rows.map(r => {
                     const id = String(r.variety_id);
                     const name = String(r.variety_name || "");
-                    byId.set(id, name);
+                    const ykg = readYieldOverrideKgFromOverridesJson(r.overrides_json);            // CHANGE
+                    byId.set(id, { name, yieldKg: ykg });                                          // CHANGE
                     return { value: id, label: name };
                 })
             );
@@ -1248,24 +1377,34 @@ Draw.loadPlugin(function (ui) {
                 fillSelectOptions(sel, pack.opts, desired);
 
                 // Keep crop.variety (name) coherent with selection            // NEW
-                const name = pack.byId.get(String(sel.value || "")) || "";
+                const rec = pack.byId.get(String(sel.value || "")) || null;                         // CHANGE
+                const name = rec ? String(rec.name || "") : "";                                     // NEW
                 crop.varietyId = sel.value ? Number(sel.value) : null;
                 crop.variety = sel.value ? String(name) : "";
+
+                if (sel.value) {                                                                    // NEW
+                    if (rec && rec.yieldKg) setKgPerPlantAuto(crop, rec.yieldKg);                   // NEW
+                } else {                                                                            // NEW
+                    if (Number.isFinite(Number(crop.__baseKgPerPlant)) && Number(crop.__baseKgPerPlant) > 0) { // NEW
+                        setKgPerPlantAuto(crop, crop.__baseKgPerPlant);                             // NEW
+                    }                                                                               // NEW
+                }                                                                                   // NEW
+
             } finally {
                 sel.disabled = false;
             }
         }
 
-        function dispatchOpenVarietyEditor({ plantId, varietyId = null }) {    // NEW
+        function dispatchOpenVarietyEditor(graph, { cropId, plantId, varietyId = null }) { // NEW
             try {
-                window.dispatchEvent(new CustomEvent("usl:openVarietyEditor", {
-                    detail: {
-                        plantId: Number(plantId),
-                        varietyId: (varietyId == null || varietyId === "") ? null : Number(varietyId)
-                    }
-                }));
+                graph.fireEvent(new mxEventObject(
+                    "usl:openVarietyEditor",
+                    "cropId", String(cropId || ""),
+                    "plantId", Number(plantId),
+                    "varietyId", (varietyId == null || varietyId === "") ? null : Number(varietyId)
+                ));
             } catch (e) {
-                console.error("[USL][YearPlanner] Failed to dispatch usl:openVarietyEditor", e);
+                console.error("[USL][YearPlanner] Failed to fire usl:openVarietyEditor", e);
             }
         }
 
@@ -1480,8 +1619,18 @@ Draw.loadPlugin(function (ui) {
                         line.appendChild(price);
                         line.appendChild(del);
 
-                        unit.addEventListener("input", () => { p.unit = String(unit.value || ""); renderPreview(); });
-                        baseType.addEventListener("change", () => { p.baseType = String(baseType.value || "kg"); renderPreview(); });
+                        unit.addEventListener("input", () => {
+                            p.unit = String(unit.value || "");
+                            renderMarket();        // NEW
+                            renderCsaSection();    // NEW
+                            renderPreview();
+                        });
+                        baseType.addEventListener("change", () => {
+                            p.baseType = String(baseType.value || "kg");
+                            renderMarket();        // NEW
+                            renderCsaSection();    // NEW
+                            renderPreview();
+                        });
 
                         baseQty.min = "1";
                         price.min = "0";
@@ -1489,6 +1638,8 @@ Draw.loadPlugin(function (ui) {
                         baseQty.addEventListener("input", () => {
                             p.baseQty = clampNonNegNum(baseQty.value, 1);
                             baseQty.value = String(p.baseQty);
+                            renderMarket();        // NEW
+                            renderCsaSection();    // NEW
                             renderPreview();
                         });
 
@@ -1502,6 +1653,7 @@ Draw.loadPlugin(function (ui) {
                             ev.preventDefault();
                             crop.packages = crop.packages.filter(x => x !== p);
                             renderPacks();
+                            renderCsaSection();
                             renderPreview();
                         });
 
@@ -1531,6 +1683,7 @@ Draw.loadPlugin(function (ui) {
                     crop.packages = crop.packages || [];
                     crop.packages.push({ unit: "kg", baseType: "kg", baseQty: 1, price: NaN });
                     renderPacks();
+                    renderCsaSection();    // NEW
                     renderPreview();
                 });
 
@@ -1558,7 +1711,7 @@ Draw.loadPlugin(function (ui) {
                         line.style.alignItems = "center";
 
                         const qty = mkInput("number", mkt.qty ?? 0, 90);
-                        const unit = mkInput("text", mkt.unit ?? "kg", 90);
+                        const unit = mkUnitSelectForCrop(crop, mkt.unit ?? pickDefaultUnitForCrop(crop), 110); // CHANGE
                         const from = mkInput("date", mkt.from ?? crop.harvestStart ?? "", 150);
                         const to = mkInput("date", mkt.to ?? crop.harvestEnd ?? "", 150);
                         const del = mkBtn("Remove");
@@ -1578,7 +1731,7 @@ Draw.loadPlugin(function (ui) {
                             renderPreview();
                         });
 
-                        unit.addEventListener("input", () => { mkt.unit = String(unit.value || ""); renderPreview(); });
+                        unit.addEventListener("change", () => { mkt.unit = String(unit.value || ""); renderPreview(); }); // CHANGE
                         from.addEventListener("change", () => { mkt.from = String(from.value || ""); renderPreview(); });
 
                         to.addEventListener("change", () => {
@@ -1612,12 +1765,13 @@ Draw.loadPlugin(function (ui) {
                     ev.preventDefault();
                     crop.market = crop.market || [];
 
-                    const nl = { qty: 0, unit: "kg", from: crop.harvestStart || "", to: crop.harvestEnd || "" };
+                    const nl = { qty: 0, unit: pickDefaultUnitForCrop(crop), from: crop.harvestStart || "", to: crop.harvestEnd || "" }; // CHANGE
                     nl.__baseTo = String(nl.to || "");
                     if (crop.syncDates) applyShelfToMarketTo(crop, nl);
                     crop.market.push(nl);
 
                     renderMarket();
+                    renderCsaSection();    // NEW
                     renderPreview();
                 });
 
@@ -1635,10 +1789,19 @@ Draw.loadPlugin(function (ui) {
                     const plantKey = String(crop.plantId || "").trim();                    // NEW
                     const pack = __varietyCacheByPlant.get(plantKey);                      // NEW
                     const id = String(varietySel.value || "");                             // NEW
-                    const name = (pack && pack.byId) ? (pack.byId.get(id) || "") : "";     // NEW
+                    const rec = (pack && pack.byId) ? (pack.byId.get(id) || null) : null;               // CHANGE
+                    const name = rec ? String(rec.name || "") : "";                                     // NEW
+                    crop.varietyId = id ? Number(id) : null;
+                    crop.variety = id ? String(name) : "";
 
-                    crop.varietyId = id ? Number(id) : null;                               // NEW
-                    crop.variety = id ? String(name) : "";                                 // NEW
+                    if (id) {                                                                           // NEW
+                        if (rec && rec.yieldKg) setKgPerPlantAuto(crop, rec.yieldKg);                   // NEW
+                    } else {                                                                            // NEW
+                        if (Number.isFinite(Number(crop.__baseKgPerPlant)) && Number(crop.__baseKgPerPlant) > 0) { // NEW
+                            setKgPerPlantAuto(crop, crop.__baseKgPerPlant);                             // NEW
+                        }                                                                               // NEW
+                    }                                                                                   // NEW
+
                     title.textContent = labelCrop(crop);                                   // NEW
                     refreshCropFilterDropdown();                                           // NEW
                     renderPreview();                                                       // NEW
@@ -1647,13 +1810,13 @@ Draw.loadPlugin(function (ui) {
                     // emitHarvestWindowsNeeded(moduleCell, year, [{ cropId: crop.id, plantId: crop.plantId, varietyId: crop.varietyId ?? null, method: crop.method ?? null, yieldTargetKg: 0 }]); // NEW
                 });
 
-                varietyAddBtn.addEventListener("click", (ev) => {                          // NEW
-                    ev.preventDefault();                                                   // NEW
-                    // If a variety is selected, open editor in edit mode; otherwise add   // NEW
-                    const vid = String(varietySel.value || "").trim();                     // NEW
-                    dispatchOpenVarietyEditor({                                            // NEW
-                        plantId: crop.plantId,                                             // NEW
-                        varietyId: vid ? vid : null                                        // NEW
+                varietyAddBtn.addEventListener("click", (ev) => {                                  // NEW
+                    ev.preventDefault();                                                           // NEW
+                    const vid = String(varietySel.value || "").trim();                             // NEW
+                    dispatchOpenVarietyEditor(graph, {                                             // NEW
+                        cropId: crop.id,                                                          // NEW (critical)
+                        plantId: crop.plantId,                                                     // NEW
+                        varietyId: vid ? vid : null                                                // NEW
                     });
                 });
 
@@ -1663,7 +1826,9 @@ Draw.loadPlugin(function (ui) {
 
                 kgpp.addEventListener("input", () => {
                     crop.kgPerPlant = clampNonNegNum(kgpp.value, NaN);
+                    crop.__kgpp_lastAuto = null;                                                    // NEW
                     kgpp.value = Number.isFinite(Number(crop.kgPerPlant)) ? String(crop.kgPerPlant) : "";
+                    renderCsaSection();    // NEW
                     renderPreview();
                 });
 
@@ -1734,6 +1899,7 @@ Draw.loadPlugin(function (ui) {
 
                 cropsList.appendChild(panel);
                 renderPacks();
+                renderCsaSection();    // NEW
                 renderMarket();
             }
         }
@@ -1834,7 +2000,9 @@ Draw.loadPlugin(function (ui) {
                         260
                     );
                     const qty = mkInput("number", comp.qty ?? 1, 70);
-                    const unit = mkInput("text", comp.unit ?? "kg", 90);
+                    const selectedCrop = findCrop(plan, comp.cropId);
+                    const defaultUnit = selectedCrop ? pickDefaultUnitForCrop(selectedCrop) : "kg";
+                    const unit = mkUnitSelectForCrop(selectedCrop, comp.unit ?? defaultUnit, 110);
                     const everyN = mkInput("number", comp.everyNWeeks ?? 1, 80);
                     const st = mkInput("date", comp.start ?? (plan.csa.start || ""), 150);
                     const en = mkInput("date", comp.end ?? (plan.csa.end || ""), 150);
@@ -1852,13 +2020,19 @@ Draw.loadPlugin(function (ui) {
                     line.appendChild(en);
                     line.appendChild(del);
 
-                    cropSel.addEventListener("change", () => { comp.cropId = String(cropSel.value || ""); renderPreview(); });
+                    cropSel.addEventListener("change", () => {                                        // CHANGE
+                        comp.cropId = String(cropSel.value || "");                                    // CHANGE
+                        const c2 = findCrop(plan, comp.cropId);                                       // NEW
+                        comp.unit = pickDefaultUnitForCrop(c2);                                       // NEW
+                        renderComponents();                                                           // NEW
+                        renderPreview();                                                              // CHANGE
+                    });                                                                               // CHANGE
                     qty.addEventListener("input", () => {
                         comp.qty = clampNonNegNum(qty.value, 0);
                         qty.value = String(comp.qty);
                         renderPreview();
                     });
-                    unit.addEventListener("input", () => { comp.unit = String(unit.value || ""); renderPreview(); });
+                    unit.addEventListener("change", () => { comp.unit = String(unit.value || ""); renderPreview(); }); // CHANGE
 
                     everyN.min = "1"
 
@@ -1885,10 +2059,12 @@ Draw.loadPlugin(function (ui) {
             addCompBtn.addEventListener("click", (ev) => {
                 ev.preventDefault();
                 plan.csa.components = plan.csa.components || [];
-                plan.csa.components.push({
-                    cropId: (plan.crops && plan.crops[0]) ? plan.crops[0].id : "",
-                    qty: 1, unit: "kg", everyNWeeks: 1, start: plan.csa.start || "", end: plan.csa.end || ""
-                });
+                plan.csa.components.push({                                                        // CHANGE
+                    cropId: (plan.crops && plan.crops[0]) ? plan.crops[0].id : "",                 // CHANGE
+                    qty: 1,                                                                        // CHANGE
+                    unit: pickDefaultUnitForCrop((plan.crops && plan.crops[0]) ? plan.crops[0] : null), // CHANGE
+                    everyNWeeks: 1, start: plan.csa.start || "", end: plan.csa.end || ""          // CHANGE
+                });                                                                               // CHANGE                
                 renderComponents();
                 renderPreview();
             });
@@ -1943,7 +2119,9 @@ Draw.loadPlugin(function (ui) {
                 harvestStart: "",
                 harvestEnd: "",
                 shelfLifeDays: 0,
-                kgPerPlant: clampNum(p.yield_per_plant_kg, NaN),
+                __baseKgPerPlant: clampNum(p.yield_per_plant_kg, NaN),                              // NEW
+                kgPerPlant: clampNum(p.yield_per_plant_kg, NaN),                                    // CHANGE
+                __kgpp_lastAuto: clampNum(p.yield_per_plant_kg, NaN),                               // NEW
                 plannedPlants: 0,
                 packages: initialPackages,
                 market: []
@@ -2104,61 +2282,9 @@ Draw.loadPlugin(function (ui) {
             renderPreview();
         });
 
-
-        closeBtn.addEventListener("click", (ev) => {
-            ev.preventDefault();
-            closePlanModal();
-        });
-
-        wrap.addEventListener("click", (ev) => {
-            if (ev.target === wrap) closePlanModal();
-        });
-
-        document.body.appendChild(wrap);
-        planModalEl = wrap;
-
-
-        // -------------------- Variety editor close listener -------------------- // NEW
-        function onVarietyEditorClosed(ev) {                                               // NEW
-            const d = ev && ev.detail ? ev.detail : null;                                  // NEW
-            if (!d) return;                                                                // NEW
-
-            const plantId = String(d.plantId || "").trim();                                // NEW
-            if (!plantId) return;                                                          // NEW
-
-            // bust cache for that plant                                                   // NEW
-            __varietyCacheByPlant.delete(plantId);                                         // NEW
-
-            // refresh any crops in this plan with that plantId                             // NEW
-            const crops = (plan.crops || []).filter(c => String(c.plantId) === plantId);   // NEW
-            for (const c of crops) {                                                       // NEW
-                // if editor created/updated a specific variety, select it                  // NEW
-                if (d.varietyId != null && Number.isFinite(Number(d.varietyId))) {         // NEW
-                    c.varietyId = Number(d.varietyId);                                     // NEW
-                    c.variety = String(d.varietyName || c.variety || "");                  // NEW
-                }
-                refreshVarietyDropdownForCrop(c, true).then(() => {                        // NEW
-                    // force title refresh and preview                                      // NEW
-                    renderCrops();                                                         // NEW (simple + safe)
-                    renderCsaSection();                                                    // NEW
-                    renderPreview();                                                       // NEW
-                }).catch(e => console.warn("[USL][YearPlanner] variety refresh failed", e)); // NEW
-            }
-        }                                                                                  // NEW
-
-        window.addEventListener("usl:varietyEditorClosed", onVarietyEditorClosed);          // NEW
-
-        // ensure cleanup                                                                   // NEW
-        const __oldClosePlanModal = closePlanModal;                                         // NEW
-        closePlanModal = function () {                                                     // NEW
-            try { window.removeEventListener("usl:varietyEditorClosed", onVarietyEditorClosed); } catch (_) { } // NEW
-            return __oldClosePlanModal();                                                  // NEW
-        };                                                                                 // NEW
-
-        // ----------- Auto harvest windows --------------
-
-        function applyHarvestSuggestionsToPlan(plan, results) {
+        function applyHarvestSuggestionsToPlan(plan, results) {                             // RESTORE
             if (!plan || !Array.isArray(plan.crops)) return;
+
             const byId = new Map(plan.crops.map(c => [c.id, c]));
 
             // Update crops
@@ -2176,24 +2302,31 @@ Draw.loadPlugin(function (ui) {
                 }
             }
 
-            // CSA auto-fill:
-            // - if plan.csa.start/end missing, set to min/max across crops (availability end includes shelf life)
+            // CSA auto-fill start/end if missing
             plan.csa = plan.csa || { enabled: false, boxesPerWeek: 0, start: "", end: "", components: [] };
             const cropsWithWindows = plan.crops.filter(c => hasYmd(c.harvestStart) && hasYmd(c.harvestEnd));
 
             if (cropsWithWindows.length) {
-                const minStart = cropsWithWindows.reduce((a, c) => (a < c.harvestStart ? a : c.harvestStart), cropsWithWindows[0].harvestStart);
+                const minStart = cropsWithWindows.reduce(
+                    (a, c) => (a < c.harvestStart ? a : c.harvestStart),
+                    cropsWithWindows[0].harvestStart
+                );
+
                 const maxAvailEnd = cropsWithWindows.reduce((a, c) => {
                     const shelf = Number.isFinite(Number(c.shelfLifeDays)) ? Number(c.shelfLifeDays) : 0;
                     const availEnd = addDaysYmd(c.harvestEnd, shelf) || c.harvestEnd;
                     return (a > availEnd ? a : availEnd);
-                }, addDaysYmd(cropsWithWindows[0].harvestEnd, Number(cropsWithWindows[0].shelfLifeDays) || 0) || cropsWithWindows[0].harvestEnd);
+                }, (() => {
+                    const c0 = cropsWithWindows[0];
+                    const shelf0 = Number.isFinite(Number(c0.shelfLifeDays)) ? Number(c0.shelfLifeDays) : 0;
+                    return addDaysYmd(c0.harvestEnd, shelf0) || c0.harvestEnd;
+                })());
 
                 if (!hasYmd(plan.csa.start)) plan.csa.start = minStart;
                 if (!hasYmd(plan.csa.end)) plan.csa.end = maxAvailEnd;
             }
 
-            // Fill CSA component start/end if missing; clamp to crop availability (end includes shelf life)
+            // Clamp CSA component dates into crop availability (end includes shelf life)
             if (Array.isArray(plan.csa.components)) {
                 for (const comp of plan.csa.components) {
                     const crop = byId.get(comp.cropId);
@@ -2207,7 +2340,6 @@ Draw.loadPlugin(function (ui) {
                         const shelf = Number.isFinite(Number(crop.shelfLifeDays)) ? Number(crop.shelfLifeDays) : 0;
                         const cropAvailEnd = addDaysYmd(crop.harvestEnd, shelf) || crop.harvestEnd;
 
-                        // clamp
                         if (hasYmd(comp.start) && comp.start < crop.harvestStart) comp.start = crop.harvestStart;
                         if (hasYmd(comp.end) && comp.end > cropAvailEnd) comp.end = cropAvailEnd;
                     }
@@ -2215,7 +2347,8 @@ Draw.loadPlugin(function (ui) {
             }
         }
 
-        function onHarvestWindowsSuggested(ev) {
+
+        function onHarvestWindowsSuggested(ev) {                                             // NEW
             const d = ev && ev.detail ? ev.detail : null;
             if (!d) return;
 
@@ -2232,11 +2365,12 @@ Draw.loadPlugin(function (ui) {
             renderCrops();
             renderCsaSection();
             renderPreview();
+        }                                                                                   // NEW
+
+        if (__harvestSuggestedHandler) {                                                  // NEW
+            window.removeEventListener("usl:harvestWindowsSuggested", __harvestSuggestedHandler); // NEW
         }
 
-        if (__harvestSuggestedHandler) {
-            window.removeEventListener("usl:harvestWindowsSuggested", __harvestSuggestedHandler);
-        }
         __harvestSuggestedHandler = onHarvestWindowsSuggested;
         window.addEventListener("usl:harvestWindowsSuggested", __harvestSuggestedHandler);
 
@@ -2245,10 +2379,9 @@ Draw.loadPlugin(function (ui) {
         renderCsaSection();
         renderPreview();
 
-
-
-
     }
+
+
 
     // -------------------- Event listener --------------------
     function onPlanYearRequested(ev) {

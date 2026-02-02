@@ -1455,7 +1455,7 @@ Draw.loadPlugin(function (ui) {
     if (!graph.__uslKanbanGardenEventInstalled) {                                            // NEW
         graph.__uslKanbanGardenEventInstalled = true;                                        // NEW
 
-        graph.addListener("usl:gardenModuleCreated", function (_sender, evt) {         // NEW
+        graph.addListener("usl:gardenModuleNeedsSettings", function (_sender, evt) {         // NEW
             const moduleCell = evt && typeof evt.getProperty === "function"                  // NEW
                 ? evt.getProperty("cell")                                                    // NEW
                 : null;                                                                      // NEW

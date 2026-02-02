@@ -30,7 +30,7 @@ Draw.loadPlugin(function (ui) {
 
     const DASH_ATTR = "garden_dashboard";
     const DASH_YEAR_ATTR = "dashboard_year";
-    const YEAR_HIDDEN_ATTR = "year_hidden"; // NEW
+    const YEAR_HIDDEN_ATTR = "year_hidden";
 
 
     const BTN_SIZE = 22;

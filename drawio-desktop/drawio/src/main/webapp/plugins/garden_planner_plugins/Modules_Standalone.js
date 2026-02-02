@@ -205,26 +205,26 @@ Draw.loadPlugin(function (ui) {
         return child;
     }
 
-    function hasGardenSettingsSet(cell) {                                                     // NEW
-        const v = cell && cell.value;                                                         // NEW
-        if (!(v && v.nodeType === 1)) return false;                                           // NEW
-        const city = (v.getAttribute("city_name") || "").trim();                              // NEW
-        const units = (v.getAttribute("unit_system") || "").trim();                           // NEW
-        return !!(city && units);                                                             // NEW
-    }                                                                                         // NEW
+    function hasGardenSettingsSet(cell) {                                                     
+        const v = cell && cell.value;                                                         
+        if (!(v && v.nodeType === 1)) return false;                                           
+        const city = (v.getAttribute("city_name") || "").trim();                              
+        const units = (v.getAttribute("unit_system") || "").trim();                           
+        return !!(city && units);                                                             
+    }                                                                                         
 
-    function emitGardenSettingsNeededIfMissing(graph, moduleCell) {                           // NEW
-        if (!graph || !moduleCell) return;                                                    // NEW
-        if (hasGardenSettingsSet(moduleCell)) return;                                         // NEW
-        graph.fireEvent(new mxEventObject(                                                    // NEW
-            "usl:gardenModuleNeedsSettings",                                                  // NEW
-            "cell", moduleCell                                                                // NEW
-        ));                                                                                   // NEW
-    }                                                                                         // NEW
+    function emitGardenSettingsNeededIfMissing(graph, moduleCell) {                           
+        if (!graph || !moduleCell) return;                                                    
+        if (hasGardenSettingsSet(moduleCell)) return;                                         
+        graph.fireEvent(new mxEventObject(                                                    
+            "usl:gardenModuleNeedsSettings",                                                  
+            "cell", moduleCell                                                                
+        ));                                                                                   
+    }                                                                                         
 
 
     function setModuleType(cell, type) {
-        let becameGarden = false;                                                            // NEW
+        let becameGarden = false;                                                            
 
         model.beginUpdate();
         try {
@@ -235,7 +235,7 @@ Draw.loadPlugin(function (ui) {
             // Set the desired flag
             if (type === "garden") {
                 setXmlFlag(cell, "garden_module", true);                                     // FIX
-                becameGarden = true;                                                        // NEW
+                becameGarden = true;                                                        
             } else if (type === "team") {
                 setXmlFlag(cell, "team_module", true);
             }
@@ -260,8 +260,8 @@ Draw.loadPlugin(function (ui) {
 
         if (becameGarden) {                                                                  // FIX
             setTimeout(() => emitGardenSettingsNeededIfMissing(graph, cell), 0);             // FIX
-        }                                                                              // NEW
-    }                                                                                    // NEW    
+        }                                                                              
+    }                                                                                        
 
 
         function isRoleCard(cell) {
@@ -427,7 +427,7 @@ Draw.loadPlugin(function (ui) {
                 const p = model.getParent(c);
                 if (p && isModule(p)) seenModules.add(p.id);
             });
-            // New children shouldn’t trigger shrink (usually expands only)
+             // children shouldn’t trigger shrink (usually expands only)
             seenModules.forEach(id => applyModuleMargins(model.getCell(id), { allowShrink: false }));
         });
 

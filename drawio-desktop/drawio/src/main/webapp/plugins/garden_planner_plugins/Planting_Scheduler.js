@@ -12,11 +12,11 @@
 //
 // ---------------------------------------------------------------------------------------------
 
-(function () {
+Draw.loadPlugin(function (ui) {
+    const graph = ui.editor && ui.editor.graph;
+    if (!graph) return;
 
     console.log("[Scheduler] file instance:", "Planting_Scheduler.js", "STAMP=2026-01-25Txx:yy");
-
-    const DB_PATH = "C:/Users/user/Desktop/Gardening/Syntropy(3).sqlite";
 
     // -------------------- Logging ---------------------------------------------------------
     function log() { try { mxLog.debug.apply(mxLog, ["[USL-Schedule]"].concat([].slice.call(arguments))); } catch (_) {/*noop*/ } }
@@ -83,7 +83,7 @@
         }
         const dbPath = await getDbPath();                            // NEW
         const opened = await window.dbBridge.open(dbPath, { readOnly: true }); // CHANGE
-                try {
+        try {
             const res = await window.dbBridge.query(opened.dbId, sql, params);
             return Array.isArray(res?.rows) ? res.rows : [];
         } finally {
@@ -95,7 +95,7 @@
         if (!window.dbBridge || typeof window.dbBridge.open !== 'function') {
             throw new Error('dbBridge not available; check preload/main wiring');
         }
-        
+
         const dbPath = await getDbPath(); // NEW
         const opened = await window.dbBridge.open(dbPath, { readOnly: false }); // CHANGE
 
@@ -242,6 +242,44 @@
 
             throw new Error(`Plant "${this.plant_name}": needs gdd_to_maturity or days_maturity.`);
         }
+
+        static async create(patch) {                                                          // NEW
+            const cols = [];                                                                  // NEW
+            const qs = [];                                                                    // NEW
+            const vals = [];                                                                  // NEW
+            for (const [k, v] of Object.entries(patch || {})) {                               // NEW
+                cols.push(k);                                                                 // NEW
+                qs.push('?');                                                                 // NEW
+                vals.push(v);                                                                 // NEW
+            }                                                                                 // NEW
+            if (!cols.length) throw new Error('No fields to create plant.');                  // NEW
+
+            const sql = `INSERT INTO Plants (${cols.join(', ')}) VALUES (${qs.join(', ')});`; // NEW
+            await execAll(sql, vals);                                                         // NEW
+
+            // Return the created row (SQLite: last_insert_rowid)                              // NEW
+            const rows = await queryAll(`SELECT * FROM Plants WHERE plant_id = last_insert_rowid();`, []); // NEW
+            return rows[0] ? new PlantModel(rows[0]) : null;                                  // NEW
+        }                                                                                     // NEW
+
+        static async update(plantId, patch) {                                                  // NEW
+            const id = Number(plantId);                                                       // NEW
+            if (!Number.isFinite(id)) throw new Error('Invalid plantId');                     // NEW
+
+            const sets = [];                                                                  // NEW
+            const vals = [];                                                                  // NEW
+            for (const [k, v] of Object.entries(patch || {})) {                               // NEW
+                sets.push(`${k} = ?`);                                                        // NEW
+                vals.push(v);                                                                 // NEW
+            }                                                                                 // NEW
+            if (!sets.length) return await PlantModel.loadById(id);                           // NEW
+
+            vals.push(id);                                                                    // NEW
+            const sql = `UPDATE Plants SET ${sets.join(', ')} WHERE plant_id = ?;`;           // NEW
+            await execAll(sql, vals);                                                         // NEW
+
+            return await PlantModel.loadById(id);                                             // NEW
+        }                                                                                     // NEW
     }
 
 
@@ -720,7 +758,7 @@
     class Planner {
         constructor(inputs) {
             // Build the full, read-only context once
-            const { plant, city, method, succession, policy } = inputs;
+            const { plant, city, method, succession, policy, varietyId, varietyName } = inputs; // NEW
             const { startDate, seasonEnd, env, dailyRates, monthlyAvg, scanStart, scanEndHard } = inputs.derived();
             const budget = plant.firstHarvestBudget();  // {mode, amount}
 
@@ -1061,6 +1099,20 @@
     }
 
 
+    async function resolveVarietyName(varietyId, varietyList) {                            // NEW
+        if (!varietyId) return '';                                                          // NEW
+
+        // Prefer UI-provided list (no DB round-trip)                                        // NEW
+        const list = Array.isArray(varietyList) ? varietyList : [];                          // NEW
+        const hit = list.find(v => Number(v.variety_id) === Number(varietyId));              // NEW
+        if (hit && hit.variety_name != null) return String(hit.variety_name);                // NEW
+
+        // Fallback: query DB by id                                                          // NEW
+        const v = await PlantVarietyModel.loadById(Number(varietyId));                       // NEW
+        return v && v.variety_name != null ? String(v.variety_name) : '';                    // NEW
+    }                                                                                      // NEW
+
+
     // -------------------- Centralized builder for schedule context -------------------- 
     async function buildScheduleContextFromForm(formState, selPlant, options = {}) {
         const { enforcePlantSuccessionPolicy = false } = options;
@@ -1096,10 +1148,10 @@
         const policy = PolicyFlags.fromPlant(plant, method);
 
         // --- NEW: define varietyId/varietyName in this scope ---
-        const varietyId = (formState.varietyId != null) ? Number(formState.varietyId) : null;
-        const varietyName = varietyId
-            ? String((currentVarieties || []).find(v => Number(v.variety_id) === varietyId)?.variety_name || '')
-            : '';
+        const varietyId = formState.varietyId != null ? Number(formState.varietyId) : null;    // (keep)
+        const varietyName = varietyId                                                          // NEW
+            ? await resolveVarietyName(varietyId, options.currentVarieties)                       // NEW
+            : '';                                                                                 // NEW        
 
         const inputs = new ScheduleInputs({
             plant,
@@ -2348,54 +2400,53 @@
     }
 
 
-    // -------------------- Cross-plugin bridge: open variety editor -------------------- 
-    (function installVarietyEditorBridge() {
+    (function installVarietyEditorBridge() {                                         // NEW
+        const graph = ui && ui.editor ? ui.editor.graph : null;                        // NEW
+        if (!graph) return;                                                            // NEW
 
-        const __schedulerUi = ui;
+        if (graph.__uslVarietyEditorBridgeInstalled) return;                           // NEW
+        graph.__uslVarietyEditorBridgeInstalled = true;                                // NEW
 
-        if (window.__uslVarietyEditorBridgeInstalled) return;
-        window.__uslVarietyEditorBridgeInstalled = true;
+        graph.addListener("usl:openVarietyEditor", async function (sender, evt) {      // NEW
+            const cropId = String(evt.getProperty("cropId") || "").trim();             // NEW
+            const plantId = Number(evt.getProperty("plantId"));                        // NEW
+            const varietyIdRaw = evt.getProperty("varietyId");                         // NEW
+            const varietyId = (varietyIdRaw == null || varietyIdRaw === "") ? null : Number(varietyIdRaw); // NEW
 
-        window.addEventListener("usl:openVarietyEditor", async (ev) => {
-            console.log("[Scheduler] received usl:openVarietyEditor", ev?.detail);
-            const d = ev && ev.detail ? ev.detail : null;
-            if (!d) return;
+            console.log("[Scheduler] received usl:openVarietyEditor", { cropId, plantId, varietyId }); // NEW
+
+            if (!Number.isFinite(plantId)) return;                                     // NEW
+
+            const mode = (varietyId != null && Number.isFinite(varietyId)) ? "edit" : "add"; // NEW
 
             try {
-                const plantId = Number(d.plantId);
-                const varietyId = (d.varietyId == null || d.varietyId === "") ? null : Number(d.varietyId);
-                if (!Number.isFinite(plantId)) throw new Error("Invalid plantId");
-
-                const mode = (varietyId != null && Number.isFinite(varietyId)) ? "edit" : "add";
-
-                // You have ui in scope in scheduler; otherwise capture it where you can.     
-                const saved = await openVarietyEditorDialog(__schedulerUi, {
+                const saved = await openVarietyEditorDialog(ui, {                      // NEW
                     mode,
                     plantId,
                     varietyId
                 });
 
-                // showCommitDialog returns whatever div.__commit(saved) passes, or null on cancel
-                if (saved && saved.variety_id) {
-                    window.dispatchEvent(new CustomEvent("usl:varietyEditorClosed", {
-                        detail: {
-                            plantId: Number(saved.plant_id),
-                            varietyId: Number(saved.variety_id),
-                            varietyName: String(saved.variety_name || ""),
-                            action: mode
-                        }
-                    }));
-                } else {
-                    window.dispatchEvent(new CustomEvent("usl:varietyEditorClosed", {
-                        detail: { plantId, varietyId: null, varietyName: "", action: "cancel" }
-                    }));
-                }
+                // Emit close event (include cropId so Year Planner updates right row)
+                graph.fireEvent(new mxEventObject(                                     // NEW
+                    "usl:varietyEditorClosed",
+                    "cropId", cropId,
+                    "plantId", plantId,
+                    "action", saved && saved.variety_id ? mode : "cancel",
+                    "varietyId", saved && saved.variety_id ? Number(saved.variety_id) : null,
+                    "varietyName", saved && saved.variety_name ? String(saved.variety_name) : ""
+                ));
             } catch (e) {
-                console.error("[USL][Scheduler] usl:openVarietyEditor failed", e);
+                console.error("[Scheduler] openVarietyEditorDialog failed", e);        // NEW
                 try {
-                    window.dispatchEvent(new CustomEvent("usl:varietyEditorClosed", {
-                        detail: { plantId: d.plantId, varietyId: null, varietyName: "", action: "error", error: String(e?.message || e) }
-                    }));
+                    graph.fireEvent(new mxEventObject(                                 // NEW
+                        "usl:varietyEditorClosed",
+                        "cropId", cropId,
+                        "plantId", plantId,
+                        "action", "error",
+                        "varietyId", null,
+                        "varietyName", "",
+                        "error", String(e?.message || e)
+                    ));
                 } catch (_) { }
             }
         });
@@ -2839,14 +2890,15 @@
         }
 
         let currentVarieties = [];
-        async function reloadVarietyOptionsForPlant(plantId) {
+        async function reloadVarietyOptionsForPlant(plantId, selectedVarietyId = null) {
             currentVarieties = await PlantVarietyModel.listByPlantId(Number(plantId));
             const opts = [{ value: '', label: '(base plant)' }]
                 .concat(currentVarieties.map(v => ({
                     value: String(v.variety_id),
                     label: String(v.variety_name)
                 })));
-            setSelectOptions(varietySel, opts, '');
+            const sel = Number.isFinite(Number(selectedVarietyId)) ? String(selectedVarietyId) : ''; // NEW
+            setSelectOptions(varietySel, opts, sel);
         }
 
 
@@ -2915,10 +2967,17 @@
         let taskRules = Array.isArray(taskTemplate?.rules) ? [...taskTemplate.rules] : [];
         const saveDefaultChk = makeCheckbox(false);
 
+        // Prefill plant/variety from existing cell attrs                             // NEW
+        const cellVarietyId0 = (() => {                                               // NEW
+            const raw = cell?.getAttribute?.('variety_id');                             // NEW
+            const n = Number(raw);                                                      // NEW
+            return Number.isFinite(n) && n > 0 ? n : null;                              // NEW
+        })();
+
         // --- Central form state ---------------------------------------------------- 
         const formState = {
             plantId: initId,
-            varietyId: null,
+            varietyId: cellVarietyId0,                                                  // CHANGED
             cityName: citySel.value,
             method: methodSel.value,
             startISO: startInput.value,
@@ -2935,6 +2994,9 @@
             lastHarvestISO: initialEndISO,                           // schedule-derived last harvest
             lastHarvestSource: 'auto'                                // track where it came from
         };
+
+        // NEW
+
 
         function syncStateFromControls() {
             formState.plantId = Number(plantSel.value);
@@ -2993,12 +3055,19 @@
             (Number.isFinite(existingCfg.minYieldMultiplier) ? existingCfg.minYieldMultiplier : 0.50)
         );
 
-        syncStateFromControls();
+        // Load varieties and preselect from cell                                     // CHANGED
+        await reloadVarietyOptionsForPlant(formState.plantId, formState.varietyId);   // CHANGED
+        syncVarietyButtons();                                                        // same
 
-        await reloadVarietyOptionsForPlant(formState.plantId);
-        syncVarietyButtons();
-        await refreshEffectivePlant();
-        resetMethodOptions(effectivePlant);
+        // Ensure the selected value actually exists; if not, fall back to base plant // NEW
+        if (formState.varietyId != null && !String(varietySel.value)) {              // NEW
+            formState.varietyId = null;                                                // NEW
+        }                                                                            // NEW
+
+        syncStateFromControls();                                                     // MOVED (after setting varietySel) // CHANGED
+        await refreshEffectivePlant();                                                // same
+        resetMethodOptions(effectivePlant);                                           // same
+
 
 
         // Layout rows
@@ -3511,11 +3580,11 @@
             try {
                 syncStateFromControls();
 
-                const { inputs } = await buildScheduleContextFromForm(
-                    formState,
-                    selPlant,
-                    { enforcePlantSuccessionPolicy: false }
-                );
+                const { inputs } = await buildScheduleContextFromForm(formState, selPlant, {
+                    enforcePlantSuccessionPolicy: false,
+                    currentVarieties                       // NEW
+                });
+
 
                 const { rows, lastScheduledHarvestEndISO } =
                     await computeScheduleResult(inputs, formState.yieldTargetKg);
@@ -3571,7 +3640,7 @@
                 const { plant, city, inputs } = await buildScheduleContextFromForm(
                     formState,
                     selPlant,
-                    { enforcePlantSuccessionPolicy: false }
+                    { enforcePlantSuccessionPolicy: false, currentVarieties }
                 );
 
                 const rows = await explainFeasibilityOverSeason(inputs, 400, false);
@@ -3609,7 +3678,7 @@
                 const { inputs } = await buildScheduleContextFromForm(
                     formState,
                     selPlant,
-                    { enforcePlantSuccessionPolicy: false }
+                    { enforcePlantSuccessionPolicy: false, currentVarieties }
                 );
 
                 const rows = await computePreviewRows(inputs, formState.yieldTargetKg);
@@ -3626,7 +3695,7 @@
                 const { inputs } = await buildScheduleContextFromForm(
                     formState,
                     selPlant,
-                    { enforcePlantSuccessionPolicy: true }
+                    { enforcePlantSuccessionPolicy: true, currentVarieties }
                 );
 
                 // Build taskTemplate object from current rules
@@ -3647,6 +3716,32 @@
                         template: taskTemplate
                     });
                 }
+
+                const graph = ui.editor.graph;
+                const model = graph.getModel();
+
+                model.beginUpdate();
+                try {
+                    model.execute(new mxCellAttributeChange(cell, 'plant_id', String(formState.plantId)));
+
+                    const isBase = (formState.varietyId == null);                                            // NEW
+                    model.execute(new mxCellAttributeChange(                                                 // same
+                        cell,
+                        'variety_id',
+                        !isBase ? String(formState.varietyId) : ''
+                    ));
+
+                    // Ensure base plant truly means "no variety" everywhere                                  // NEW
+                    model.execute(new mxCellAttributeChange(                                                 // NEW
+                        cell,
+                        'variety_name',
+                        !isBase ? String(cell.getAttribute?.('variety_name') || '') : ''                       // NEW (see note below)
+                    ));
+                } finally {
+                    model.endUpdate();
+                }
+                graph.refresh(cell);
+
 
 
                 await applyScheduleToGraph(ui, cell, inputs, formState.yieldTargetKg);
@@ -4545,6 +4640,9 @@
                 setAttr(cell, 'days_maturity', String(budget.amount));
                 setAttr(cell, 'gdd_to_maturity', '');
             }
+            setAttr(cell, 'variety_id', String(inputs.varietyId ?? ''));         // NEW
+            setAttr(cell, 'variety_name', String(inputs.varietyName || ''));     // NEW
+
             // stamp summary on anchor cell
             stampPlanSummary(cell, {
                 plant, city, method, Tbase: env.Tbase,
@@ -5113,6 +5211,7 @@
 
                                 const graph = ui.editor.graph;
                                 const model = graph.getModel();
+
                                 model.beginUpdate();
                                 try {
                                     // inherit city from garden module ancestor if present
@@ -5158,4 +5257,4 @@
 
     });
 
-})();
+})

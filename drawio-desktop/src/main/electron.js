@@ -42,7 +42,7 @@ function makeDbId() {
 }
 
 //(ADD)
-function getLiveDbPath(dbName = 'Syntropy.sqlite') {                      // NEW
+function getLiveDbPath(dbName = 'Trellis_database.sqlite') {                      // NEW
 	const dir = path.join(getAppDataFolder(), 'trellis_database');                        // NEW
 	if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });         // NEW
 	return path.join(dir, dbName);                                           // NEW
