@@ -92,34 +92,34 @@ Draw.loadPlugin(function (ui) {
         ].join(";");
     }
 
-    let __dbPathCached = null; 
+    let __dbPathCached = null;
 
-    async function getDbPath() { 
-      if (__dbPathCached) return __dbPathCached;
-    
-      if (!window.dbBridge || typeof window.dbBridge.resolvePath !== "function") {
-        throw new Error("dbBridge.resolvePath not available; add dbResolvePath wiring");
-      }
-    
-      const r = await window.dbBridge.resolvePath({
-        dbName: "Trellis_database.sqlite"
-        // seedRelPath omitted -> main uses its default ../../trellis_database/Trellis_database.sqlite
-        // reset: true // only for testing if you want to re-copy seed
-      });
-    
-      __dbPathCached = r.dbPath;
-      return __dbPathCached;
+    async function getDbPath() {
+        if (__dbPathCached) return __dbPathCached;
+
+        if (!window.dbBridge || typeof window.dbBridge.resolvePath !== "function") {
+            throw new Error("dbBridge.resolvePath not available; add dbResolvePath wiring");
+        }
+
+        const r = await window.dbBridge.resolvePath({
+            dbName: "Trellis_database.sqlite"
+            // seedRelPath omitted -> main uses its default ../../trellis_database/Trellis_database.sqlite
+            // reset: true // only for testing if you want to re-copy seed
+        });
+
+        __dbPathCached = r.dbPath;
+        return __dbPathCached;
     }
-    
+
 
     // -------------------- DB (open → query → close) --------------------
     async function queryAll(sql, params) {
         if (!window.dbBridge || typeof window.dbBridge.open !== "function") {
             throw new Error("dbBridge not available; check preload/main wiring");
         }
-        const dbPath = await getDbPath();                            
+        const dbPath = await getDbPath();
         const opened = await window.dbBridge.open(dbPath, { readOnly: true }); // CHANGE
-                try {
+        try {
             const res = await window.dbBridge.query(opened.dbId, sql, params);
             return Array.isArray(res?.rows) ? res.rows : [];
         } finally {
@@ -378,25 +378,36 @@ Draw.loadPlugin(function (ui) {
     // -------------------- Utils & Styles --------------------
 
     // batch set multiple attrs with one undoable value update
-    function setCellAttrs(model, cell, attrs) {                                              
-        model.beginUpdate();                                                                 
-        try {                                                                                
-            const base = ensureXmlValue(cell);                                               
-            const clone = base.cloneNode(true);                                              
-            for (const [k, v] of Object.entries(attrs || {})) {                              
-                if (v === null || v === undefined || v === "") clone.removeAttribute(k);     
-                else clone.setAttribute(k, String(v));                                       
-            }                                                                                
-            model.setValue(cell, clone);                                                     
-        } finally {                                                                          
-            model.endUpdate();                                                               
-        }                                                                                    
+    function setCellAttrs(model, cell, attrs) {
+        model.beginUpdate();
+        try {
+            const base = ensureXmlValue(cell);
+            const clone = base.cloneNode(true);
+            for (const [k, v] of Object.entries(attrs || {})) {
+                if (v === null || v === undefined || v === "") clone.removeAttribute(k);
+                else clone.setAttribute(k, String(v));
+            }
+            model.setValue(cell, clone);
+        } finally {
+            model.endUpdate();
+        }
     }
 
+    function setCellAttrsNoTxn(model, cell, attrs) {
+        const base = ensureXmlValue(cell);
+        const clone = base.cloneNode(true);
+        for (const [k, v] of Object.entries(attrs || {})) {
+            if (v === null || v === undefined || v === "") clone.removeAttribute(k);
+            else clone.setAttribute(k, String(v));
+        }
+        model.setValue(cell, clone);
+    }
+
+
     function hasGardenSettingsSet(moduleCell) {                                              // CHANGE
-        if (!(moduleCell && moduleCell.getAttribute)) return false;                          
-        const city = String(moduleCell.getAttribute("city_name") || "").trim();              
-        const units = String(moduleCell.getAttribute("unit_system") || "").trim();           
+        if (!(moduleCell && moduleCell.getAttribute)) return false;
+        const city = String(moduleCell.getAttribute("city_name") || "").trim();
+        const units = String(moduleCell.getAttribute("unit_system") || "").trim();
         return !!(city && units);                                                            // CHANGE
     }
 
@@ -429,12 +440,12 @@ Draw.loadPlugin(function (ui) {
         title.textContent = "Garden Settings";
         div.appendChild(title);
 
-        const err = document.createElement("div");                                          
-        err.style.color = "#b91c1c";                                                        
-        err.style.fontSize = "12px";                                                        
-        err.style.marginBottom = "8px";                                                     
-        err.style.display = "none";                                                         
-        div.appendChild(err);                                                               
+        const err = document.createElement("div");
+        err.style.color = "#b91c1c";
+        err.style.fontSize = "12px";
+        err.style.marginBottom = "8px";
+        err.style.display = "none";
+        div.appendChild(err);
 
         function row(labelText, controlEl) {
             const wrap = document.createElement("div");
@@ -454,12 +465,12 @@ Draw.loadPlugin(function (ui) {
         const citySel = document.createElement("select");
         citySel.style.flex = "1";
 
-        const cityPlaceholder = document.createElement("option");                           
-        cityPlaceholder.value = "";                                                         
-        cityPlaceholder.textContent = "Select a city…";                                     
-        cityPlaceholder.disabled = true;                                                    
-        cityPlaceholder.selected = !curCity;                                                
-        citySel.appendChild(cityPlaceholder);                                               
+        const cityPlaceholder = document.createElement("option");
+        cityPlaceholder.value = "";
+        cityPlaceholder.textContent = "Select a city…";
+        cityPlaceholder.disabled = true;
+        cityPlaceholder.selected = !curCity;
+        citySel.appendChild(cityPlaceholder);
 
         cities.forEach((name) => {
             const o = document.createElement("option");
@@ -474,12 +485,12 @@ Draw.loadPlugin(function (ui) {
         const unitsSel = document.createElement("select");
         unitsSel.style.flex = "1";
 
-        const unitsPlaceholder = document.createElement("option");                          
-        unitsPlaceholder.value = "";                                                        
-        unitsPlaceholder.textContent = "Select units…";                                     
-        unitsPlaceholder.disabled = true;                                                   
-        unitsPlaceholder.selected = !curUnits;                                              
-        unitsSel.appendChild(unitsPlaceholder);                                             
+        const unitsPlaceholder = document.createElement("option");
+        unitsPlaceholder.value = "";
+        unitsPlaceholder.textContent = "Select units…";
+        unitsPlaceholder.disabled = true;
+        unitsPlaceholder.selected = !curUnits;
+        unitsSel.appendChild(unitsPlaceholder);
 
         [{ v: "metric", t: "Metric (m, cm)" }, { v: "imperial", t: "Imperial (ft, in)" }]
             .forEach(({ v, t }) => {
@@ -491,10 +502,10 @@ Draw.loadPlugin(function (ui) {
             });
         row("Units:", unitsSel);
 
-        function showError(msg) {                                                           
-            err.textContent = msg;                                                          
-            err.style.display = "block";                                                    
-        }                                                                                   
+        function showError(msg) {
+            err.textContent = msg;
+            err.style.display = "block";
+        }
 
         const btnRow = document.createElement("div");
         btnRow.style.display = "flex";
@@ -504,12 +515,12 @@ Draw.loadPlugin(function (ui) {
 
         const cancelBtn = mxUtils.button("Cancel", () => ui.hideDialog());
         const okBtn = mxUtils.button("OK", () => {
-            err.style.display = "none";                                                     
+            err.style.display = "none";
             const chosenCity = (citySel.value || "").trim();
             const chosenUnits = (unitsSel.value || "").trim();
 
-            if (!chosenCity) { showError("City is required."); citySel.focus(); return; }   
-            if (!chosenUnits) { showError("Units are required."); unitsSel.focus(); return; } 
+            if (!chosenCity) { showError("City is required."); citySel.focus(); return; }
+            if (!chosenUnits) { showError("Units are required."); unitsSel.focus(); return; }
 
             ui.hideDialog();
             setCellAttrs(model, moduleCell, {
@@ -526,27 +537,27 @@ Draw.loadPlugin(function (ui) {
 
         ui.showDialog(div, 420, 220, true, true);
         citySel.focus();
-    }                                                                                        
+    }
 
 
     // Listen for garden-module settings requests emitted by the module plugin               
-    if (!graph.__uslGardenSettingsListenerInstalled) {                                       
-        graph.__uslGardenSettingsListenerInstalled = true;                                   
+    if (!graph.__uslGardenSettingsListenerInstalled) {
+        graph.__uslGardenSettingsListenerInstalled = true;
 
-        graph.addListener("usl:gardenModuleNeedsSettings", function (sender, evt) {          
-            const moduleCell = evt.getProperty("cell");                                      
-            if (!moduleCell || !isGardenModule(moduleCell)) return;                          
+        graph.addListener("usl:gardenModuleNeedsSettings", function (sender, evt) {
+            const moduleCell = evt.getProperty("cell");
+            if (!moduleCell || !isGardenModule(moduleCell)) return;
 
-            if (hasGardenSettingsSet(moduleCell)) return;                                    
+            if (hasGardenSettingsSet(moduleCell)) return;
 
             // Defer dialog until after current paint/update completes                        
-            setTimeout(() => {                                                               
+            setTimeout(() => {
                 // Re-check in case settings were set during the delay                         
-                if (hasGardenSettingsSet(moduleCell)) return;                                
-                showGardenSettingsDialog(ui, graph, moduleCell);                             
-            }, 0);                                                                           
-        });                                                                                  
-    }                                                                                        
+                if (hasGardenSettingsSet(moduleCell)) return;
+                showGardenSettingsDialog(ui, graph, moduleCell);
+            }, 0);
+        });
+    }
 
 
     function setCellAttr(model, cell, name, value) {
@@ -601,9 +612,130 @@ Draw.loadPlugin(function (ui) {
         return null;
     }
 
-    function hasCitySet(moduleCell) {
-        return !!(moduleCell && moduleCell.getAttribute && moduleCell.getAttribute('city_name'));
+    // -------------------- Garden Bed helpers --------------------
+    function isGardenBed(cell) {
+        return !!cell && cell.getAttribute && cell.getAttribute("garden_bed") === "1";
     }
+
+    const BOARD_KEY = 'KANBAN_BOARD'; // already in your other plugin; include here if not present // CHANGE
+
+    function isKanbanBoard(cell) { 
+        if (!cell) return false; 
+        if (!cell.getAttribute) { 
+            const st = getStyleSafe(cell); 
+            return st.includes(BOARD_KEY);
+        } 
+
+        // XML attribute markers (adjust to match your kanban plugin if needed) 
+        if (cell.getAttribute(BOARD_KEY) === "1") return true; 
+        if (cell.getAttribute("board_key") === BOARD_KEY) return true; 
+        if (cell.getAttribute("board_role") === BOARD_KEY) return true; 
+
+        // Style fallback 
+        const st = getStyleSafe(cell); 
+        if (st.includes(BOARD_KEY)) return true; 
+        if (st.includes(`board_key=${BOARD_KEY}`)) return true; 
+        if (st.includes(`board_role=${BOARD_KEY}`)) return true; 
+
+        return false; 
+    } 
+
+    function findKanbanBoardAncestor(graph, cell) { 
+        const model = graph.getModel(); 
+        let cur = cell; 
+        while (cur) { 
+            if (isKanbanBoard(cur)) return cur; 
+            cur = model.getParent(cur); 
+        } 
+        return null; 
+    } 
+
+
+    function isTypedObject(cell) {
+        if (!cell || !cell.getAttribute) return false;
+
+        // XML-attr types
+        const typeAttrs = [
+            "garden_module",
+            "tiler_group",
+            "garden_bed",
+            "plant_tiler",
+            "lod_summary",
+        ];
+        for (const a of typeAttrs) {
+            if (cell.getAttribute(a) === "1") return true;
+        }
+
+        // Style-based types you already use
+        const st = getStyleSafe(cell);
+        if (st.includes("module=1")) return true;
+
+        return false;
+    }
+
+    function isRegularVertexCandidateForBed(graph, cell) {
+        if (!cell || !(cell.isVertex && cell.isVertex())) return false;
+        if (cell.isEdge && cell.isEdge()) return false;
+        if (isTypedObject(cell)) return false;
+
+        if (isKanbanBoard(cell)) return false; // CHANGE
+        if (findKanbanBoardAncestor(graph, cell)) return false; // CHANGE
+
+        if (findTilerGroupAncestor(graph, cell)) return false; // prevent converting plant tiles/summaries etc.
+        return true;
+    }
+
+
+    function addBedStyle(existingStyle) { // CHANGE
+        const st = String(existingStyle || ""); // CHANGE
+        const add = [
+            "dashed=1",
+            "dashPattern=4 3",
+            "strokeWidth=2",
+            "fillColor=#A16207",
+            "fillOpacity=35",
+        ].join(";");
+
+        return st
+            ? (st.endsWith(";") ? st + add : st + ";" + add)
+            : add;
+    }
+
+
+    function collectBedCandidates(graph, cells) {
+        const out = [];
+        const seen = new Set();
+        for (const c of (cells || [])) {
+            if (!c) continue;
+            if (seen.has(c.id)) continue;
+            seen.add(c.id);
+            if (!isRegularVertexCandidateForBed(graph, c)) continue;
+            out.push(c);
+        }
+        return out;
+    }
+
+    function isInsideGardenModule(graph, cell) {
+        const mod = findModuleAncestor(graph, cell);
+        return !!(mod && isGardenModule(mod));
+    }
+
+    function convertCellsToGardenBeds(graph, cells) {
+        const model = graph.getModel();
+        model.beginUpdate();
+        try {
+            for (const c of (cells || [])) {
+                setCellAttrsNoTxn(model, c, { garden_bed: "1" });
+                model.setStyle(c, addBedStyle(getStyleSafe(c)));
+            }
+        } finally {
+            model.endUpdate();
+        }
+        for (const c of (cells || [])) graph.refresh(c);
+    }
+
+
+
 
     /**
      * Creates an empty tiler group inside the given garden module.
@@ -991,6 +1123,48 @@ Draw.loadPlugin(function (ui) {
             // ----- MODULE CONTEXT MENU -----
             const targetMod = resolveModuleTarget(cell, evt);
 
+            // -------------------- Garden Beds (selection-aware) --------------------
+            try {
+                const sel = graph.getSelectionCells ? (graph.getSelectionCells() || []) : [];
+                const validSel = collectBedCandidates(graph, sel).filter(c => isInsideGardenModule(graph, c));
+
+                // Prefer multi-selection when it yields 2+ valid targets
+                if (validSel.length >= 2) {
+                    menu.addItem(`Convert to Garden Beds (${validSel.length})`, null, function () {
+                        try {
+                            convertCellsToGardenBeds(graph, validSel);
+                        } catch (e) {
+                            mxUtils.alert("Error converting to garden beds: " + e.message);
+                        }
+                    });
+                } else {
+                    // Single selection or fallback to hit cell
+                    const hit = evt ? hitTestCell(evt) : cell;
+                    const hitOk = hit &&
+                        isInsideGardenModule(graph, hit) &&
+                        isRegularVertexCandidateForBed(graph, hit);
+
+                    if (validSel.length === 1) {
+                        menu.addItem("Convert to Garden Bed", null, function () {
+                            try {
+                                convertCellsToGardenBeds(graph, validSel);
+                            } catch (e) {
+                                mxUtils.alert("Error converting to garden bed: " + e.message);
+                            }
+                        });
+                    } else if (hitOk) {
+                        menu.addItem("Convert to Garden Bed", null, function () {
+                            try {
+                                convertCellsToGardenBeds(graph, [hit]);
+                            } catch (e) {
+                                mxUtils.alert("Error converting to garden bed: " + e.message);
+                            }
+                        });
+                    }
+                }
+            } catch (_) { }
+
+
             // ----- Expand/Collapse (selection-aware) ---------------------------------- 
             const selectedGroups = collectSelectedTilerGroups(graph, target);
             const n = selectedGroups.length;
@@ -1030,13 +1204,13 @@ Draw.loadPlugin(function (ui) {
             }
 
             if (targetMod && isGardenModule(targetMod)) {
-                menu.addItem("Garden Settings…", null, async function () {                            
-                    await showGardenSettingsDialog(ui, graph, targetMod);                             
+                menu.addItem("Garden Settings…", null, async function () {
+                    await showGardenSettingsDialog(ui, graph, targetMod);
                 });
             }
 
             // --- Add New Plant Group (requires garden settings) ----------------------------------
-            if (targetMod && isGardenModule(targetMod)) {                                            
+            if (targetMod && isGardenModule(targetMod)) {
                 if (hasGardenSettingsSet(targetMod)) {                                               // CHANGE
                     menu.addItem("Add New Plant Group", null, function () {
                         try {
@@ -1049,9 +1223,9 @@ Draw.loadPlugin(function (ui) {
                     });
                 } else {
                     // Disabled hint (non-clickable)
-                    menu.addItem("Set garden settings to add plants", null, function () { }, null, null, false); 
+                    menu.addItem("Set garden settings to add plants", null, function () { }, null, null, false);
                 }
-            }                                                                                         
+            }
         };
 
         try {
@@ -1321,11 +1495,11 @@ Draw.loadPlugin(function (ui) {
         const abbr = getXmlAttr(groupCell, "plant_abbr", "?");
         const fullName = getGroupDisplayName(groupCell, abbr);
         setCellAttr(model, groupCell, "label", `${fullName}`);
-      }      
+    }
 
     function retileGroup(graph, groupCell, opts = {}) {
         const model = graph.getModel();
-        syncGroupTitle(model, groupCell); // NEW: keep label in sync
+        syncGroupTitle(model, groupCell);
         const abbr = groupCell.getAttribute("plant_abbr") || "?";
         const spacingXcm = Number(groupCell.getAttribute("spacing_x_cm") ||
             groupCell.getAttribute("spacing_cm") || "30");
