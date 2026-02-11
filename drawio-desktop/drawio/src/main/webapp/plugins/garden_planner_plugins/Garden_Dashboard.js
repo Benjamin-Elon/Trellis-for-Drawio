@@ -45,6 +45,7 @@ Draw.loadPlugin(function (ui) {
         "strokeColor=#666666;fillColor=#f7f7f7;fontSize=12;";
 
     const PLAN_YEAR_EVENT = "usl:planYearRequested"; // NEW
+    const ALLOCATE_PLAN_EVENT = "usl:allocatePlanRequested"; // NEW
 
     // -------------------- Helpers --------------------
     function getStyleSafe(cell) {
@@ -632,6 +633,16 @@ Draw.loadPlugin(function (ui) {
         planBtn.style.fontFamily = "Arial";                               // NEW
         planBtn.style.fontSize = "12px";                                  // NEW
 
+        const allocateBtn = document.createElement("button");    // NEW
+        allocateBtn.textContent = "Allocate";                    // NEW
+        allocateBtn.style.height = BTN_SIZE + "px";              // NEW
+        allocateBtn.style.border = "1px solid #777";             // NEW
+        allocateBtn.style.borderRadius = "6px";                  // NEW
+        allocateBtn.style.background = "#fff";                   // NEW
+        allocateBtn.style.cursor = "pointer";                    // NEW
+        allocateBtn.style.padding = "0 8px";                     // NEW
+        allocateBtn.style.fontFamily = "Arial";                  // NEW
+        allocateBtn.style.fontSize = "12px";                     // NEW
 
         const exportBtn = document.createElement("button");
         exportBtn.textContent = "Export";
@@ -718,6 +729,26 @@ Draw.loadPlugin(function (ui) {
             } catch (_) { }
         });                                                                // NEW        
 
+        allocateBtn.addEventListener("click", (ev) => {                         // NEW
+            ev.preventDefault();                                                // NEW
+            ev.stopPropagation();                                               // NEW
+        
+            const moduleCell = findModuleAncestor(graph, dashCell);             // NEW
+            if (!moduleCell) return;                                            // NEW
+        
+            const year = getDashboardYear(dashCell);                            // NEW
+        
+            try {                                                               // NEW
+                window.dispatchEvent(new CustomEvent(ALLOCATE_PLAN_EVENT, {      // NEW
+                    detail: {
+                        moduleCellId: moduleCell.getId ? moduleCell.getId() : moduleCell.id,
+                        dashCellId: dashCell.getId ? dashCell.getId() : dashCell.id,
+                        year: year
+                    }
+                }));
+            } catch (_) { }
+        });                                                                     // NEW        
+
         exportBtn.addEventListener("click", (ev) => {
             ev.preventDefault();
             ev.stopPropagation();
@@ -743,7 +774,8 @@ Draw.loadPlugin(function (ui) {
         header.appendChild(prev);
         header.appendChild(yearLabel);
         header.appendChild(next);
-        header.appendChild(planBtn);    // NEW
+        header.appendChild(planBtn);       // NEW
+        header.appendChild(allocateBtn);   // NEW
         header.appendChild(exportBtn);
 
         wrap.appendChild(header);
@@ -751,7 +783,7 @@ Draw.loadPlugin(function (ui) {
 
         graph.container.appendChild(wrap);
 
-        const entry = { wrap, header, content, prev, next, planBtn, exportBtn, yearLabel, syncYearLabel }; // CHANGE
+        const entry = { wrap, header, content, prev, next, planBtn, allocateBtn, exportBtn, yearLabel, syncYearLabel }; // CHANGE
         overlayByDashId.set(dashId, entry);
 
         function isOverlayControlTarget(el) {
@@ -823,6 +855,11 @@ Draw.loadPlugin(function (ui) {
         entry.planBtn.style.fontSize = fontPx + "px";                      // NEW
         entry.planBtn.style.padding = padYPx + "px " + padXPx + "px";      // NEW
         entry.planBtn.style.borderRadius = radiusPx + "px";                // NEW
+
+        entry.allocateBtn.style.height = btnPx + "px";                         // NEW
+        entry.allocateBtn.style.fontSize = fontPx + "px";                      // NEW
+        entry.allocateBtn.style.padding = padYPx + "px " + padXPx + "px";      // NEW
+        entry.allocateBtn.style.borderRadius = radiusPx + "px";                // NEW        
 
     }
 

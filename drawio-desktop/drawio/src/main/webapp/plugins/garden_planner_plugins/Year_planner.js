@@ -24,154 +24,715 @@ Draw.loadPlugin(function (ui) {
     const PLAN_UNIT_DEFAULTS_ATTR = "plan_unit_defaults";   // (diagram-scoped, per plantId)
     const __YP_GLOBAL = window.__uslYearPlannerGlobal || (window.__uslYearPlannerGlobal = {});      // NEW
 
-    let __harvestSuggestedHandler = null;
+    // -------------------- Phase 2: Session + lifecycle -------------------------------------------- // NEW
+    const controller = { session: null };                                                               // NEW
 
-
-
-    // -------------------- DB helpers --------------------
-
-    let __dbPathCached = null;
-
-    async function getDbPath() {
-        if (__dbPathCached) return __dbPathCached;
-
-        if (!window.dbBridge || typeof window.dbBridge.resolvePath !== "function") {
-            throw new Error("dbBridge.resolvePath not available; add dbResolvePath wiring");
-        }
-
-        const r = await window.dbBridge.resolvePath({
-            dbName: "Trellis_database.sqlite"
-            // seedRelPath omitted -> main uses its default ../../trellis_database/Trellis_database.sqlite
-            // reset: true // only for testing if you want to re-copy seed
-        });
-
-        __dbPathCached = r.dbPath;
-        return __dbPathCached;
+    function safeDispose(fn) {                                                                          // NEW
+        try { fn && fn(); } catch (_) { }
     }
 
-    async function queryAll(sql, params) {
-        if (!window.dbBridge || typeof window.dbBridge.open !== 'function') {
-            throw new Error('dbBridge not available; check preload/main wiring');
+    function closeSession() {                                                                           // NEW
+        const s = controller.session;
+        if (!s) return;
+
+        // run disposers (listeners etc.)
+        const ds = Array.isArray(s.disposers) ? s.disposers.slice().reverse() : [];
+        s.disposers = [];
+        for (const d of ds) safeDispose(d);
+
+        // remove DOM
+        if (s.ui && s.ui.modalEl) {                                                                      // NEW
+            try { s.ui.modalEl.remove(); } catch (_) { }
+            s.ui.modalEl = null;
         }
-        const dbPath = await getDbPath();
-        const opened = await window.dbBridge.open(dbPath, { readOnly: true }); // CHANGE
-        try {
-            const res = await window.dbBridge.query(opened.dbId, sql, params || []);
-            return Array.isArray(res?.rows) ? res.rows : [];
-        } finally {
-            try { await window.dbBridge.close(opened.dbId); } catch (_) { }
-        }
+
+        controller.session = null;                                                                       // NEW
     }
 
-    async function listPlantsBasicRows() {
-        const sql = `
+    function createSession(moduleCell, year, plan) {                                                     // NEW
+        const moduleCellId = String(moduleCell?.getId ? moduleCell.getId() : moduleCell?.id || "");
+        return {
+            moduleCell,
+            moduleCellId,
+            year: Number(year),
+            plan,
+            ui: {
+                modalEl: null,
+                harvestVizByCropId: new Map()                                                            // NEW
+            },
+            disposers: []
+        };
+    }
+
+    function addWindowListener(s, type, handler, opts) {                                                  // NEW
+        window.addEventListener(type, handler, opts);
+        s.disposers.push(() => window.removeEventListener(type, handler, opts));
+    }
+
+    function addGraphListener(s, graph, eventName, handler) {                                             // NEW
+        graph.addListener(eventName, handler);
+        s.disposers.push(() => { try { graph.removeListener(handler); } catch (_) { } });
+    }
+
+
+
+    // -------------------- Env --------------------                                                     // NEW
+    const Env = (() => {                                                                                // NEW
+        const DEBUG = false; // logging flag placeholder (unused in Phase 1)                            // NEW
+
+        function safeJsonStringParse(s, fallback) {                                                           // NEW
+            try { return JSON.parse(String(s || "")); } catch (_) { return fallback; }                 // NEW
+        }
+
+        function uid(prefix) {                                                                          // NEW (moved)
+            return prefix + "_" + Math.random().toString(36).slice(2, 10);
+        }
+
+        return {
+            graph,
+            model,
+            DEBUG,
+            safeJsonStringParse,
+            uid,
+            ATTRS: {
+                PLAN_YEARS_ATTR,
+                PLAN_TEMPLATES_ATTR,
+                PLAN_UNIT_DEFAULTS_ATTR
+            }
+        };
+    })();
+
+    // -------------------- DiagramStore --------------------                                            // NEW
+    const DiagramStore = (() => {                                                                        // NEW
+        function getCellAttr(cell, key, def = "") {                                                     // NEW (moved)
+            if (!cell || !cell.getAttribute) return def;
+            const v = cell.getAttribute(key);
+            return (v === null || v === undefined) ? def : v;
+        }
+
+        function setCellAttr(cell, key, val) {                                                          // NEW (moved)
+            if (Env.graph.setAttributeForCell) {
+                if (val == null) Env.graph.setAttributeForCell(cell, key, null);
+                else Env.graph.setAttributeForCell(cell, key, String(val));
+            } else if (cell.value && typeof cell.value.setAttribute === "function") {
+                if (val == null) cell.value.removeAttribute(key);
+                else cell.value.setAttribute(key, String(val));
+            }
+        }
+
+        function readPlanYearsMap(moduleCell) {                                                         // NEW (moved)
+            const raw = getCellAttr(moduleCell, Env.ATTRS.PLAN_YEARS_ATTR, "");
+            const obj = Env.safeJsonStringParse(raw, null);
+            return (obj && typeof obj === "object" && !Array.isArray(obj)) ? obj : {};
+        }
+
+        function writePlanYearsMap(moduleCell, mapObj) {                                                 // NEW (moved)
+            Env.model.beginUpdate();
+            try {
+                setCellAttr(moduleCell, Env.ATTRS.PLAN_YEARS_ATTR, JSON.stringify(mapObj || {}));
+            } finally {
+                Env.model.endUpdate();
+            }
+            Env.graph.refresh(moduleCell);
+        }
+
+        function getDiagramRootCell() {                                                                  // NEW (moved)
+            try { return Env.model.getRoot(); } catch (_) { }
+            return null;
+        }
+
+        function readRootJsonMap(attrName) {                                                             // NEW (moved)
+            const root = getDiagramRootCell();
+            if (!root) return {};
+            const raw = getCellAttr(root, attrName, "");
+            const obj = Env.safeJsonStringParse(raw, null);
+            return (obj && typeof obj === "object" && !Array.isArray(obj)) ? obj : {};
+        }
+
+        function writeRootJsonMap(attrName, mapObj) {                                                    // NEW (moved)
+            const root = getDiagramRootCell();
+            if (!root) return;
+            Env.model.beginUpdate();
+            try { setCellAttr(root, attrName, JSON.stringify(mapObj || {})); }
+            finally { Env.model.endUpdate(); }
+            Env.graph.refresh(root);
+        }
+
+        return {
+            getCellAttr,
+            setCellAttr,
+            readPlanYearsMap,
+            writePlanYearsMap,
+            readRootJsonMap,
+            writeRootJsonMap,
+            getDiagramRootCell
+        };
+    })();
+
+    // -------------------- DbClient --------------------                                                 // NEW
+    const DbClient = (() => {                                                                             // NEW
+        let __dbPathCached = null;                                                                       // NEW (relocated)
+        let __plantsBasicCache = null;                                                                   // NEW (relocated)
+
+        async function getDbPath() {                                                                     // NEW (moved)
+            if (__dbPathCached) return __dbPathCached;
+
+            if (!window.dbBridge || typeof window.dbBridge.resolvePath !== "function") {
+                throw new Error("dbBridge.resolvePath not available; add dbResolvePath wiring");
+            }
+
+            const r = await window.dbBridge.resolvePath({
+                dbName: "Trellis_database.sqlite"
+            });
+
+            __dbPathCached = r.dbPath;
+            return __dbPathCached;
+        }
+
+        async function queryAll(sql, params) {                                                           // NEW (moved)
+            if (!window.dbBridge || typeof window.dbBridge.open !== 'function') {
+                throw new Error('dbBridge not available; check preload/main wiring');
+            }
+            const dbPath = await getDbPath();
+            const opened = await window.dbBridge.open(dbPath, { readOnly: true });
+            try {
+                const res = await window.dbBridge.query(opened.dbId, sql, params || []);
+                return Array.isArray(res?.rows) ? res.rows : [];
+            } finally {
+                try { await window.dbBridge.close(opened.dbId); } catch (_) { }
+            }
+        }
+
+        async function listPlantsBasicRows() {                                                           // NEW (moved)
+            const sql = `
           SELECT plant_id, plant_name, yield_per_plant_kg, harvest_window_days
           FROM Plants
           WHERE abbr IS NOT NULL
           ORDER BY plant_name;`;
-        return await queryAll(sql, []);
-    }
-
-    let __plantsBasicCache = null;
-    async function getPlantsBasicCached() {
-        if (__plantsBasicCache) return __plantsBasicCache;
-        __plantsBasicCache = await listPlantsBasicRows();
-        return __plantsBasicCache;
-    }
-
-
-    // -------------------- Planned-plants from diagram (NEW) --------------------
-
-    function isTilerGroupCell(cell) {
-        return !!cell && typeof cell.getAttribute === "function" && cell.getAttribute("tiler_group") === "1";
-    }
-
-    function getCropKeyFromPlanCrop(c) {
-        const plantId = String(c && c.plantId || "").trim();
-        const varietyId = (c && c.varietyId != null && c.varietyId !== "") ? String(c.varietyId).trim() : "";
-        if (plantId) return `pid:${plantId}|vid:${varietyId}`;
-        const plant = String(c && c.plant || "").trim();
-        const variety = String(c && c.variety || "").trim();
-        return `name:${plant}|var:${variety}`;
-    }
-
-    function getCropKeyFromTilerGroup(tg) {
-        const plantId = String(getCellAttr(tg, "plant_id", "") || "").trim();
-        const varietyId = String(getCellAttr(tg, "variety_id", "") || "").trim();
-        if (plantId) return `pid:${plantId}|vid:${varietyId}`;
-
-        const plant = String(getCellAttr(tg, "plant_name", "") || "").trim();
-        const variety = String(getCellAttr(tg, "variety_name", "") || "").trim();
-        return `name:${plant}|var:${variety}`;
-    }
-
-    function getAllDescendants(model, root) {
-        const out = [];
-        if (!root) return out;
-        const stack = [root];
-        while (stack.length) {
-            const cur = stack.pop();
-            const n = model.getChildCount(cur);
-            for (let i = 0; i < n; i++) {
-                const ch = model.getChildAt(cur, i);
-                out.push(ch);
-                stack.push(ch);
-            }
+            return await queryAll(sql, []);
         }
-        return out;
-    }
 
-    function plannedPlantsMapFromModule(moduleCell, selectedYear) {
-        const all = getAllDescendants(model, moduleCell);
-        const tilers = all.filter(isTilerGroupCell);
+        async function getPlantsBasicCached() {                                                          // NEW (moved)
+            if (__plantsBasicCache) return __plantsBasicCache;
+            __plantsBasicCache = await listPlantsBasicRows();
+            return __plantsBasicCache;
+        }
 
-        // Reuse your dashboard logic: "in year" means start-year OR harvest-end-year match, plus perennials.
-        // This is copied from your dashboard snippet; keep consistent.
-        function hasYmd(s) { return /^\d{4}-\d{2}-\d{2}$/.test(String(s || "").trim()); }
-        function parseIsoDateToUtcMs(s) {
-            const str = String(s || "").trim();
-            if (!str) return NaN;
-            const d = new Date(str);
-            const t = d.getTime();
+        function invalidatePlantsBasicCache() {                                                          // NEW
+            __plantsBasicCache = null;
+        }
+
+        async function queryVarietiesByPlantId(plantId) {                                                // NEW (moved)
+            const pid = Number(plantId);
+            if (!Number.isFinite(pid)) return [];
+            const sql = `
+        SELECT variety_id, plant_id, variety_name, overrides_json
+        FROM PlantVarieties
+        WHERE plant_id = ?
+        ORDER BY variety_name COLLATE NOCASE;`;
+            return await queryAll(sql, [pid]);
+        }
+
+        return {
+            getDbPath,
+            queryAll,
+            listPlantsBasicRows,
+            getPlantsBasicCached,
+            invalidatePlantsBasicCache,
+            queryVarietiesByPlantId
+        };
+    })();
+
+    // -------------------- PlanMath --------------------                                                  // NEW
+    const PlanMath = (() => {                                                                             // NEW
+        function pushWarn(warns, msg) {
+            if (!warns) return;
+            warns.push(String(msg || ""));
+        }
+
+        function hasYmd(s) {
+            return /^\d{4}-\d{2}-\d{2}$/.test(String(s || "").trim());
+        }
+
+        function toIsoDateLocal(d) {
+            const y = d.getFullYear();
+            const m = String(d.getMonth() + 1).padStart(2, "0");
+            const da = String(d.getDate()).padStart(2, "0");
+            return `${y}-${m}-${da}`;
+        }
+
+        function parseYmdLocalToMs(ymd) {
+            const s = String(ymd || "").trim();
+            if (!s) return NaN;
+            const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+            if (!m) return NaN;
+            const y = Number(m[1]), mo = Number(m[2]) - 1, d = Number(m[3]);
+            const dt = new Date(y, mo, d, 0, 0, 0, 0);
+            const t = dt.getTime();
             return Number.isFinite(t) ? t : NaN;
         }
+
+        function addDaysMs(ms, days) {
+            return ms + (days * 24 * 60 * 60 * 1000);
+        }
+
+        function buildWeekStartsForYearLocal(year, weekStartDow /* 0=Sun..6=Sat */) {
+            const start = new Date(year, 0, 1);
+            const startDow = start.getDay();
+            const delta = (7 + (startDow - weekStartDow)) % 7;
+            const firstWeekStart = new Date(year, 0, 1 - delta);
+
+            const out = [];
+            for (let i = 0; i < 60; i++) {
+                const d = new Date(firstWeekStart.getFullYear(), firstWeekStart.getMonth(), firstWeekStart.getDate() + i * 7);
+                out.push({ iso: toIsoDateLocal(d), ms: d.getTime() });
+                if (d.getFullYear() > year + 1) break;
+            }
+
+            const yearStartMs = new Date(year, 0, 1).getTime();
+            const yearEndExMs = new Date(year + 1, 0, 1).getTime();
+            return out.filter(w => w.ms < yearEndExMs && addDaysMs(w.ms, 7) > yearStartMs);
+        }
+
+        function weekIndexForDate(weekStarts, dateYmd) {
+            const t = parseYmdLocalToMs(dateYmd);
+            if (!Number.isFinite(t)) return -1;
+            for (let i = 0; i < weekStarts.length; i++) {
+                const a = weekStarts[i].ms;
+                const b = addDaysMs(a, 7);
+                if (t >= a && t < b) return i;
+            }
+            return -1;
+        }
+
+        function findCrop(plan, cropId) {
+            const list = (plan && plan.crops) ? plan.crops : [];
+            return list.find(c => c && c.id === cropId) || null;
+        }
+
+        function resolveUnitToKgPerUnit(crop, unit) {
+            const u = String(unit || "").trim().toLowerCase();
+            if (!u) return NaN;
+
+            if (u === "kg") return 1;
+            if (u === "g") return 0.001;
+            if (u === "lb" || u === "lbs") return 0.45359237;
+
+            if (u === "plant" || u === "plants") {
+                const kgPerPlant = Number(crop && crop.kgPerPlant);
+                if (!Number.isFinite(kgPerPlant) || kgPerPlant <= 0) return NaN;
+                return kgPerPlant;
+            }
+
+            const packs = (crop && crop.packages) ? crop.packages : [];
+            const p = packs.find(x => String(x.unit || "").trim().toLowerCase() === u);
+            if (!p) return NaN;
+
+            const baseType = String(p.baseType || "").trim().toLowerCase();
+            const baseQty = Number(p.baseQty);
+            if (!Number.isFinite(baseQty) || baseQty <= 0) return NaN;
+
+            if (baseType === "kg") return baseQty;
+
+            if (baseType === "plant" || baseType === "plants") {
+                const kgPerPlant = Number(crop.kgPerPlant);
+                if (!Number.isFinite(kgPerPlant) || kgPerPlant <= 0) return NaN;
+                return baseQty * kgPerPlant;
+            }
+
+            return NaN;
+        }
+
+        function addKgAcrossWeeks(series, weekStarts, fromYmd, toYmd, kgPerWeek) {
+            const i0 = weekIndexForDate(weekStarts, fromYmd);
+            const i1 = weekIndexForDate(weekStarts, toYmd);
+            if (i0 < 0 || i1 < 0) return;
+            const a = Math.min(i0, i1);
+            const b = Math.max(i0, i1);
+            for (let i = a; i <= b; i++) series[i] += kgPerWeek;
+        }
+
+        function computePlanWeekly(plan, warns) {
+
+            warns = Array.isArray(warns) ? warns : [];
+
+            const year = Number(plan && plan.year);
+            const weekStartDow = Number.isFinite(plan && plan.weekStartDow) ? plan.weekStartDow : 1;
+            const weeks = buildWeekStartsForYearLocal(year, weekStartDow);
+            const n = weeks.length;
+
+            const targetTotal = Array(n).fill(0);
+            const supplyTotal = Array(n).fill(0);
+            const perCrop = new Map();
+
+            function ensureCropArrays(cropId) {
+                if (!perCrop.has(cropId)) {
+                    perCrop.set(cropId, { target: Array(n).fill(0), supply: Array(n).fill(0) });
+                }
+                return perCrop.get(cropId);
+            }
+
+            const crops = (plan && plan.crops) ? plan.crops : [];
+
+            // market
+            for (const crop of crops) {
+                if (!crop || !crop.id) continue;
+                const arr = ensureCropArrays(crop.id);
+                const market = crop.market || [];
+                for (const line of market) {
+                    const qty = Number(line && line.qty);
+                    if (!Number.isFinite(qty) || qty <= 0) {
+                        pushWarn(warns, `Market line skipped (qty missing) for ${crop.plant || crop.id}`);
+                        continue;
+                    }
+
+                    if (!hasYmd(line.from) || !hasYmd(line.to)) {
+                        pushWarn(warns, `Market line skipped (missing dates) for ${crop.plant || crop.id}`); // FIX
+                        continue;
+                    }
+
+                    const kgPerUnit = resolveUnitToKgPerUnit(crop, line.unit);
+                    if (!Number.isFinite(kgPerUnit)) {
+                        pushWarn(warns, `Market line skipped (unknown unit "${line.unit}") for ${crop.plant || crop.id}`);
+                        continue;
+                    }
+
+                    addKgAcrossWeeks(arr.target, weeks, line.from, line.to, qty * kgPerUnit);
+                }
+            }
+
+            // CSA
+            const csa = plan && plan.csa;
+            if (csa && csa.enabled) {
+                const boxes = Number(csa.boxesPerWeek);
+                if (!Number.isFinite(boxes) || boxes <= 0) {
+                    pushWarn(warns, "CSA enabled but boxes/week is not set.");
+                } else {
+                    const comps = csa.components || [];
+                    for (const comp of comps) {
+                        const crop = findCrop(plan, comp.cropId);
+                        if (!crop) { pushWarn(warns, "CSA component skipped (missing crop)."); continue; }
+
+                        const qty = Number(comp.qty);
+                        if (!Number.isFinite(qty) || qty <= 0) {
+                            pushWarn(warns, `CSA component skipped (qty missing) for ${crop.plant || crop.id}`);
+                            continue;
+                        }
+
+                        const kgPerUnit = resolveUnitToKgPerUnit(crop, comp.unit);
+                        if (!Number.isFinite(kgPerUnit)) {
+                            pushWarn(warns, `CSA component skipped (unknown unit "${comp.unit}") for ${crop.plant || crop.id}`);
+                            continue;
+                        }
+
+                        const everyN = Math.max(1, Number(comp.everyNWeeks) || 1);
+                        const from = comp.start || csa.start;
+                        const to = comp.end || csa.end;
+
+                        if (!hasYmd(from) || !hasYmd(to)) {
+                            pushWarn(warns, `CSA component skipped (missing dates) for ${crop.plant || crop.id}`);
+                            continue;
+                        }
+
+                        const i0 = weekIndexForDate(weeks, from);
+                        const i1 = weekIndexForDate(weeks, to);
+                        if (i0 < 0 || i1 < 0) continue;
+
+                        const a = Math.min(i0, i1), b = Math.max(i0, i1);
+                        const arr = ensureCropArrays(crop.id);
+
+                        for (let i = a; i <= b; i++) {
+                            const rel = i - a;
+                            if (rel % everyN !== 0) continue;
+                            arr.target[i] += boxes * qty * kgPerUnit;
+                        }
+                    }
+                }
+            }
+
+            // supply estimate (plannedPlants)
+            for (const crop of crops) {
+                if (!crop || !crop.id) continue;
+
+                const plannedPlants = Number(crop.plannedPlants);
+                const kgPerPlant = Number(crop.kgPerPlant);
+                if (!Number.isFinite(plannedPlants) || plannedPlants <= 0) continue;
+
+                if (!Number.isFinite(kgPerPlant) || kgPerPlant <= 0) {
+                    pushWarn(warns, `Supply skipped (kg/plant missing) for ${crop.plant || crop.id}`);
+                    continue;
+                }
+
+                if (!hasYmd(crop.harvestStart) || !hasYmd(crop.harvestEnd)) {
+                    pushWarn(warns, `Supply skipped (harvest window missing) for ${crop.plant || crop.id}`);
+                    continue;
+                }
+
+                const i0 = weekIndexForDate(weeks, crop.harvestStart);
+                const i1 = weekIndexForDate(weeks, crop.harvestEnd);
+                if (i0 < 0 || i1 < 0) continue;
+
+                const a = Math.min(i0, i1), b = Math.max(i0, i1);
+                const countWeeks = b - a + 1;
+                if (countWeeks <= 0) continue;
+
+                const totalKg = plannedPlants * kgPerPlant;
+                const kgPerWeek = totalKg / countWeeks;
+                const arr = ensureCropArrays(crop.id);
+                for (let i = a; i <= b; i++) arr.supply[i] += kgPerWeek;
+            }
+
+            // totals
+            for (const [, v] of perCrop.entries()) {
+                for (let i = 0; i < n; i++) {
+                    targetTotal[i] += v.target[i];
+                    supplyTotal[i] += v.supply[i];
+                }
+            }
+
+            return { weeks, targetTotal, supplyTotal, perCrop };
+        }
+
+        function computePlanCropTotals(plan, weekly) {
+            const crops = (plan && plan.crops) ? plan.crops : [];
+            const out = [];
+            for (const crop of crops) {
+                if (!crop || !crop.id) continue;
+                const v = weekly.perCrop.get(crop.id);
+                const targetKg = v ? v.target.reduce((a, b) => a + b, 0) : 0;
+                const supplyKg = v ? v.supply.reduce((a, b) => a + b, 0) : 0;
+                const kgPerPlant = Number(crop.kgPerPlant);
+                const plantsReq = (Number.isFinite(kgPerPlant) && kgPerPlant > 0) ? (targetKg / kgPerPlant) : NaN;
+                out.push({ crop, targetKg, supplyKg, plantsReq });
+            }
+            return out;
+        }
+
+
+        function validatePlan(plan) {
+            const errs = [];
+            const crops = plan.crops || [];
+
+            for (const c of crops) {
+                if (!c.id) errs.push("Crop missing id.");
+                if (!c.plantId) errs.push(`Crop "${c.plant || c.id}" missing plantId.`);
+                if (!Number.isFinite(Number(c.kgPerPlant)) || Number(c.kgPerPlant) <= 0) {
+                    errs.push(`Crop "${c.plant || c.id}" missing valid kg/plant.`);
+                }
+                // packages must resolve
+                for (const p of (c.packages || [])) {
+                    const u = String(p.unit || "").trim();
+                    if (!u) errs.push(`Crop "${c.plant || c.id}" has a package with blank unit.`);
+                    const baseType = String(p.baseType || "").trim().toLowerCase();
+                    const baseQty = Number(p.baseQty);
+                    if (!Number.isFinite(baseQty) || baseQty <= 0) errs.push(`Crop "${c.plant || c.id}" package "${u}" baseQty must be > 0.`);
+                    if (baseType !== "kg" && baseType !== "plant" && baseType !== "plants") errs.push(`Crop "${c.plant || c.id}" package "${u}" baseType must be kg or plant.`);
+                    if ((baseType === "plant" || baseType === "plants") && !(Number(c.kgPerPlant) > 0)) errs.push(`Crop "${c.plant || c.id}" package "${u}" uses plant but kg/plant is missing.`);
+                }
+                // market lines must have valid dates + unit
+                for (const mkt of (c.market || [])) {
+                    if (!hasYmd(mkt.from) || !hasYmd(mkt.to)) errs.push(`Crop "${c.plant || c.id}" market line missing dates.`);
+                    const kg = resolveUnitToKgPerUnit(c, mkt.unit);
+                    if (!Number.isFinite(kg)) errs.push(`Crop "${c.plant || c.id}" market unit "${mkt.unit}" does not resolve to kg.`);
+                }
+            }
+
+            if (plan.csa && plan.csa.enabled) {
+                if (!Number.isFinite(Number(plan.csa.boxesPerWeek)) || Number(plan.csa.boxesPerWeek) <= 0) {
+                    errs.push("CSA enabled but boxes/week is not set.");
+                }
+                for (const comp of (plan.csa.components || [])) {
+                    const crop = findCrop(plan, comp.cropId);
+                    if (!crop) { errs.push("CSA component references missing crop."); continue; }
+                    if (!hasYmd(comp.start) || !hasYmd(comp.end)) errs.push(`CSA component for "${crop.plant || crop.id}" missing dates.`);
+                    const kg = resolveUnitToKgPerUnit(crop, comp.unit);
+                    if (!Number.isFinite(kg)) errs.push(`CSA component for "${crop.plant || crop.id}" unit "${comp.unit}" does not resolve to kg.`);
+                }
+            }
+
+            return errs;
+        }
+
+        return {
+            pushWarn,
+            hasYmd,
+            toIsoDateLocal,
+            parseYmdLocalToMs,
+            addDaysMs,
+            buildWeekStartsForYearLocal,
+            weekIndexForDate,
+            findCrop,
+            resolveUnitToKgPerUnit,
+            addKgAcrossWeeks,
+            computePlanWeekly,
+            computePlanCropTotals,
+            validatePlan
+        };
+    })();
+
+    // -------------------- Extractors --------------------                                                // NEW
+    const Extractors = (() => {                                                                            // NEW
+        function isTilerGroupCell(cell) {
+            return !!cell && typeof cell.getAttribute === "function" && cell.getAttribute("tiler_group") === "1";
+        }
+
+        function getCropKeyFromPlanCrop(c) {
+            const plantId = String(c && c.plantId || "").trim();
+            const varietyId = (c && c.varietyId != null && c.varietyId !== "") ? String(c.varietyId).trim() : "";
+            if (plantId) return `pid:${plantId}|vid:${varietyId}`;
+            const plant = String(c && c.plant || "").trim();
+            const variety = String(c && c.variety || "").trim();
+            return `name:${plant}|var:${variety}`;
+        }
+
+        function getCropKeyFromTilerGroup(tg) {
+            const plantId = String(DiagramStore.getCellAttr(tg, "plant_id", "") || "").trim();
+            const varietyId = String(DiagramStore.getCellAttr(tg, "variety_id", "") || "").trim();
+            if (plantId) return `pid:${plantId}|vid:${varietyId}`;
+
+            const plant = String(DiagramStore.getCellAttr(tg, "plant_name", "") || "").trim();
+            const variety = String(DiagramStore.getCellAttr(tg, "variety_name", "") || "").trim();
+            return `name:${plant}|var:${variety}`;
+        }
+
+        function getAllDescendants(model, root) {
+            const out = [];
+            if (!root) return out;
+            const stack = [root];
+            while (stack.length) {
+                const cur = stack.pop();
+                const n = model.getChildCount(cur);
+                for (let i = 0; i < n; i++) {
+                    const ch = model.getChildAt(cur, i);
+                    out.push(ch);
+                    stack.push(ch);
+                }
+            }
+            return out;
+        }
+
         function getFirstNonEmptyAttr(cell, keys) {
             for (const k of keys) {
-                const v = getCellAttr(cell, k, "");
+                const v = DiagramStore.getCellAttr(cell, k, "");
                 if (String(v || "").trim()) return v;
             }
             return "";
         }
-        function harvestEndUtcYear(tg) {
-            const raw = getFirstNonEmptyAttr(tg, [
-                "harvest_end", "harvest_end_date", "planting_harvest_end", "season_harvest_end", "end"
-            ]);
-            const ms = parseIsoDateToUtcMs(raw);
-            if (!Number.isFinite(ms)) return NaN;
-            return new Date(ms).getUTCFullYear();
-        }
+
         function isPerennialTilerGroup(tg) {
-            const lc = String(getCellAttr(tg, "life_cycle", "") || "").trim().toLowerCase();
+            const lc = String(DiagramStore.getCellAttr(tg, "life_cycle", "") || "").trim().toLowerCase();
             if (lc === "perennial") return true;
-            if (getCellAttr(tg, "is_perennial", "") === "1") return true;
+            if (DiagramStore.getCellAttr(tg, "is_perennial", "") === "1") return true;
             return false;
         }
-        function shouldRenderTilerGroupLocal(tg, year) {
+
+        // Consolidated filter with overlap semantics + partial-date support.                       // CHANGE
+        function shouldIncludeTilerGroupInYear(tg, selectedYear, harvestEndYearFn) {               // CHANGE
             if (!isTilerGroupCell(tg)) return false;
             if (isPerennialTilerGroup(tg)) return true;
 
-            const startY = Number(getCellAttr(tg, "season_start_year", ""));
-            if (Number.isFinite(startY) && startY === year) return true;
+            const y = Number(selectedYear);
+            if (!Number.isFinite(y)) return false;                                                // NEW
 
-            const endY = harvestEndUtcYear(tg);
-            if (Number.isFinite(endY) && endY === year) return true;
+            // 1) Explicit season assignment                                                       // NEW
+            const rawStart = String(DiagramStore.getCellAttr(tg, "season_start_year", "")).trim();
+            const startY = rawStart ? Number(rawStart) : NaN;
+            if (Number.isFinite(startY) && startY === y) return true;
+
+            // 2) Harvest window overlap (local-year)                                               // NEW
+            // We reuse the same attribute keys you already standardized elsewhere.
+            const hsRaw = String(getFirstNonEmptyAttr(tg, [                                   // NEW
+                "harvest_start", "harvest_start_date", "planting_harvest_start", "season_harvest_start", "start"
+            ]) || "").trim();
+
+            const heRaw = String(getFirstNonEmptyAttr(tg, [                                   // NEW
+                "harvest_end", "harvest_end_date", "planting_harvest_end", "season_harvest_end", "end"
+            ]) || "").trim();
+
+            // Local year extraction uses the same parser used everywhere else (PlanMath).          // NEW
+            const hsMs = PlanMath.parseYmdLocalToMs(hsRaw);                                       // NEW
+            const heMs = PlanMath.parseYmdLocalToMs(heRaw);                                       // NEW
+            const hsY = Number.isFinite(hsMs) ? new Date(hsMs).getFullYear() : NaN;               // NEW
+            const heY = Number.isFinite(heMs) ? new Date(heMs).getFullYear() : NaN;               // NEW
+
+            // If caller injects a canonical end-year extractor, prefer it (still local-year).      // NEW
+            const injectedEndY = harvestEndYearFn ? harvestEndYearFn(tg) : NaN;                   // NEW
+            const endY = Number.isFinite(injectedEndY) ? injectedEndY : heY;                       // NEW
+
+            // Overlap semantics when both ends are known                                            // NEW
+            if (Number.isFinite(hsY) && Number.isFinite(endY)) {
+                const lo = Math.min(hsY, endY);
+                const hi = Math.max(hsY, endY);
+                if (y >= lo && y <= hi) return true;
+            } else {
+                // Partial-date semantics                                                            // NEW
+                if (Number.isFinite(hsY) && hsY === y) return true;
+                if (Number.isFinite(endY) && endY === y) return true;
+            }
 
             return false;
         }
 
+
+        return {
+            isTilerGroupCell,
+            getCropKeyFromPlanCrop,
+            getCropKeyFromTilerGroup,
+            getAllDescendants,
+            getFirstNonEmptyAttr,
+            isPerennialTilerGroup,
+            shouldIncludeTilerGroupInYear
+        };
+    })();
+
+    // -------------------- Phase 1: local aliases (minimize edits) ------------------------------------ // NEW
+    const safeJsonStringParse = Env.safeJsonStringParse;                                                             // NEW
+    const uid = Env.uid;                                                                                 // NEW
+
+    const getCellAttr = DiagramStore.getCellAttr;                                                        // NEW
+    const setCellAttr = DiagramStore.setCellAttr;                                                        // NEW
+    const readPlanYearsMap = DiagramStore.readPlanYearsMap;                                              // NEW
+    const writePlanYearsMap = DiagramStore.writePlanYearsMap;                                            // NEW
+    const readRootJsonMap = DiagramStore.readRootJsonMap;                                                // NEW
+    const writeRootJsonMap = DiagramStore.writeRootJsonMap;                                              // NEW
+
+    const getDbPath = DbClient.getDbPath;                                                                // NEW
+    const queryAll = DbClient.queryAll;                                                                  // NEW
+    const listPlantsBasicRows = DbClient.listPlantsBasicRows;                                            // NEW
+    const getPlantsBasicCached = DbClient.getPlantsBasicCached;                                          // NEW
+    const queryVarietiesByPlantId = DbClient.queryVarietiesByPlantId;                                    // NEW
+
+    const pushWarn = PlanMath.pushWarn;                                                                  // NEW
+    const hasYmd = PlanMath.hasYmd;                                                                      // NEW
+    const toIsoDateLocal = PlanMath.toIsoDateLocal;                                                      // NEW
+    const parseYmdLocalToMs = PlanMath.parseYmdLocalToMs;                                                // NEW
+    const addDaysMs = PlanMath.addDaysMs;                                                                // NEW
+    const buildWeekStartsForYearLocal = PlanMath.buildWeekStartsForYearLocal;                            // NEW
+    const weekIndexForDate = PlanMath.weekIndexForDate;                                                  // NEW
+    const findCrop = PlanMath.findCrop;                                                                  // NEW
+    const resolveUnitToKgPerUnit = PlanMath.resolveUnitToKgPerUnit;                                      // NEW
+    const addKgAcrossWeeks = PlanMath.addKgAcrossWeeks;                                                  // NEW
+    const computePlanWeekly = PlanMath.computePlanWeekly;                                                // NEW
+    const computePlanCropTotals = PlanMath.computePlanCropTotals;                                        // NEW
+    const validatePlan = PlanMath.validatePlan;                                                          // NEW
+
+    const isTilerGroupCell = Extractors.isTilerGroupCell;                                                // NEW
+    const getCropKeyFromPlanCrop = Extractors.getCropKeyFromPlanCrop;                                    // NEW
+    const getCropKeyFromTilerGroup = Extractors.getCropKeyFromTilerGroup;                                // NEW
+    const getAllDescendants = (root) => Extractors.getAllDescendants(model, root);                       // NEW
+    const getFirstNonEmptyAttr = Extractors.getFirstNonEmptyAttr;                                        // NEW
+    const shouldIncludeTilerGroupInYear = Extractors.shouldIncludeTilerGroupInYear;                      // NEW
+
+
+    // -------------------- Planned-plants from diagram (NEW) --------------------
+
+    function plannedPlantsMapFromModule(moduleCell, selectedYear) {
+        const all = getAllDescendants(moduleCell);
+        const tilers = all.filter(isTilerGroupCell);
+
         const map = new Map();
         for (const tg of tilers) {
-            if (!shouldRenderTilerGroupLocal(tg, selectedYear)) continue;
+            if (!shouldIncludeTilerGroupInYear(tg, selectedYear, harvestEndLocalYear)) continue;
 
             const plantCount = Number(getCellAttr(tg, "plant_count", ""));
             const n = (Number.isFinite(plantCount) && plantCount > 0) ? Math.trunc(plantCount) : 0;
@@ -199,14 +760,6 @@ Draw.loadPlugin(function (ui) {
 
     // -------------------- Actual harvest from diagram helpers --------------------
 
-    function getFirstNonEmptyAttr(cell, keys) {                     // NEW (reuse if you want)
-        for (const k of keys) {
-            const v = getCellAttr(cell, k, "");
-            if (String(v || "").trim()) return v;
-        }
-        return "";
-    }
-
     function harvestStartYmd(tg) {                                  // NEW
         return String(getFirstNonEmptyAttr(tg, [
             "harvest_start", "harvest_start_date", "planting_harvest_start", "season_harvest_start", "start"
@@ -219,6 +772,18 @@ Draw.loadPlugin(function (ui) {
         ]) || "").trim();
     }
 
+    function harvestEndLocalYear(tg) { // NEW canonical year extractor
+        const raw = String(getFirstNonEmptyAttr(tg, [
+            "harvest_end", "harvest_end_date", "planting_harvest_end", "season_harvest_end", "end"
+        ]) || "").trim();
+
+        const ms = parseYmdLocalToMs(raw);        // expects YYYY-MM-DD
+        if (!Number.isFinite(ms)) return NaN;
+
+        return new Date(ms).getFullYear();        // LOCAL year (consistent with parseYmdLocalToMs)
+    }
+
+
     function weekRangeForWindow(weekStarts, fromYmd, toYmd) {        // NEW
         if (!hasYmd(fromYmd) || !hasYmd(toYmd)) return null;
         const i0 = weekIndexForDate(weekStarts, fromYmd);
@@ -229,7 +794,7 @@ Draw.loadPlugin(function (ui) {
     }
 
     function buildActualHarvestSeriesByCropKey(moduleCell, year, weekStarts, cropKeyToKgPerPlant) { // NEW
-        const all = getAllDescendants(model, moduleCell);
+        const all = getAllDescendants(moduleCell);
         const tilers = all.filter(isTilerGroupCell);
 
         const seriesByKey = new Map(); // key -> Array(nWeeks).fill(0)
@@ -239,37 +804,9 @@ Draw.loadPlugin(function (ui) {
             return seriesByKey.get(key);
         }
 
-        // Keep your same “in-year” filter to avoid pulling irrelevant groups
-        function harvestEndUtcYearLocal(tg) {
-            const raw = harvestEndYmd(tg);
-            const ms = parseYmdLocalToMs(raw);
-            if (!Number.isFinite(ms)) return NaN;
-            return new Date(ms).getUTCFullYear();
-        }
-
-        function isPerennialTilerGroupLocal(tg) {
-            const lc = String(getCellAttr(tg, "life_cycle", "") || "").trim().toLowerCase();
-            if (lc === "perennial") return true;
-            if (getCellAttr(tg, "is_perennial", "") === "1") return true;
-            return false;
-        }
-
-        function shouldRenderTilerGroupLocal(tg, selectedYear) {
-            if (!isTilerGroupCell(tg)) return false;
-            if (isPerennialTilerGroupLocal(tg)) return true;
-
-            const startY = Number(getCellAttr(tg, "season_start_year", ""));
-            if (Number.isFinite(startY) && startY === selectedYear) return true;
-
-            const endY = harvestEndUtcYearLocal(tg);
-            if (Number.isFinite(endY) && endY === selectedYear) return true;
-
-            return false;
-        }
-
         for (const tg of tilers) {
-            if (!shouldRenderTilerGroupLocal(tg, year)) continue;
-
+            if (!shouldIncludeTilerGroupInYear(tg, year, harvestEndLocalYear)) continue; // CHANGE
+        
             const plantCount = Number(getCellAttr(tg, "plant_count", ""));
             const nPlants = (Number.isFinite(plantCount) && plantCount > 0) ? Math.trunc(plantCount) : 0;
             if (nPlants <= 0) continue;
@@ -344,42 +881,6 @@ Draw.loadPlugin(function (ui) {
 
 
     // -------------------- Attribute helpers --------------------
-    function getCellAttr(cell, key, def = "") {
-        if (!cell || !cell.getAttribute) return def;
-        const v = cell.getAttribute(key);
-        return (v === null || v === undefined) ? def : v;
-    }
-
-    function setCellAttr(cell, key, val) {
-        if (graph.setAttributeForCell) {
-            if (val == null) graph.setAttributeForCell(cell, key, null);
-            else graph.setAttributeForCell(cell, key, String(val));
-        } else if (cell.value && typeof cell.value.setAttribute === "function") {
-            if (val == null) cell.value.removeAttribute(key);
-            else cell.value.setAttribute(key, String(val));
-        }
-    }
-
-    function safeJsonParse(s, fallback) {
-        try { return JSON.parse(String(s || "")); } catch (_) { return fallback; }
-    }
-
-    function readPlanYearsMap(moduleCell) {
-        const raw = getCellAttr(moduleCell, PLAN_YEARS_ATTR, "");
-        const obj = safeJsonParse(raw, null);
-        return (obj && typeof obj === "object" && !Array.isArray(obj)) ? obj : {};
-    }
-
-    function writePlanYearsMap(moduleCell, mapObj) {
-        model.beginUpdate();
-        try {
-            setCellAttr(moduleCell, PLAN_YEARS_ATTR, JSON.stringify(mapObj || {}));
-        } finally {
-            model.endUpdate();
-        }
-        graph.refresh(moduleCell);
-    }
-
 
     function loadPlanForYear(moduleCell, year) {
         const m = readPlanYearsMap(moduleCell);
@@ -397,28 +898,6 @@ Draw.loadPlugin(function (ui) {
         const m = readPlanYearsMap(moduleCell);
         delete m[String(year)];
         writePlanYearsMap(moduleCell, m);
-    }
-
-    function getDiagramRootCell() {
-        try { return model.getRoot(); } catch (_) { }
-        return null;
-    }
-
-    function readRootJsonMap(attrName) {
-        const root = getDiagramRootCell();
-        if (!root) return {};
-        const raw = getCellAttr(root, attrName, "");
-        const obj = safeJsonParse(raw, null);
-        return (obj && typeof obj === "object" && !Array.isArray(obj)) ? obj : {};
-    }
-
-    function writeRootJsonMap(attrName, mapObj) {
-        const root = getDiagramRootCell();
-        if (!root) return;
-        model.beginUpdate();
-        try { setCellAttr(root, attrName, JSON.stringify(mapObj || {})); }
-        finally { model.endUpdate(); }
-        graph.refresh(root);
     }
 
     // -------------------- Template helpers ---------------------
@@ -449,13 +928,10 @@ Draw.loadPlugin(function (ui) {
         writeRootJsonMap(PLAN_TEMPLATES_ATTR, m);
     }
 
-    function deepClone(obj) {
-        return safeJsonParse(JSON.stringify(obj), null);
-    }
 
     function rekeyTemplateToPlan(templateObj, year) {
         // Apply template: bind to year, regenerate crop IDs, and remap CSA cropIds.
-        const t = deepClone(templateObj) || {};
+        const t = templateObj ? JSON.parse(JSON.stringify(templateObj)) : {}; // CHANGE
         t.version = 1;
         t.year = year;
         if (!Number.isFinite(t.weekStartDow)) t.weekStartDow = 1;
@@ -499,339 +975,12 @@ Draw.loadPlugin(function (ui) {
         writeUnitDefaultsMap(m);
     }
 
-
-    // -------------------- Plan math helpers (MVP) --------------------
-    function pushWarn(warns, msg) {
-        if (!warns) return;
-        warns.push(String(msg || ""));
-    }
-
-    function hasYmd(s) {
-        return /^\d{4}-\d{2}-\d{2}$/.test(String(s || "").trim());
-    }
-
-    function toIsoDateLocal(d) {
-        const y = d.getFullYear();
-        const m = String(d.getMonth() + 1).padStart(2, "0");
-        const da = String(d.getDate()).padStart(2, "0");
-        return `${y}-${m}-${da}`;
-    }
-
-    function parseYmdLocalToMs(ymd) {
-        const s = String(ymd || "").trim();
-        if (!s) return NaN;
-        const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
-        if (!m) return NaN;
-        const y = Number(m[1]), mo = Number(m[2]) - 1, d = Number(m[3]);
-        const dt = new Date(y, mo, d, 0, 0, 0, 0);
-        const t = dt.getTime();
-        return Number.isFinite(t) ? t : NaN;
-    }
-
-    function addDaysMs(ms, days) {
-        return ms + (days * 24 * 60 * 60 * 1000);
-    }
-
-    function buildWeekStartsForYearLocal(year, weekStartDow /* 0=Sun..6=Sat */) {
-        const start = new Date(year, 0, 1);
-        const startDow = start.getDay();
-        const delta = (7 + (startDow - weekStartDow)) % 7;
-        const firstWeekStart = new Date(year, 0, 1 - delta);
-
-        const out = [];
-        for (let i = 0; i < 60; i++) {
-            const d = new Date(firstWeekStart.getFullYear(), firstWeekStart.getMonth(), firstWeekStart.getDate() + i * 7);
-            out.push({ iso: toIsoDateLocal(d), ms: d.getTime() });
-            if (d.getFullYear() > year + 1) break;
-        }
-
-        const yearStartMs = new Date(year, 0, 1).getTime();
-        const yearEndExMs = new Date(year + 1, 0, 1).getTime();
-        return out.filter(w => w.ms < yearEndExMs && addDaysMs(w.ms, 7) > yearStartMs);
-    }
-
-    function weekIndexForDate(weekStarts, dateYmd) {
-        const t = parseYmdLocalToMs(dateYmd);
-        if (!Number.isFinite(t)) return -1;
-        for (let i = 0; i < weekStarts.length; i++) {
-            const a = weekStarts[i].ms;
-            const b = addDaysMs(a, 7);
-            if (t >= a && t < b) return i;
-        }
-        return -1;
-    }
-
-    function findCrop(plan, cropId) {
-        const list = (plan && plan.crops) ? plan.crops : [];
-        return list.find(c => c && c.id === cropId) || null;
-    }
-
-    function resolveUnitToKgPerUnit(crop, unit) {
-        const u = String(unit || "").trim().toLowerCase();
-        if (!u) return NaN;
-
-        // universal
-        if (u === "kg") return 1;
-        if (u === "g") return 0.001;
-        if (u === "lb" || u === "lbs") return 0.45359237;
-
-        if (u === "plant" || u === "plants") {
-            const kgPerPlant = Number(crop && crop.kgPerPlant);
-            if (!Number.isFinite(kgPerPlant) || kgPerPlant <= 0) return NaN;
-            return kgPerPlant;
-        }
-
-        const packs = (crop && crop.packages) ? crop.packages : [];
-        const p = packs.find(x => String(x.unit || "").trim().toLowerCase() === u);
-        if (!p) return NaN;
-
-        const baseType = String(p.baseType || "").trim().toLowerCase();
-        const baseQty = Number(p.baseQty);
-        if (!Number.isFinite(baseQty) || baseQty <= 0) return NaN;
-
-        if (baseType === "kg") return baseQty;
-
-        if (baseType === "plant" || baseType === "plants") {
-            const kgPerPlant = Number(crop.kgPerPlant);
-            if (!Number.isFinite(kgPerPlant) || kgPerPlant <= 0) return NaN;
-            return baseQty * kgPerPlant;
-        }
-
-        return NaN;
-    }
-
-    function addKgAcrossWeeks(series, weekStarts, fromYmd, toYmd, kgPerWeek) {
-        const i0 = weekIndexForDate(weekStarts, fromYmd);
-        const i1 = weekIndexForDate(weekStarts, toYmd);
-        if (i0 < 0 || i1 < 0) return;
-        const a = Math.min(i0, i1);
-        const b = Math.max(i0, i1);
-        for (let i = a; i <= b; i++) series[i] += kgPerWeek;
-    }
-
-    function computePlanWeekly(plan, warns) {
-
-        warns = Array.isArray(warns) ? warns : [];
-
-        const year = Number(plan && plan.year);
-        const weekStartDow = Number.isFinite(plan && plan.weekStartDow) ? plan.weekStartDow : 1;
-        const weeks = buildWeekStartsForYearLocal(year, weekStartDow);
-        const n = weeks.length;
-
-        const targetTotal = Array(n).fill(0);
-        const supplyTotal = Array(n).fill(0);
-        const perCrop = new Map();
-
-        function ensureCropArrays(cropId) {
-            if (!perCrop.has(cropId)) {
-                perCrop.set(cropId, { target: Array(n).fill(0), supply: Array(n).fill(0) });
-            }
-            return perCrop.get(cropId);
-        }
-
-        const crops = (plan && plan.crops) ? plan.crops : [];
-
-        // market
-        for (const crop of crops) {
-            if (!crop || !crop.id) continue;
-            const arr = ensureCropArrays(crop.id);
-            const market = crop.market || [];
-            for (const line of market) {
-                const qty = Number(line && line.qty);
-                if (!Number.isFinite(qty) || qty <= 0) {
-                    pushWarn(warns, `Market line skipped (qty missing) for ${crop.plant || crop.id}`);
-                    continue;
-                }
-
-                if (!hasYmd(line.from) || !hasYmd(line.to)) {
-                    pushWarn(warns, `Market line skipped (missing dates) for ${crop.plant || crop.id}`); // FIX
-                    continue;
-                }
-
-                const kgPerUnit = resolveUnitToKgPerUnit(crop, line.unit);
-                if (!Number.isFinite(kgPerUnit)) {
-                    pushWarn(warns, `Market line skipped (unknown unit "${line.unit}") for ${crop.plant || crop.id}`);
-                    continue;
-                }
-
-                addKgAcrossWeeks(arr.target, weeks, line.from, line.to, qty * kgPerUnit);
-            }
-        }
-
-        // CSA
-        const csa = plan && plan.csa;
-        if (csa && csa.enabled) {
-            const boxes = Number(csa.boxesPerWeek);
-            if (!Number.isFinite(boxes) || boxes <= 0) {
-                pushWarn(warns, "CSA enabled but boxes/week is not set.");
-            } else {
-                const comps = csa.components || [];
-                for (const comp of comps) {
-                    const crop = findCrop(plan, comp.cropId);
-                    if (!crop) { pushWarn(warns, "CSA component skipped (missing crop)."); continue; }
-
-                    const qty = Number(comp.qty);
-                    if (!Number.isFinite(qty) || qty <= 0) {
-                        pushWarn(warns, `CSA component skipped (qty missing) for ${crop.plant || crop.id}`);
-                        continue;
-                    }
-
-                    const kgPerUnit = resolveUnitToKgPerUnit(crop, comp.unit);
-                    if (!Number.isFinite(kgPerUnit)) {
-                        pushWarn(warns, `CSA component skipped (unknown unit "${comp.unit}") for ${crop.plant || crop.id}`);
-                        continue;
-                    }
-
-                    const everyN = Math.max(1, Number(comp.everyNWeeks) || 1);
-                    const from = comp.start || csa.start;
-                    const to = comp.end || csa.end;
-
-                    if (!hasYmd(from) || !hasYmd(to)) {
-                        pushWarn(warns, `CSA component skipped (missing dates) for ${crop.plant || crop.id}`);
-                        continue;
-                    }
-
-                    const i0 = weekIndexForDate(weeks, from);
-                    const i1 = weekIndexForDate(weeks, to);
-                    if (i0 < 0 || i1 < 0) continue;
-
-                    const a = Math.min(i0, i1), b = Math.max(i0, i1);
-                    const arr = ensureCropArrays(crop.id);
-
-                    for (let i = a; i <= b; i++) {
-                        const rel = i - a;
-                        if (rel % everyN !== 0) continue;
-                        arr.target[i] += boxes * qty * kgPerUnit;
-                    }
-                }
-            }
-        }
-
-        // supply estimate (plannedPlants)
-        for (const crop of crops) {
-            if (!crop || !crop.id) continue;
-
-            const plannedPlants = Number(crop.plannedPlants);
-            const kgPerPlant = Number(crop.kgPerPlant);
-            if (!Number.isFinite(plannedPlants) || plannedPlants <= 0) continue;
-
-            if (!Number.isFinite(kgPerPlant) || kgPerPlant <= 0) {
-                pushWarn(warns, `Supply skipped (kg/plant missing) for ${crop.plant || crop.id}`);
-                continue;
-            }
-
-            if (!hasYmd(crop.harvestStart) || !hasYmd(crop.harvestEnd)) {
-                pushWarn(warns, `Supply skipped (harvest window missing) for ${crop.plant || crop.id}`);
-                continue;
-            }
-
-            const i0 = weekIndexForDate(weeks, crop.harvestStart);
-            const i1 = weekIndexForDate(weeks, crop.harvestEnd);
-            if (i0 < 0 || i1 < 0) continue;
-
-            const a = Math.min(i0, i1), b = Math.max(i0, i1);
-            const countWeeks = b - a + 1;
-            if (countWeeks <= 0) continue;
-
-            const totalKg = plannedPlants * kgPerPlant;
-            const kgPerWeek = totalKg / countWeeks;
-            const arr = ensureCropArrays(crop.id);
-            for (let i = a; i <= b; i++) arr.supply[i] += kgPerWeek;
-        }
-
-        // totals
-        for (const [, v] of perCrop.entries()) {
-            for (let i = 0; i < n; i++) {
-                targetTotal[i] += v.target[i];
-                supplyTotal[i] += v.supply[i];
-            }
-        }
-
-        return { weeks, targetTotal, supplyTotal, perCrop };
-    }
-
-    function computePlanCropTotals(plan, weekly) {
-        const crops = (plan && plan.crops) ? plan.crops : [];
-        const out = [];
-        for (const crop of crops) {
-            if (!crop || !crop.id) continue;
-            const v = weekly.perCrop.get(crop.id);
-            const targetKg = v ? v.target.reduce((a, b) => a + b, 0) : 0;
-            const supplyKg = v ? v.supply.reduce((a, b) => a + b, 0) : 0;
-            const kgPerPlant = Number(crop.kgPerPlant);
-            const plantsReq = (Number.isFinite(kgPerPlant) && kgPerPlant > 0) ? (targetKg / kgPerPlant) : NaN;
-            out.push({ crop, targetKg, supplyKg, plantsReq });
-        }
-        return out;
-    }
-
-
-    function validatePlan(plan) {
-        const errs = [];
-        const crops = plan.crops || [];
-
-        for (const c of crops) {
-            if (!c.id) errs.push("Crop missing id.");
-            if (!c.plantId) errs.push(`Crop "${c.plant || c.id}" missing plantId.`);
-            if (!Number.isFinite(Number(c.kgPerPlant)) || Number(c.kgPerPlant) <= 0) {
-                errs.push(`Crop "${c.plant || c.id}" missing valid kg/plant.`);
-            }
-            // packages must resolve
-            for (const p of (c.packages || [])) {
-                const u = String(p.unit || "").trim();
-                if (!u) errs.push(`Crop "${c.plant || c.id}" has a package with blank unit.`);
-                const baseType = String(p.baseType || "").trim().toLowerCase();
-                const baseQty = Number(p.baseQty);
-                if (!Number.isFinite(baseQty) || baseQty <= 0) errs.push(`Crop "${c.plant || c.id}" package "${u}" baseQty must be > 0.`);
-                if (baseType !== "kg" && baseType !== "plant" && baseType !== "plants") errs.push(`Crop "${c.plant || c.id}" package "${u}" baseType must be kg or plant.`);
-                if ((baseType === "plant" || baseType === "plants") && !(Number(c.kgPerPlant) > 0)) errs.push(`Crop "${c.plant || c.id}" package "${u}" uses plant but kg/plant is missing.`);
-            }
-            // market lines must have valid dates + unit
-            for (const mkt of (c.market || [])) {
-                if (!hasYmd(mkt.from) || !hasYmd(mkt.to)) errs.push(`Crop "${c.plant || c.id}" market line missing dates.`);
-                const kg = resolveUnitToKgPerUnit(c, mkt.unit);
-                if (!Number.isFinite(kg)) errs.push(`Crop "${c.plant || c.id}" market unit "${mkt.unit}" does not resolve to kg.`);
-            }
-        }
-
-        if (plan.csa && plan.csa.enabled) {
-            if (!Number.isFinite(Number(plan.csa.boxesPerWeek)) || Number(plan.csa.boxesPerWeek) <= 0) {
-                errs.push("CSA enabled but boxes/week is not set.");
-            }
-            for (const comp of (plan.csa.components || [])) {
-                const crop = findCrop(plan, comp.cropId);
-                if (!crop) { errs.push("CSA component references missing crop."); continue; }
-                if (!hasYmd(comp.start) || !hasYmd(comp.end)) errs.push(`CSA component for "${crop.plant || crop.id}" missing dates.`);
-                const kg = resolveUnitToKgPerUnit(crop, comp.unit);
-                if (!Number.isFinite(kg)) errs.push(`CSA component for "${crop.plant || crop.id}" unit "${comp.unit}" does not resolve to kg.`);
-            }
-        }
-
-        return errs;
-    }
-
-
     // -------------------- Modal UI (row-based MVP) --------------------
-    let planModalEl = null;
-
-    function closePlanModal() {                 // GLOBAL
-        if (planModalEl) { planModalEl.remove(); planModalEl = null; }
-        if (__harvestSuggestedHandler) {
-            window.removeEventListener("usl:harvestWindowsSuggested", __harvestSuggestedHandler);
-            __harvestSuggestedHandler = null;
-        }
-
-        // Phase 0: clear modal-scoped global UI map to avoid leaks                                 // NEW
-        if (window.__yearPlannerHarvestVizByCropId) {                                               // NEW
-            try { window.__yearPlannerHarvestVizByCropId.clear(); } catch (_) { }                   // NEW
-            try { delete window.__yearPlannerHarvestVizByCropId; } catch (_) { window.__yearPlannerHarvestVizByCropId = null; } // NEW
-        }                                                                                           // NEW
-    }
+    function closePlanModal() {                                                                           // CHANGE
+        closeSession();                                                                                   // CHANGE
+    }                                                                                                     // CHANGE
 
 
-    function uid(prefix) {
-        return prefix + "_" + Math.random().toString(36).slice(2, 10);
-    }
 
     function clampInt(n, defVal) {
         const x = Number(n);
@@ -982,8 +1131,8 @@ Draw.loadPlugin(function (ui) {
         `.trim();
     }
 
-    function openPlanModal(moduleCell, year) {
-        closePlanModal();
+    function openPlanModal(moduleCell, year) {                                                            // CHANGE
+        closeSession();                                                                                   // CHANGE
 
         let currentYear = year;
 
@@ -997,6 +1146,9 @@ Draw.loadPlugin(function (ui) {
             crops: [],
             csa: { enabled: false, boxesPerWeek: 0, start: "", end: "", components: [] }
         };
+
+        const session = createSession(moduleCell, year, plan);                                            // NEW
+        controller.session = session;                                                                     // NEW
 
         plan.year = currentYear;
         if (!Number.isFinite(plan.weekStartDow)) plan.weekStartDow = 1;
@@ -1112,16 +1264,11 @@ Draw.loadPlugin(function (ui) {
             }).catch(e => console.warn("[YearPlanner] variety refresh failed", e));
         };
 
-        graph.addListener("usl:varietyEditorClosed", onVarietyEditorClosedGraph);
+        addGraphListener(session, graph, "usl:varietyEditorClosed", onVarietyEditorClosedGraph);          // CHANGE
 
-        function cleanupPlanModalListeners() {
-            try { graph.removeListener(onVarietyEditorClosedGraph); } catch (_) { }
-        }
-
-        function closeThisModal() {
-            cleanupPlanModalListeners();
-            closePlanModal(); // GLOBAL removes DOM + harvest listener
-        }
+        function closeThisModal() {                                                                       // CHANGE
+            closeSession();                                                                               // CHANGE
+        }                                                                                                 // CHANGE
 
         closeBtn.addEventListener("click", (ev) => { ev.preventDefault(); closeThisModal(); });
         wrap.addEventListener("click", (ev) => { if (ev.target === wrap) closeThisModal(); });
@@ -1263,7 +1410,7 @@ Draw.loadPlugin(function (ui) {
         wrap.appendChild(card);
 
         document.body.appendChild(wrap);
-        planModalEl = wrap; // GLOBAL
+        session.ui.modalEl = wrap;                                                                        // CHANGE
 
         // --------------------- UI helpers --------------------
 
@@ -1319,7 +1466,7 @@ Draw.loadPlugin(function (ui) {
         }
 
         function readYieldOverrideKgFromOverridesJson(overridesJson) {
-            const obj = safeJsonParse(overridesJson, null);
+            const obj = safeJsonStringParse(overridesJson, null);
             if (!obj || typeof obj !== "object") return null;
 
             // Preferred key (your stated convention)
@@ -1507,38 +1654,38 @@ Draw.loadPlugin(function (ui) {
             if (!hostEl) return;
             const series = Array.isArray(weeklyKg) ? weeklyKg : [];
             const n = weekStarts.length;
-        
+
             hostEl.innerHTML = "";
             hostEl.style.display = "flex";
             hostEl.style.flexWrap = "wrap";
             hostEl.style.gap = "2px";
             hostEl.style.alignItems = "center";
             hostEl.style.marginTop = "4px";
-        
+
             const maxV = Math.max(0, ...series.map(x => Number(x) || 0));
             const norm = (v) => {
                 const x = Math.max(0, Number(v) || 0);
                 if (!(maxV > 0)) return 0;
                 return Math.min(1, x / maxV);
             };
-        
+
             for (let i = 0; i < n; i++) {
                 const v = Number(series[i]) || 0;
                 const t = norm(v);
-        
+
                 const dot = document.createElement("div");
                 dot.style.width = "6px";
                 dot.style.height = "6px";
                 dot.style.borderRadius = "999px";
                 dot.style.border = "1px solid rgba(0,0,0,0.25)";
                 dot.style.background = `rgba(0,0,0,${0.05 + 0.85 * t})`;
-        
+
                 const iso = weekStarts[i] ? weekStarts[i].iso : "";
                 dot.title = `${iso}  •  ${v.toFixed(2)} kg/week`;
-        
+
                 hostEl.appendChild(dot);
             }
-        }        
+        }
 
         function syncCropDatesIfEnabled(crop, oldSnap) {
             if (!crop || !crop.syncharvest) return;
@@ -1637,18 +1784,6 @@ Draw.loadPlugin(function (ui) {
         // -------------------- Variety dropdown helpers --------------------  
         const __varietyCacheByPlant = new Map();
         const __varietyControlsByCropId = new Map();
-
-        async function queryVarietiesByPlantId(plantId) {
-            const pid = Number(plantId);
-            if (!Number.isFinite(pid)) return [];
-            // PlantVarieties schema matches what you posted in Scheduler       
-            const sql = `
-            SELECT variety_id, plant_id, variety_name, overrides_json
-            FROM PlantVarieties
-            WHERE plant_id = ?
-            ORDER BY variety_name COLLATE NOCASE;`; // CHANGE
-            return await queryAll(sql, [pid]);
-        }
 
         async function getVarietyOptionsForPlantCached(plantId, force = false) {
             const key = String(plantId || "").trim();
@@ -1757,34 +1892,34 @@ Draw.loadPlugin(function (ui) {
 
         function renderPreview() {
             autoFillAndClampCsa(plan);
-        
+
             applyPlannedPlantsFromModuleToPlan(moduleCell, currentYear, plan);
-        
+
             syncPlannedPlantsInputs();
-        
+
             const warnings = [];
-        
+
             // NEW: build weekStarts once (same basis as computePlanWeekly)
             const weekStartDow = Number.isFinite(plan && plan.weekStartDow) ? plan.weekStartDow : 1; // NEW
             const weekStarts = buildWeekStartsForYearLocal(Number(plan.year), weekStartDow);        // NEW
-        
+
             // NEW: derive harvest windows + store per-week actual harvest series on crops
             applyActualHarvestFromModuleToPlan(moduleCell, currentYear, plan, weekStarts);          // NEW
-        
+
             // NEW: draw dot heatmap under each crop
-            const vizMap = window.__yearPlannerHarvestVizByCropId;                                  // NEW
-            if (vizMap && vizMap.size) {                                                           // NEW
-                for (const c of (plan.crops || [])) {                                               // NEW
-                    const ctl = vizMap.get(c.id);                                                   // NEW
+            const vizMap = session.ui.harvestVizByCropId;                                           // CHANGE
+            if (vizMap && vizMap.size) {                                                            // CHANGE
+                for (const c of (plan.crops || [])) {                                               // CHANGE
+                    const ctl = vizMap.get(c.id);                                                   // CHANGE
                     if (!ctl || !ctl.host) continue;                                                // NEW
                     renderHarvestDots(ctl.host, weekStarts, c.__actualHarvestWeeklyKg || []);       // NEW
                 }                                                                                   // NEW
             }                                                                                       // NEW
-        
+
             const weekly = computePlanWeekly(plan, warnings);
-        
+
             const cropId = String(plan.cropFilterId || "");
-        
+
             if (cropId) {
                 const v = weekly.perCrop.get(cropId);
                 const t = v ? v.target : [];
@@ -1796,9 +1931,9 @@ Draw.loadPlugin(function (ui) {
                     warnings.push("Select a crop to view the per-crop chart.");
                 }
             }
-        
+
             renderPlanTotals(tableBox.querySelector("#planTotals"), plan, weekly);
-        
+
             if (warnings.length) {
                 warnBox.style.display = "block";
                 warnBox.innerHTML =
@@ -1809,7 +1944,7 @@ Draw.loadPlugin(function (ui) {
                 warnBox.innerHTML = "";
             }
         }
-        
+
 
         function showWarnings(list) {
             const msgs = Array.isArray(list) ? list.filter(Boolean) : [];
@@ -1821,6 +1956,9 @@ Draw.loadPlugin(function (ui) {
 
         function renderCrops() {
             cropsList.innerHTML = "";
+
+            session.ui.harvestVizByCropId.clear();                                                        // CHANGE
+
             const crops = plan.crops || [];
 
             for (const crop of crops) {
@@ -1888,39 +2026,35 @@ Draw.loadPlugin(function (ui) {
                 const useActualCb = document.createElement("input");                                 // NEW
                 useActualCb.type = "checkbox";
                 useActualCb.checked = (crop.useActualHarvest !== false); // default true
-                
+
                 const useActualLab = document.createElement("label");                                 // NEW
                 useActualLab.style.display = "flex";
                 useActualLab.style.alignItems = "center";
                 useActualLab.style.gap = "6px";
                 useActualLab.appendChild(useActualCb);
                 useActualLab.appendChild(document.createTextNode("Use actual harvest"));
-                
+
                 const harvestViz = document.createElement("div");                                    // NEW
                 harvestViz.style.width = "100%";                                                     // NEW
-                
+
                 // Disable manual date inputs when using actual harvest                              // NEW
                 hs.disabled = useActualCb.checked;                                                   // NEW
                 he.disabled = useActualCb.checked;                                                   // NEW
                 hs.title = useActualCb.checked ? "Derived from tiler group harvest dates." : "";
                 he.title = useActualCb.checked ? "Derived from tiler group harvest dates." : "";
-                
+
                 // Put toggle near harvest fields                                                     // NEW
                 row.appendChild(useActualLab);                                                       // NEW
-                
-                // Put viz beneath the row (so it spans)                                             // NEW
-                panel.appendChild(harvestViz);                                                       // NEW
-                
+
                 // Store control for later updates                                                   // NEW
-                if (!window.__yearPlannerHarvestVizByCropId) window.__yearPlannerHarvestVizByCropId = new Map();
-                window.__yearPlannerHarvestVizByCropId.set(crop.id, { host: harvestViz, cb: useActualCb, hs, he });                
-                
+                session.ui.harvestVizByCropId.set(crop.id, { host: harvestViz, cb: useActualCb, hs, he }); // CHANGE
+
                 useActualCb.addEventListener("change", () => {                                       // NEW
                     crop.useActualHarvest = !!useActualCb.checked;
                     hs.disabled = !!crop.useActualHarvest;
                     he.disabled = !!crop.useActualHarvest;
                     renderPreview();
-                });                
+                });
 
                 row.appendChild(document.createTextNode("Variety"));
                 row.appendChild(varietySel);
@@ -2272,6 +2406,7 @@ Draw.loadPlugin(function (ui) {
 
                 panel.appendChild(header);
                 panel.appendChild(row);
+                panel.appendChild(harvestViz);                                                       // NEW
                 panel.appendChild(packsTitle);
                 panel.appendChild(packsWrap);
                 panel.appendChild(addPackBtn);
@@ -2477,7 +2612,7 @@ Draw.loadPlugin(function (ui) {
 
         reloadPlantsBtn.addEventListener("click", async (ev) => {
             ev.preventDefault();
-            __plantsBasicCache = null;
+            DbClient.invalidatePlantsBasicCache();
             await initPlantsDropdown();
         });
 
@@ -2491,7 +2626,9 @@ Draw.loadPlugin(function (ui) {
             if (!p) return;
 
             const defaults = getDefaultsForPlant(p.plant_id);
-            const initialPackages = (defaults && defaults.length) ? deepClone(defaults) : [{ unit: "kg", baseType: "kg", baseQty: 1, price: NaN }];
+            const initialPackages = (defaults && defaults.length)
+                ? JSON.parse(JSON.stringify(defaults)) // CHANGE
+                : [{ unit: "kg", baseType: "kg", baseQty: 1, price: NaN }];
 
             const crop = {
                 id: uid("crop"),
@@ -2529,7 +2666,7 @@ Draw.loadPlugin(function (ui) {
                     window.dispatchEvent(new CustomEvent("usl:harvestWindowsNeeded", {
                         detail: {
                             moduleCellId: moduleCell.getId ? moduleCell.getId() : moduleCell.id,
-                            year,
+                            currentYear,
                             crops: cropsReq
                         }
                     }));
@@ -2612,8 +2749,8 @@ Draw.loadPlugin(function (ui) {
             const key = String(name || "").trim();
             if (!key) return;
             // Store template without module binding, but keep crop IDs as-is in template
-            const t = deepClone(plan) || {};
-            t.year = null;                                                               // (template is year-agnostic)
+            const t = plan ? JSON.parse(JSON.stringify(plan)) : {}; // CHANGE
+            t.year = null;                                          
             saveTemplateByName(key, t);
             refreshTemplateDropdown();
             templateSel.value = key;
@@ -2640,7 +2777,24 @@ Draw.loadPlugin(function (ui) {
                 }
             }
 
-            savePlanForYear(moduleCell, currentYear, plan);
+            const persisted = JSON.parse(JSON.stringify(plan)); // CHANGE
+
+            // remove non-modal feilds to avoid xml bloat
+            for (const c of (persisted.crops || [])) {          // CHANGE
+                delete c.__actualHarvestWeeklyKg;                 // CHANGE
+                delete c.__sync_lastHarvestStart;                 // CHANGE
+                delete c.__sync_lastHarvestEnd;                   // CHANGE
+                delete c.__sync_lastAvailEnd;                     // CHANGE
+                delete c.__kgpp_lastAuto;                         // CHANGE
+                delete c.__baseKgPerPlant;                        // CHANGE
+
+                for (const mkt of (c.market || [])) {             // CHANGE
+                    delete mkt.__baseTo;                            // CHANGE
+                    delete mkt.__preSyncTo;                         // CHANGE
+                }
+            }
+
+            savePlanForYear(moduleCell, currentYear, persisted); // CHANGE
         });
 
 
@@ -2731,6 +2885,7 @@ Draw.loadPlugin(function (ui) {
 
 
         function onHarvestWindowsSuggested(ev) {
+            if (controller.session !== session) return;                                              // NEW
             const d = ev && ev.detail ? ev.detail : null;
             if (!d) return;
 
@@ -2749,12 +2904,7 @@ Draw.loadPlugin(function (ui) {
             renderPreview();
         }
 
-        if (__harvestSuggestedHandler) {
-            window.removeEventListener("usl:harvestWindowsSuggested", __harvestSuggestedHandler);
-        }
-
-        __harvestSuggestedHandler = onHarvestWindowsSuggested;
-        window.addEventListener("usl:harvestWindowsSuggested", __harvestSuggestedHandler);
+        addWindowListener(session, "usl:harvestWindowsSuggested", onHarvestWindowsSuggested);             // CHANGE
 
         initPlantsDropdown();
         renderCrops();
