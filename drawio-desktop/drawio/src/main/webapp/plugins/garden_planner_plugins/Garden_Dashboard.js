@@ -31,7 +31,7 @@ Draw.loadPlugin(function (ui) {
     const DASH_ATTR = "garden_dashboard";
     const DASH_YEAR_ATTR = "dashboard_year";
     const YEAR_HIDDEN_ATTR = "year_hidden";
-
+    const PLAN_YEAR_JSON_ATTR = "plan_year_json"; 
 
     const BTN_SIZE = 22;
     const BTN_GAP = 6;
@@ -44,8 +44,8 @@ Draw.loadPlugin(function (ui) {
         "spacing=0;spacingTop=0;spacingLeft=0;spacingRight=0;spacingBottom=0;" +
         "strokeColor=#666666;fillColor=#f7f7f7;fontSize=12;";
 
-    const PLAN_YEAR_EVENT = "usl:planYearRequested"; // NEW
-    const ALLOCATE_PLAN_EVENT = "usl:allocatePlanRequested"; // NEW
+    const PLAN_YEAR_EVENT = "usl:planYearRequested";
+    const ALLOCATE_PLAN_EVENT = "usl:allocatePlanRequested";
 
     // -------------------- Helpers --------------------
     function getStyleSafe(cell) {
@@ -93,6 +93,88 @@ Draw.loadPlugin(function (ui) {
         return !!(moduleCell && moduleCell.getAttribute && moduleCell.getAttribute("city_name"));
     }
 
+    // -------------------- Germ Rate helpers ------------
+
+    function safeJsonParse(s, defVal) {                           
+        try { return JSON.parse(String(s || "")); } catch (e) { return defVal; }
+    }                                                             
+
+    function getPlanYearObject(moduleCell, year) {                
+        const raw = getCellAttr(moduleCell, PLAN_YEAR_JSON_ATTR, "");
+        if (!raw) return null;
+        const root = safeJsonParse(raw, null);
+        if (!root || typeof root !== "object") return null;
+
+        // supports {"2026":{...}} shape (your example)
+        const yKey = String(year);
+        const obj = root[yKey];
+        return (obj && typeof obj === "object") ? obj : null;
+    }                                                             
+
+    function normKeyPart(s) {                                      
+        return String(s || "").trim().toLowerCase();
+    }                                                              
+
+    function cropKeyFromParts(plant, variety) {                    
+        const p = String(plant || "").trim();
+        const v = String(variety || "").trim();
+        if (p && v) return `${p} — ${v}`;
+        return p || v || "(Unnamed crop)";
+    }                                                              
+
+    function buildPlanIndex(planYearObj) {                         
+        // Returns:
+        // {
+        //   byVarietyId: Map<number, crop>,
+        //   byNameKey: Map<string, crop[]>,   : array to handle dupes
+        //   crops: array
+        // }
+        const out = {
+            byVarietyId: new Map(),
+            byNameKey: new Map(),
+            crops: []
+        };
+
+        const crops = (planYearObj && Array.isArray(planYearObj.crops)) ? planYearObj.crops : [];
+        out.crops = crops;
+
+        for (const c of crops) {
+            const vid = Number(c && c.varietyId);
+            if (Number.isFinite(vid)) out.byVarietyId.set(vid, c);
+
+            const nameKey = normKeyPart(cropKeyFromParts(c && c.plant, c && c.variety));
+            const arr = out.byNameKey.get(nameKey) || [];
+            arr.push(c);
+            out.byNameKey.set(nameKey, arr);
+        }
+        return out;
+    }                                                              
+
+    function findPlanCropForTiler(planIndex, tg) {                 
+        if (!planIndex) return null;
+
+        // Prefer stable IDs if present on tiler groups
+        const tgVarietyId = Number(getCellAttr(tg, "variety_id", ""));  assumption
+        if (Number.isFinite(tgVarietyId) && planIndex.byVarietyId.has(tgVarietyId)) {
+            return planIndex.byVarietyId.get(tgVarietyId);
+        }
+
+        // Fallback: match by "Plant — Variety" label
+        const tgKey = normKeyPart(getCropKey(tg));
+        const hits = planIndex.byNameKey.get(tgKey);
+        if (hits && hits.length) return hits[0];                 
+        return null;
+    }                                                              
+
+    function germAdjustedSeeds(plants, germRate) {                 
+        const p = Number(plants);
+        const g = Number(germRate);
+        if (!Number.isFinite(p) || p <= 0) return 0;
+        if (!Number.isFinite(g) || g <= 0 || g > 1.5) return Math.ceil(p); // guard
+        return Math.ceil(p / g);
+    }                                                              
+
+
     // -------------------- Helpers --------------------
     function toInt(v, def = 0) {
         const n = Number(v);
@@ -112,23 +194,19 @@ Draw.loadPlugin(function (ui) {
 
     function setCellAttr(cell, key, val) {
         if (graph.setAttributeForCell) {
-            if (val == null) graph.setAttributeForCell(cell, key, null);                // CHANGE
-            else graph.setAttributeForCell(cell, key, String(val));                     // CHANGE
+            if (val == null) graph.setAttributeForCell(cell, key, null);
+            else graph.setAttributeForCell(cell, key, String(val));
         } else if (cell.value && typeof cell.value.setAttribute === "function") {
-            if (val == null) cell.value.removeAttribute(key);                           // CHANGE
-            else cell.value.setAttribute(key, String(val));                             // CHANGE
+            if (val == null) cell.value.removeAttribute(key);
+            else cell.value.setAttribute(key, String(val));
         }
     }
 
-    function setYearHidden(cell, hidden) {                                              // NEW
-        if (!cell) return;                                                              // NEW
-        if (hidden) setCellAttr(cell, YEAR_HIDDEN_ATTR, "1");                            // NEW
-        else setCellAttr(cell, YEAR_HIDDEN_ATTR, null);                                  // NEW (remove)
-    }                                                                                   // NEW
-
-    function isYearHidden(cell) {                                                       // NEW
-        return getCellAttr(cell, YEAR_HIDDEN_ATTR, "") === "1";                          // NEW
-    }                                                                                   // NEW
+    function setYearHidden(cell, hidden) {
+        if (!cell) return;
+        if (hidden) setCellAttr(cell, YEAR_HIDDEN_ATTR, "1");
+        else setCellAttr(cell, YEAR_HIDDEN_ATTR, null);
+    }
 
 
     function getDescendants(root) {
@@ -169,13 +247,13 @@ Draw.loadPlugin(function (ui) {
         setCellAttr(dashCell, DASH_YEAR_ATTR, String(year));
     }
 
-    function notifyYearFilterChanged(moduleCell, selectedYear) {                         // NEW
-        try {                                                                            // NEW
-            window.dispatchEvent(new CustomEvent("yearFilterChanged", {                  // NEW
-                detail: { moduleCellId: moduleCell ? moduleCell.getId() : null, year: selectedYear } // NEW
-            }));                                                                         // NEW
-        } catch (e) { }                                                                  // NEW
-    }                                                                                    // NEW
+    function notifyYearFilterChanged(moduleCell, selectedYear) {
+        try {
+            window.dispatchEvent(new CustomEvent("yearFilterChanged", {
+                detail: { moduleCellId: moduleCell ? moduleCell.getId() : null, year: selectedYear }
+            }));
+        } catch (e) { }
+    }
 
 
     function pxToAreaM2(wPx, hPx) {
@@ -185,13 +263,6 @@ Draw.loadPlugin(function (ui) {
         const hM = hCm * DRAW_SCALE;
         return wM * hM;
     }
-
-    function getUiScale() {
-        const s = graph.view && graph.view.scale;
-        if (!Number.isFinite(s)) return 1;
-        return s;
-    }
-
 
     function getCropKey(tg) {
         const plant = getCellAttr(tg, "plant_name", "").trim();
@@ -203,51 +274,151 @@ Draw.loadPlugin(function (ui) {
     function computeModuleMetrics(moduleCell, selectedYear) {
         const all = getDescendants(moduleCell);
         const tilers = all.filter(isTilerGroup);
+        const tilersInYear = tilers.filter((tg) => shouldRenderTilerGroup(tg, selectedYear));
 
-        const tilersInYear = tilers.filter((tg) => shouldRenderTilerGroup(tg, selectedYear)); // CHANGE
-
+        const planObj = getPlanYearObject(moduleCell, selectedYear);
+        const planIndex = planObj ? buildPlanIndex(planObj) : null;
 
         const byCrop = new Map();
 
+        // Totals
         let totalAreaM2 = 0;
-        let totalSeeds = 0;
+        let totalActualPlants = 0;
+        let totalActualSeedsAdj = 0;
+        let totalPlanPlants = 0;
+        let totalPlanSeedsAdj = 0;
         let totalTargetKg = 0;
         let totalExpectedKg = 0;
 
+        // --- Seed rows from plan first (prevents double-counting and shows plan-only crops) --- 
+        if (planIndex && Array.isArray(planIndex.crops)) {                                               
+            for (const pc of planIndex.crops) {                                                            
+                const crop = cropKeyFromParts(pc && pc.plant, pc && pc.variety);                              
+                const planGermRate = Number(pc && pc.germRate);                                              
+
+
+                const planPlants = Number(pc && pc.plantsReq);                     
+                const safePlanPlants = Number.isFinite(planPlants) ? planPlants : 0;
+
+                const gr = (Number.isFinite(planGermRate) ? planGermRate : NaN);                              
+
+                const row = byCrop.get(crop) || {                                                             
+                    crop,
+                    area_m2: 0,
+                    actual_plants: 0,
+                    actual_seeds_adj: 0,
+                    plan_plants: 0,
+                    plan_seeds_adj: 0,
+                    germ_rate: NaN,
+                    target_kg: 0,
+                    expected_kg: 0,
+                    count: 0,
+                    _planBound: false,
+                    _planCropId: null
+                };
+                
+                row.plan_plants += safePlanPlants; // actually store plantsReq as plan plants
+
+                // Always accumulate plan totals for this crop (handles multiple plan entries per crop).      
+                const seedsReq = Number(pc && pc.seedsReq);                        
+                const safeSeedsReq = Number.isFinite(seedsReq) ? seedsReq : NaN;   
+                const planSeeds = Number.isFinite(safeSeedsReq)
+                    ? safeSeedsReq
+                    : germAdjustedSeeds(safePlanPlants, gr);                     
+                row.plan_seeds_adj += planSeeds;                                   
+                
+                // a germ rate if we have one; don’t overwrite a valid one with NaN.                      
+                if (!Number.isFinite(row.germ_rate) && Number.isFinite(gr)) row.germ_rate = gr;               
+
+                row._planBound = true;                                                                         
+                row._planCropId = (pc && pc.id) ? String(pc.id) : row._planCropId;                              
+
+                byCrop.set(crop, row);                                                                         
+            }
+        }
+
+        // --- Accumulate actuals from tiler groups --- 
         for (const tg of tilersInYear) {
             const geo = model.getGeometry(tg);
-
             let areaM2 = 0;
             if (geo) areaM2 = pxToAreaM2(geo.width, geo.height);
 
-            const seeds = toNum(getCellAttr(tg, "plants_required", 0), 0);
-            const expectedKg = toNum(getCellAttr(tg, "planting_expected_yield_kg", 0), 0);
+            const actualPlants = toNum(getCellAttr(tg, "plant_count", 0), 0);
+            const expectedKg = toNum(getCellAttr(tg, "plant_yield", 0), 0);
 
             const targetDirect = toNum(getCellAttr(tg, "planting_target_yield_kg", NaN), NaN);
             const targetLegacy = toNum(getCellAttr(tg, "target_yield", NaN), NaN);
             const targetKg = Number.isFinite(targetDirect) ? targetDirect : (Number.isFinite(targetLegacy) ? targetLegacy : 0);
 
-            totalAreaM2 += areaM2;              // CHANGE
-            totalSeeds += seeds;
-            totalExpectedKg += expectedKg;
-            totalTargetKg += targetKg;
-
             const crop = getCropKey(tg);
+
+            const planCrop = findPlanCropForTiler(planIndex, tg);                                                
+            const planGermRate = planCrop && Number.isFinite(Number(planCrop.germRate)) ? Number(planCrop.germRate) : NaN;
+            const actualSeedsAdj = germAdjustedSeeds(actualPlants, planGermRate);
+
+            // Ensure row exists (could be plan-seeded or tiler-only)
             const cur = byCrop.get(crop) || {
-                crop, area_m2: 0, seeds: 0,
-                target_kg: 0, expected_kg: 0,
-                count: 0
+                crop,
+                area_m2: 0,
+
+                actual_plants: 0,
+                actual_seeds_adj: 0,
+
+                plan_plants: 0,
+                plan_seeds_adj: 0,
+                germ_rate: NaN,
+
+                target_kg: 0,
+                expected_kg: 0,
+                count: 0,
+
+                _planBound: false,         
+                _planCropId: null          
             };
+
             cur.area_m2 += areaM2;
-            cur.seeds += seeds;
+
+            cur.actual_plants += actualPlants;
+            cur.actual_seeds_adj += actualSeedsAdj;
+
+            // If this tiler row wasn’t plan-seeded but we found a plan crop, bind plan ONCE here. 
+            if (planCrop && !cur._planBound) {                                                                    
+                const planPlants = Number.isFinite(Number(planCrop.plantsReq)) ? Number(planCrop.plantsReq) : 0;  
+                const seedsReq = Number.isFinite(Number(planCrop.seedsReq)) ? Number(planCrop.seedsReq) : NaN;    
+                const planSeedsAdj = Number.isFinite(seedsReq) ? seedsReq : germAdjustedSeeds(planPlants, planGermRate); 
+                cur.plan_plants += planPlants;                                                                     
+                cur.plan_seeds_adj += planSeedsAdj;                                                                
+                cur.germ_rate = Number.isFinite(planGermRate) ? planGermRate : cur.germ_rate;                      
+                cur._planBound = true;                                                                             
+                cur._planCropId = (planCrop && planCrop.id) ? String(planCrop.id) : cur._planCropId;               
+            }
+
             cur.target_kg += targetKg;
             cur.expected_kg += expectedKg;
             cur.count += 1;
+
             byCrop.set(crop, cur);
 
+            // Totals (actual/area/expected/target can be summed per tiler safely)
+            totalAreaM2 += areaM2;
+            totalActualPlants += actualPlants;
+            totalActualSeedsAdj += actualSeedsAdj;
+            totalExpectedKg += expectedKg;
+            totalTargetKg += targetKg;
         }
 
-        const rows = Array.from(byCrop.values()).sort((a, b) => a.crop.localeCompare(b.crop));
+        // --- Compute plan totals from rows (each row has plan bound at most once) --- 
+        for (const r of byCrop.values()) {                                                                       
+            totalPlanPlants += Number(r.plan_plants || 0);                                                        
+            totalPlanSeedsAdj += Number(r.plan_seeds_adj || 0);                                                    
+        }                                                                                                         
+
+        const rows = Array.from(byCrop.values())
+            .map(r => {                                                                                      
+                const { _planBound, _planCropId, ...clean } = r;                                                  
+                return clean;                                                                                     
+            })
+            .sort((a, b) => a.crop.localeCompare(b.crop));
 
         const city = hasCitySet(moduleCell) ? getCellAttr(moduleCell, "city_name", "") : "";
         const moduleName = (moduleCell.value && moduleCell.value.getAttribute)
@@ -260,7 +431,12 @@ Draw.loadPlugin(function (ui) {
             tilerGroupsTotal: tilers.length,
             tilerGroupsInYear: tilersInYear.length,
             totalAreaM2,
-            totalSeeds,
+
+            totalActualPlants,
+            totalActualSeedsAdj,
+            totalPlanPlants,          
+            totalPlanSeedsAdj,        
+
             totalTargetKg,
             totalExpectedKg,
             rows
@@ -270,133 +446,125 @@ Draw.loadPlugin(function (ui) {
 
     // -------------------- year Filtering Helpers --------------------
 
-    function isKanbanCard(cell) {                                                     // NEW
-        return getCellAttr(cell, "kanban_card", "") === "1";                          // NEW
-    }                                                                                 // NEW    
-
-    function isPerennialTilerGroup(tg) {                                              // NEW
-        // Prefer a single canonical attribute; fall back to reasonable alternates.    // NEW
-        const lc = getCellAttr(tg, "life_cycle", "").trim().toLowerCase();            // NEW
-        if (lc === "perennial") return true;                                          // NEW
-        if (getCellAttr(tg, "is_perennial", "") === "1") return true;                // NEW
-        return false;                                                                 // NEW
-    }                                                                                 // NEW
-
-    function shouldRenderTilerGroup(tg, selectedYear) {                               // CHANGE
-        if (!isTilerGroup(tg)) return false;                                          // NEW
-        if (isPerennialTilerGroup(tg)) return true;                                   // NEW
-
-        const startY = toInt(getCellAttr(tg, "season_start_year", ""), NaN);          // CHANGE
-        if (Number.isFinite(startY) && startY === selectedYear) return true;          // NEW
-
-        const endY = harvestEndUtcYear(tg);                                           // NEW
-        if (Number.isFinite(endY) && endY === selectedYear) return true;              // NEW
-
-        return false;                                                                 // NEW
-    }                                                                                 // CHANGE                                                                                  // NEW
-
-    function yearBounds(selectedYear) {                                               // NEW
-        // [start, endExclusive] in ms UTC.                                            // NEW
-        const start = Date.UTC(selectedYear, 0, 1, 0, 0, 0, 0);                        // NEW
-        const endEx = Date.UTC(selectedYear + 1, 0, 1, 0, 0, 0, 0);                    // NEW
-        return { start, endEx };                                                      // NEW
-    }                                                                                 // NEW
-
-    function getFirstNonEmptyAttr(cell, keys) {                                      // NEW
-        for (const k of keys) {                                                      // NEW
-            const v = getCellAttr(cell, k, "");                                      // NEW
-            if (String(v || "").trim()) return v;                                    // NEW
-        }                                                                            // NEW
-        return "";                                                                   // NEW
-    }                                                                                // NEW
-
-    function harvestEndUtcYear(tg) {                                                 // NEW
-        const raw = getFirstNonEmptyAttr(tg, [                                       // NEW
-            "harvest_end",                                                           // NEW
-            "harvest_end_date",                                                      // NEW
-            "planting_harvest_end",                                                  // NEW
-            "season_harvest_end",                                                    // NEW
-            "end"                                                                    // NEW
-        ]);                                                                          // NEW
-        const ms = parseIsoDateToUtcMs(raw);                                         // NEW
-        if (!Number.isFinite(ms)) return NaN;                                        // NEW
-        return new Date(ms).getUTCFullYear();                                        // NEW
-    }                                                                                // NEW    
-
-    function parseIsoDateToUtcMs(s) {                                                 // NEW
-        // Expects "YYYY-MM-DD" or full ISO.                                           // NEW
-        const str = String(s || "").trim();                                           // NEW
-        if (!str) return NaN;                                                         // NEW
-        const d = new Date(str);                                                      // NEW
-        const t = d.getTime();                                                        // NEW
-        return Number.isFinite(t) ? t : NaN;                                          // NEW
-    }                                                                                 // NEW
-
-    function taskOverlapsYear(taskStartMs, taskEndExMs, selectedYear) {               // NEW
-        if (!Number.isFinite(taskStartMs) || !Number.isFinite(taskEndExMs)) return false; // NEW
-        const b = yearBounds(selectedYear);                                           // NEW
-        return taskStartMs < b.endEx && taskEndExMs > b.start;                        // NEW
-    }                                                                                 // NEW
-
-    function shouldRenderTaskCard(taskCell, selectedYear) {                           // CHANGE
-        if (!isKanbanCard(taskCell)) return false;                                    // NEW
-
-        const sMs = parseIsoDateToUtcMs(getCellAttr(taskCell, "start", ""));          // CHANGE
-        const eMs = parseIsoDateToUtcMs(getCellAttr(taskCell, "end", ""));            // CHANGE
-
-        // Treat "end" as inclusive YYYY-MM-DD and convert to exclusive end.           // CHANGE
-        const endExMs = Number.isFinite(eMs) ? (eMs + 24 * 60 * 60 * 1000) : NaN;     // CHANGE
-
-        return taskOverlapsYear(sMs, endExMs, selectedYear);                          // CHANGE
+    function isKanbanCard(cell) {
+        return getCellAttr(cell, "kanban_card", "") === "1";
     }
 
-    function setStyleKey(style, key, val) {                                           // NEW
-        const re = new RegExp("(^|;)" + key + "=[^;]*", "g");                          // NEW
-        const cleaned = String(style || "").replace(re, "");                           // NEW
-        const suffix = cleaned && !cleaned.endsWith(";") ? ";" : "";                  // NEW
-        return cleaned + suffix + key + "=" + val + ";";                               // NEW
-    }                                                                                 // NEW
+    function isPerennialTilerGroup(tg) {
+        // Prefer a single canonical attribute; fall back to reasonable alternates.    
+        const lc = getCellAttr(tg, "life_cycle", "").trim().toLowerCase();
+        if (lc === "perennial") return true;
+        if (getCellAttr(tg, "is_perennial", "") === "1") return true;
+        return false;
+    }
 
-    function setCellVisible(cell, isVisible) {                                        // CHANGE
-        if (!cell) return;                                                            // NEW
-        const m = graph.getModel();                                                   // NEW
-        if (typeof m.setVisible === "function") {                                     // NEW
-            m.setVisible(cell, !!isVisible);                                          // NEW
-            return;                                                                   // NEW
+    function shouldRenderTilerGroup(tg, selectedYear) {
+        if (!isTilerGroup(tg)) return false;
+        if (isPerennialTilerGroup(tg)) return true;
+
+        const startY = toInt(getCellAttr(tg, "season_start_year", ""), NaN);
+        if (Number.isFinite(startY) && startY === selectedYear) return true;
+
+        const endY = harvestEndUtcYear(tg);
+        if (Number.isFinite(endY) && endY === selectedYear) return true;
+
+        return false;
+    }
+
+    function yearBounds(selectedYear) {
+        // [start, endExclusive] in ms UTC.                                            
+        const start = Date.UTC(selectedYear, 0, 1, 0, 0, 0, 0);
+        const endEx = Date.UTC(selectedYear + 1, 0, 1, 0, 0, 0, 0);
+        return { start, endEx };
+    }
+
+    function getFirstNonEmptyAttr(cell, keys) {
+        for (const k of keys) {
+            const v = getCellAttr(cell, k, "");
+            if (String(v || "").trim()) return v;
+        }
+        return "";
+    }
+
+    function harvestEndUtcYear(tg) {
+        const raw = getFirstNonEmptyAttr(tg, [
+            "harvest_end",
+            "harvest_end_date",
+            "planting_harvest_end",
+            "season_harvest_end",
+            "end"
+        ]);
+        const ms = parseIsoDateToUtcMs(raw);
+        if (!Number.isFinite(ms)) return NaN;
+        return new Date(ms).getUTCFullYear();
+    }
+
+    function parseIsoDateToUtcMs(s) {
+        // Expects "YYYY-MM-DD" or full ISO.                                           
+        const str = String(s || "").trim();
+        if (!str) return NaN;
+        const d = new Date(str);
+        const t = d.getTime();
+        return Number.isFinite(t) ? t : NaN;
+    }
+
+    function taskOverlapsYear(taskStartMs, taskEndExMs, selectedYear) {
+        if (!Number.isFinite(taskStartMs) || !Number.isFinite(taskEndExMs)) return false;
+        const b = yearBounds(selectedYear);
+        return taskStartMs < b.endEx && taskEndExMs > b.start;
+    }
+
+    function shouldRenderTaskCard(taskCell, selectedYear) {
+        if (!isKanbanCard(taskCell)) return false;
+
+        const sMs = parseIsoDateToUtcMs(getCellAttr(taskCell, "start", ""));
+        const eMs = parseIsoDateToUtcMs(getCellAttr(taskCell, "end", ""));
+
+        // Treat "end" as inclusive YYYY-MM-DD and convert to exclusive end.           
+        const endExMs = Number.isFinite(eMs) ? (eMs + 24 * 60 * 60 * 1000) : NaN;
+
+        return taskOverlapsYear(sMs, endExMs, selectedYear);
+    }
+
+    function setCellVisible(cell, isVisible) {
+        if (!cell) return;
+        const m = graph.getModel();
+        if (typeof m.setVisible === "function") {
+            m.setVisible(cell, !!isVisible);
+            return;
         }
 
-        // Fallback if setVisible is not available (rare)                              // NEW
-        graph.toggleCells(!isVisible, [cell], true);                                  // NEW
-        graph.refresh(cell);                                                          // NEW
-    }                                                                                 // CHANGE                                                                        // NEW
+        // Fallback if setVisible is not available (rare)                              
+        graph.toggleCells(!isVisible, [cell], true);
+        graph.refresh(cell);
+    }
 
-    function applyYearVisibilityToModule(moduleCell, selectedYear) {                     // CHANGE
-        const all = getDescendants(moduleCell);                                          // CHANGE
-        const tilers = all.filter(isTilerGroup);                                         // CHANGE
-        const cards = all.filter(isKanbanCard);                                          // CHANGE
+    function applyYearVisibilityToModule(moduleCell, selectedYear) {
+        const all = getDescendants(moduleCell);
+        const tilers = all.filter(isTilerGroup);
+        const cards = all.filter(isKanbanCard);
 
-        model.beginUpdate();                                                            // CHANGE
+        model.beginUpdate();
         try {
-            // --- tiler groups: dashboard owns visibility ---------------------------- // NEW
-            for (const tg of tilers) {                                                   // CHANGE
-                const show = shouldRenderTilerGroup(tg, selectedYear);                   // CHANGE
-                setYearHidden(tg, !show);                                                // NEW (persist)
-                setCellVisible(tg, show);                                                // CHANGE (actual hide/show)
+            // --- tiler groups: dashboard owns visibility ---------------------------- 
+            for (const tg of tilers) {
+                const show = shouldRenderTilerGroup(tg, selectedYear);
+                setYearHidden(tg, !show);
+                setCellVisible(tg, show);
             }
 
-            // --- kanban cards: kanban owns visibility (paging) ---------------------- // NEW
-            for (const c of cards) {                                                     // CHANGE
-                const show = shouldRenderTaskCard(c, selectedYear);                      // CHANGE
-                setYearHidden(c, !show);                                                 // NEW (persist only)
-                // DO NOT setCellVisible(c, show);                                      // NEW (prevent paging conflict)
+            // --- kanban cards: kanban owns visibility (paging) ---------------------- 
+            for (const c of cards) {
+                const show = shouldRenderTaskCard(c, selectedYear);
+                setYearHidden(c, !show);
             }
         } finally {
-            model.endUpdate();                                                          // CHANGE
+            model.endUpdate();
         }
 
-        graph.refresh(moduleCell);                                                      // CHANGE
-        notifyYearFilterChanged(moduleCell, selectedYear);                               // NEW
-    }                                                                                    // CHANGE                                                                           // NEW                                                                  // NEW
+        graph.refresh(moduleCell);
+        notifyYearFilterChanged(moduleCell, selectedYear);
+    }
 
 
     // -------------------- Overlay HTML (not persisted) --------------------
@@ -404,16 +572,25 @@ Draw.loadPlugin(function (ui) {
         const fmt1 = (n) => (Number.isFinite(n) ? n.toFixed(1) : "0.0");
         const fmt0 = (n) => (Number.isFinite(n) ? Math.round(n).toString() : "0");
         const esc = (v) => mxUtils.htmlEntities(String(v ?? ""));
+        const fmtPct = (n) => (Number.isFinite(n) ? (n * 100).toFixed(0) + "%" : ""); 
 
         const cropRows = (metrics.rows || []).map((r) => `
-          <tr>
-            <td style="border:1px solid #999; padding:4px; text-align:left; white-space:nowrap;">${esc(r.crop)}</td>
-            <td style="border:1px solid #999; padding:4px; text-align:right;">${fmt1(r.area_m2)}</td>
-            <td style="border:1px solid #999; padding:4px; text-align:right;">${fmt0(r.seeds)}</td>
-            <td style="border:1px solid #999; padding:4px; text-align:right;">${fmt1(r.target_kg)}</td>    
-            <td style="border:1px solid #999; padding:4px; text-align:right;">${fmt1(r.expected_kg)}</td>  
-          </tr>
-        `).join("");
+        <tr>
+          <td style="border:1px solid #999; padding:4px; text-align:left; white-space:nowrap;">${esc(r.crop)}</td>
+          <td style="border:1px solid #999; padding:4px; text-align:right;">${fmt1(r.area_m2)}</td>
+      
+          <td style="border:1px solid #999; padding:4px; text-align:right;">${fmt0(r.plan_plants)}</td>           
+          <td style="border:1px solid #999; padding:4px; text-align:right;">${fmt0(r.actual_plants)}</td>     
+          <td style="border:1px solid #999; padding:4px; text-align:right;">${fmt0((r.actual_plants || 0) - (r.plan_plants || 0))}</td> 
+      
+          <td style="border:1px solid #999; padding:4px; text-align:right;">${fmtPct(r.germ_rate)}</td>          
+          <td style="border:1px solid #999; padding:4px; text-align:right;">${fmt0(r.plan_seeds_adj)}</td>   
+      
+          <td style="border:1px solid #999; padding:4px; text-align:right;">${fmt1(r.target_kg)}</td>
+          <td style="border:1px solid #999; padding:4px; text-align:right;">${fmt1(r.expected_kg)}</td>
+        </tr>
+      `).join("");
+
 
         return `
 <div style="font-family: Arial; font-size: 12px; line-height: 1.25;">
@@ -441,35 +618,27 @@ Draw.loadPlugin(function (ui) {
       </tr>
 
       <tr>
-        <th colspan="5" style="border:1px solid #999; padding:6px; text-align:left;">Totals for selected year</th>
-      </tr>
-      <tr>
-        <td style="border:1px solid #999; padding:4px; font-weight:700;">Total area (m²)</td>
-        <td style="border:1px solid #999; padding:4px; text-align:right;">${fmt1(metrics.totalAreaM2)}</td>
-        <td style="border:1px solid #999; padding:4px; font-weight:700;">Total seeds</td>
-        <td style="border:1px solid #999; padding:4px; text-align:right;">${fmt0(metrics.totalSeeds)}</td>
-      </tr>
-      <tr>
-        <td style="border:1px solid #999; padding:4px; font-weight:700;">Total target (kg)</td>        
-        <td style="border:1px solid #999; padding:4px; text-align:right;">${fmt1(metrics.totalTargetKg)}</td> 
-        <td style="border:1px solid #999; padding:4px; font-weight:700;">Total expected (kg)</td>      
-        <td style="border:1px solid #999; padding:4px; text-align:right;">${fmt1(metrics.totalExpectedKg)}</td> 
 
-        <td style="border:1px solid #999; padding:4px; font-weight:700;">Crop rows</td>
-        <td style="border:1px solid #999; padding:4px; text-align:right;">${esc((metrics.rows || []).length)}</td>
-      </tr>
 
-      <tr>
-        <th style="border:1px solid #999; padding:6px; text-align:left;">Crop</th>
-        <th style="border:1px solid #999; padding:6px; text-align:right;">Area (m²)</th>
-        <th style="border:1px solid #999; padding:6px; text-align:right;">Seeds</th>
-        <th style="border:1px solid #999; padding:6px; text-align:right;">Target (kg)</th>    
-        <th style="border:1px solid #999; padding:6px; text-align:right;">Expected (kg)</th>  
-      </tr>
+    <tr>
+    <th style="border:1px solid #999; padding:6px; text-align:left;">Crop</th>
+    <th style="border:1px solid #999; padding:6px; text-align:right;">Area (m²)</th>
+
+    <th style="border:1px solid #999; padding:6px; text-align:right;">Plan plants</th>       
+    <th style="border:1px solid #999; padding:6px; text-align:right;">Actual plants</th>     
+    <th style="border:1px solid #999; padding:6px; text-align:right;">Δ</th>                
+
+    <th style="border:1px solid #999; padding:6px; text-align:right;">Germ</th>              
+    <th style="border:1px solid #999; padding:6px; text-align:right;">Plan seeds</th>       
+
+    <th style="border:1px solid #999; padding:6px; text-align:right;">Target (kg)</th>
+    <th style="border:1px solid #999; padding:6px; text-align:right;">Expected (kg)</th>
+    </tr>
+
 
       ${cropRows || `
       <tr>
-        <td colspan="5" style="border:1px solid #999; padding:8px; text-align:left;">
+        <td colspan="9" style="border:1px solid #999; padding:8px; text-align:left;">
           No crops found for ${esc(year)}.
         </td>
       </tr>
@@ -477,14 +646,22 @@ Draw.loadPlugin(function (ui) {
     </tbody>
 
     <tfoot>
-      <tr>
+    <tr>
         <td style="border:1px solid #999; padding:6px; font-weight:700;">Total</td>
         <td style="border:1px solid #999; padding:6px; text-align:right; font-weight:700;">${fmt1(metrics.totalAreaM2)}</td>
-        <td style="border:1px solid #999; padding:6px; text-align:right; font-weight:700;">${fmt0(metrics.totalSeeds)}</td>
+
+        <td style="border:1px solid #999; padding:6px; text-align:right; font-weight:700;">${fmt0(metrics.totalPlanPlants)}</td>
+        <td style="border:1px solid #999; padding:6px; text-align:right; font-weight:700;">${fmt0(metrics.totalActualPlants)}</td>
+        <td style="border:1px solid #999; padding:6px; text-align:right; font-weight:700;">${fmt0((metrics.totalActualPlants || 0) - (metrics.totalPlanPlants || 0))}</td>
+
+        <td style="border:1px solid #999; padding:6px; text-align:right; font-weight:700;"></td>
+        <td style="border:1px solid #999; padding:6px; text-align:right; font-weight:700;">${fmt0(metrics.totalPlanSeedsAdj)}</td>
+
         <td style="border:1px solid #999; padding:6px; text-align:right; font-weight:700;">${fmt1(metrics.totalTargetKg)}</td>
         <td style="border:1px solid #999; padding:6px; text-align:right; font-weight:700;">${fmt1(metrics.totalExpectedKg)}</td>
-      </tr>
+    </tr>
     </tfoot>
+
   </table>
 </div>`.trim();
     }
@@ -509,52 +686,56 @@ Draw.loadPlugin(function (ui) {
         URL.revokeObjectURL(url);
     }
 
-    function buildDashboardCsvSingleTable(metrics, year) {                                   // CHANGE
-        const rows = [];                                                                    // CHANGE
-        const push = (arr) => rows.push(arr.map(csvEscape).join(","));                      // NEW
+    function buildDashboardCsvSingleTable(metrics, year) {
+        const rows = [];
+        const push = (arr) => rows.push(arr.map(csvEscape).join(","));
 
-        push(["Garden Dashboard"]);                                                         // NEW
-        push(["Garden module", metrics.moduleName || ""]);                                  // NEW
-        push(["Location (city)", metrics.city || ""]);                                      // NEW
-        push(["Selected year", String(year)]);                                              // NEW
-        push(["Total tiler groups", String(metrics.tilerGroupsTotal ?? 0)]);                // NEW
-        push(["Tiler groups in year", String(metrics.tilerGroupsInYear ?? 0)]);             // NEW
-        push(["Filter", `perennial OR season_start_year == ${year}`]);                      // NEW
+        push(["Garden Dashboard"]);
+        push(["Garden module", metrics.moduleName || ""]);
+        push(["Location (city)", metrics.city || ""]);
+        push(["Selected year", String(year)]);
+        push(["Total tiler groups", String(metrics.tilerGroupsTotal ?? 0)]);
+        push(["Tiler groups in year", String(metrics.tilerGroupsInYear ?? 0)]);
+        push(["Filter", `perennial OR season_start_year == ${year}`]);
 
-        push([""]);                                                                         // NEW
-        push(["Totals for selected year"]);                                                 // NEW
-        push(["Total area (m²)", Number.isFinite(metrics.totalAreaM2) ? metrics.totalAreaM2.toFixed(1) : "0.0"]); // NEW
-        push(["Total seeds", Number.isFinite(metrics.totalSeeds) ? String(Math.round(metrics.totalSeeds)) : "0"]); // NEW
-        push(["Total target (kg)", Number.isFinite(metrics.totalTargetKg) ? metrics.totalTargetKg.toFixed(1) : "0.0"]); // NEW
-        push(["Total expected (kg)", Number.isFinite(metrics.totalExpectedKg) ? metrics.totalExpectedKg.toFixed(1) : "0.0"]); // NEW
+        push([""]);
+        push(["Crop", "Area (m²)", "Plan plants", "Actual plants", "Delta", "Germ", "Plan seeds", "Target (kg)", "Expected (kg)"]); 
 
-        push([""]);                                                                         // NEW
-        push(["Crop", "Area (m²)", "Seeds", "Target (kg)", "Expected (kg)"]);               // NEW
-
-        const list = metrics.rows || [];                                                    // NEW
+        const list = metrics.rows || [];
         if (list.length === 0) {
-            push([`No crops found for ${year}.`]);                                          // NEW
+            push([`No crops found for ${year}.`]);
         } else {
             for (const r of list) {
+                const germPct = Number.isFinite(r.germ_rate) ? Math.round(r.germ_rate * 100) + "%" : "";
+                const delta = (r.actual_plants || 0) - (r.plan_plants || 0);
                 push([
                     r.crop || "",
                     Number.isFinite(r.area_m2) ? r.area_m2.toFixed(1) : "0.0",
-                    Number.isFinite(r.seeds) ? String(Math.round(r.seeds)) : "0",
+                    String(Math.round(r.plan_plants || 0)),
+                    String(Math.round(r.actual_plants || 0)),
+                    String(Math.round(delta)),
+                    germPct,
+                    String(Math.round(r.plan_seeds_adj || 0)),
                     Number.isFinite(r.target_kg) ? r.target_kg.toFixed(1) : "0.0",
                     Number.isFinite(r.expected_kg) ? r.expected_kg.toFixed(1) : "0.0"
-                ]);                                                                         // NEW
+                ]);
             }
         }
 
         push(["Total",
             Number.isFinite(metrics.totalAreaM2) ? metrics.totalAreaM2.toFixed(1) : "0.0",
-            Number.isFinite(metrics.totalSeeds) ? String(Math.round(metrics.totalSeeds)) : "0",
+            String(Math.round(metrics.totalPlanPlants ?? 0)),
+            String(Math.round(metrics.totalActualPlants ?? 0)),
+            String(Math.round((metrics.totalActualPlants ?? 0) - (metrics.totalPlanPlants ?? 0))),
+            "",
+            String(Math.round(metrics.totalPlanSeedsAdj ?? 0)),
             Number.isFinite(metrics.totalTargetKg) ? metrics.totalTargetKg.toFixed(1) : "0.0",
             Number.isFinite(metrics.totalExpectedKg) ? metrics.totalExpectedKg.toFixed(1) : "0.0"
-        ]);                                                                                 // NEW
+        ]);
 
-        return rows.join("\r\n");                                                           // NEW
-    }                                                                                       // CHANGE
+
+        return rows.join("\r\n");
+    }
 
     // -------------------- DOM overlay (controls + table) --------------------
     const overlayByDashId = new Map();
@@ -579,7 +760,8 @@ Draw.loadPlugin(function (ui) {
         wrap.style.zIndex = "10";
         wrap.style.pointerEvents = "auto";
         wrap.style.boxSizing = "border-box";
-        wrap.style.padding = CTRL_PAD + "px";
+        wrap.style.padding = "0";
+        wrap.style.overflow = "hidden";
 
         // Visual: keep overlay readable but inside the cell bounds 
         wrap.style.background = "rgba(255,255,255,0.0)";
@@ -589,10 +771,40 @@ Draw.loadPlugin(function (ui) {
         header.style.flex = "0 0 auto";
         header.style.display = "flex";
         header.style.alignItems = "center";
-        header.style.justifyContent = "flex-end";
-        header.style.gap = BTN_GAP + "px";
-        header.style.marginBottom = "6px";
+        header.style.justifyContent = "space-between";
+        header.style.gap = "0px";
+        header.style.padding = CTRL_PAD + "px";
+        header.style.boxSizing = "border-box";
+        header.style.background = "rgba(255,255,255,0.0)";
         header.style.pointerEvents = "auto";
+
+        // Header bar button layout
+        const leftBar = document.createElement("div");
+        leftBar.style.display = "flex";
+        leftBar.style.alignItems = "center";
+
+        const centerBar = document.createElement("div");
+        centerBar.style.display = "flex";
+        centerBar.style.alignItems = "center";
+        centerBar.style.justifyContent = "center";
+        centerBar.style.flex = "1 1 auto";
+
+        const rightBar = document.createElement("div");
+        rightBar.style.display = "flex";
+        rightBar.style.alignItems = "center";
+        rightBar.style.justifyContent = "flex-end";
+
+        const contentViewport = document.createElement("div");
+        contentViewport.style.flex = "1 1 auto";
+        contentViewport.style.minHeight = "0";
+        contentViewport.style.overflow = "auto";
+        contentViewport.style.boxSizing = "border-box";
+        contentViewport.style.padding = CTRL_PAD + "px";
+        contentViewport.style.pointerEvents = "auto";
+
+        contentViewport.style.background = "#fff";
+        contentViewport.style.border = "1px solid #999";
+        contentViewport.style.borderRadius = "6px";
 
         const mkBtn = (txt) => {
             const b = document.createElement("button");
@@ -622,27 +834,27 @@ Draw.loadPlugin(function (ui) {
         yearLabel.style.borderRadius = "6px";
         yearLabel.style.background = "#fff";
 
-        const planBtn = document.createElement("button");                 // NEW
-        planBtn.textContent = "Plan";                                     // NEW
-        planBtn.style.height = BTN_SIZE + "px";                           // NEW
-        planBtn.style.border = "1px solid #777";                          // NEW
-        planBtn.style.borderRadius = "6px";                               // NEW
-        planBtn.style.background = "#fff";                                // NEW
-        planBtn.style.cursor = "pointer";                                 // NEW
-        planBtn.style.padding = "0 8px";                                  // NEW
-        planBtn.style.fontFamily = "Arial";                               // NEW
-        planBtn.style.fontSize = "12px";                                  // NEW
+        const planBtn = document.createElement("button");
+        planBtn.textContent = "Plan";
+        planBtn.style.height = BTN_SIZE + "px";
+        planBtn.style.border = "1px solid #777";
+        planBtn.style.borderRadius = "6px";
+        planBtn.style.background = "#fff";
+        planBtn.style.cursor = "pointer";
+        planBtn.style.padding = "0 8px";
+        planBtn.style.fontFamily = "Arial";
+        planBtn.style.fontSize = "12px";
 
-        const allocateBtn = document.createElement("button");    // NEW
-        allocateBtn.textContent = "Allocate";                    // NEW
-        allocateBtn.style.height = BTN_SIZE + "px";              // NEW
-        allocateBtn.style.border = "1px solid #777";             // NEW
-        allocateBtn.style.borderRadius = "6px";                  // NEW
-        allocateBtn.style.background = "#fff";                   // NEW
-        allocateBtn.style.cursor = "pointer";                    // NEW
-        allocateBtn.style.padding = "0 8px";                     // NEW
-        allocateBtn.style.fontFamily = "Arial";                  // NEW
-        allocateBtn.style.fontSize = "12px";                     // NEW
+        const allocateBtn = document.createElement("button");
+        allocateBtn.textContent = "Allocate";
+        allocateBtn.style.height = BTN_SIZE + "px";
+        allocateBtn.style.border = "1px solid #777";
+        allocateBtn.style.borderRadius = "6px";
+        allocateBtn.style.background = "#fff";
+        allocateBtn.style.cursor = "pointer";
+        allocateBtn.style.padding = "0 8px";
+        allocateBtn.style.fontFamily = "Arial";
+        allocateBtn.style.fontSize = "12px";
 
         const exportBtn = document.createElement("button");
         exportBtn.textContent = "Export";
@@ -657,19 +869,22 @@ Draw.loadPlugin(function (ui) {
 
         // Content area 
         const content = document.createElement("div");
-        content.style.pointerEvents = "auto";
-        content.style.background = "#fff";
-        content.style.border = "1px solid #999";
-        content.style.borderRadius = "6px";
-        content.style.padding = "6px";
-        content.style.overflow = "auto";
+        content.style.background = "transparent";
+        content.style.border = "0";
+        content.style.borderRadius = "0";
+        content.style.padding = "0";
+        content.style.boxSizing = "border-box";                            
 
-        content.style.flex = "1 1 auto";
-        content.style.minHeight = "0";
-        content.style.maxHeight = "none";
-        content.style.boxSizing = "border-box";
+        const contentScaleBox = document.createElement("div");
+        contentScaleBox.style.transformOrigin = "top left";
+        contentScaleBox.style.width = "fit-content";
+        contentScaleBox.style.height = "fit-content";
 
 
+        contentScaleBox.appendChild(content);
+        contentViewport.appendChild(contentScaleBox);
+        wrap.appendChild(header);
+        wrap.appendChild(contentViewport);
 
         function syncYearLabel() {
             yearLabel.textContent = String(getDashboardYear(dashCell));
@@ -686,8 +901,8 @@ Draw.loadPlugin(function (ui) {
                 model.endUpdate();
             }
 
-            const moduleCell = findModuleAncestor(graph, dashCell);                              // NEW
-            if (moduleCell) applyYearVisibilityToModule(moduleCell, getDashboardYear(dashCell)); // NEW
+            const moduleCell = findModuleAncestor(graph, dashCell);
+            if (moduleCell) applyYearVisibilityToModule(moduleCell, getDashboardYear(dashCell));
 
             recomputeAndRenderDashboard(dashCell);
         });
@@ -703,23 +918,23 @@ Draw.loadPlugin(function (ui) {
             } finally {
                 model.endUpdate();
             }
-            const moduleCell = findModuleAncestor(graph, dashCell);                              // NEW
-            if (moduleCell) applyYearVisibilityToModule(moduleCell, getDashboardYear(dashCell)); // NEW
+            const moduleCell = findModuleAncestor(graph, dashCell);
+            if (moduleCell) applyYearVisibilityToModule(moduleCell, getDashboardYear(dashCell));
 
             recomputeAndRenderDashboard(dashCell);
         });
 
-        planBtn.addEventListener("click", (ev) => {                        // NEW
-            ev.preventDefault();                                           // NEW
-            ev.stopPropagation();                                          // NEW
+        planBtn.addEventListener("click", (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
 
-            const moduleCell = findModuleAncestor(graph, dashCell);        // NEW
-            if (!moduleCell) return;                                       // NEW
+            const moduleCell = findModuleAncestor(graph, dashCell);
+            if (!moduleCell) return;
 
-            const year = getDashboardYear(dashCell);                       // NEW
+            const year = getDashboardYear(dashCell);
 
-            try {                                                          // NEW
-                window.dispatchEvent(new CustomEvent(PLAN_YEAR_EVENT, {     // NEW
+            try {
+                window.dispatchEvent(new CustomEvent(PLAN_YEAR_EVENT, {
                     detail: {
                         moduleCellId: moduleCell.getId ? moduleCell.getId() : moduleCell.id,
                         dashCellId: dashCell.getId ? dashCell.getId() : dashCell.id,
@@ -727,19 +942,19 @@ Draw.loadPlugin(function (ui) {
                     }
                 }));
             } catch (_) { }
-        });                                                                // NEW        
+        });
 
-        allocateBtn.addEventListener("click", (ev) => {                         // NEW
-            ev.preventDefault();                                                // NEW
-            ev.stopPropagation();                                               // NEW
-        
-            const moduleCell = findModuleAncestor(graph, dashCell);             // NEW
-            if (!moduleCell) return;                                            // NEW
-        
-            const year = getDashboardYear(dashCell);                            // NEW
-        
-            try {                                                               // NEW
-                window.dispatchEvent(new CustomEvent(ALLOCATE_PLAN_EVENT, {      // NEW
+        allocateBtn.addEventListener("click", (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+
+            const moduleCell = findModuleAncestor(graph, dashCell);
+            if (!moduleCell) return;
+
+            const year = getDashboardYear(dashCell);
+
+            try {
+                window.dispatchEvent(new CustomEvent(ALLOCATE_PLAN_EVENT, {
                     detail: {
                         moduleCellId: moduleCell.getId ? moduleCell.getId() : moduleCell.id,
                         dashCellId: dashCell.getId ? dashCell.getId() : dashCell.id,
@@ -747,7 +962,7 @@ Draw.loadPlugin(function (ui) {
                     }
                 }));
             } catch (_) { }
-        });                                                                     // NEW        
+        });
 
         exportBtn.addEventListener("click", (ev) => {
             ev.preventDefault();
@@ -758,7 +973,7 @@ Draw.loadPlugin(function (ui) {
 
             const year = getDashboardYear(dashCell);
 
-            applyYearVisibilityToModule(moduleCell, year); // NEW
+            applyYearVisibilityToModule(moduleCell, year);
 
             const metrics = computeModuleMetrics(moduleCell, year);
 
@@ -771,19 +986,33 @@ Draw.loadPlugin(function (ui) {
             downloadCsv(filename, csv);
         });
 
-        header.appendChild(prev);
-        header.appendChild(yearLabel);
-        header.appendChild(next);
-        header.appendChild(planBtn);       // NEW
-        header.appendChild(allocateBtn);   // NEW
-        header.appendChild(exportBtn);
+        // Left: year controls
+        leftBar.appendChild(prev);
+        leftBar.appendChild(yearLabel);
+        leftBar.appendChild(next);
 
-        wrap.appendChild(header);
-        wrap.appendChild(content);
+        // Right: action buttons
+        rightBar.appendChild(planBtn);
+        rightBar.appendChild(allocateBtn);
+        rightBar.appendChild(exportBtn);
+
+        // Mount bars into header
+        header.appendChild(leftBar);
+        header.appendChild(centerBar);
+        header.appendChild(rightBar);
+
 
         graph.container.appendChild(wrap);
 
-        const entry = { wrap, header, content, prev, next, planBtn, allocateBtn, exportBtn, yearLabel, syncYearLabel }; // CHANGE
+        const entry = {
+            wrap, header,
+            leftBar, centerBar, rightBar,
+            contentViewport, contentScaleBox, content,
+            prev, next,
+            planBtn, allocateBtn, exportBtn,
+            yearLabel, syncYearLabel
+        };
+
         overlayByDashId.set(dashId, entry);
 
         function isOverlayControlTarget(el) {
@@ -801,7 +1030,6 @@ Draw.loadPlugin(function (ui) {
             // Select the dashboard cell explicitly.                                
             graph.setSelectionCell(dashCell);
 
-            // Keep overlay from starting unwanted browser selection/drag.          
             ev.preventDefault();
             ev.stopPropagation();
         }
@@ -818,79 +1046,115 @@ Draw.loadPlugin(function (ui) {
         return entry;
     }
 
-    function applyScaledControlStyles(entry) {
-        if (!entry) return;
+    // -------------------- Zoom Helpers ------------------------------
 
-        const s = getUiScale();
-
-        const btnPx = Math.round(BTN_SIZE * s);
-        const gapPx = Math.round(BTN_GAP * s);
-        const fontPx = Math.max(10, Math.round(12 * s));
-        const radiusPx = Math.round(6 * s);
-        const padYPx = Math.round(2 * s);
-        const padXPx = Math.round(6 * s);
-
-        entry.header.style.gap = gapPx + "px";
-
-        for (const b of [entry.prev, entry.next]) {
-            b.style.width = btnPx + "px";
-            b.style.height = btnPx + "px";
-            b.style.borderRadius = radiusPx + "px";
-            b.style.fontSize = fontPx + "px";
-        }
-
-        entry.yearLabel.style.minWidth = Math.round(60 * s) + "px";
-        entry.yearLabel.style.fontSize = fontPx + "px";
-        entry.yearLabel.style.padding =
-            padYPx + "px " + padXPx + "px";
-        entry.yearLabel.style.borderRadius = radiusPx + "px";
-
-        entry.exportBtn.style.height = btnPx + "px";
-        entry.exportBtn.style.fontSize = fontPx + "px";
-        entry.exportBtn.style.padding =
-            padYPx + "px " + padXPx + "px";
-        entry.exportBtn.style.borderRadius = radiusPx + "px";
-
-        entry.planBtn.style.height = btnPx + "px";                         // NEW
-        entry.planBtn.style.fontSize = fontPx + "px";                      // NEW
-        entry.planBtn.style.padding = padYPx + "px " + padXPx + "px";      // NEW
-        entry.planBtn.style.borderRadius = radiusPx + "px";                // NEW
-
-        entry.allocateBtn.style.height = btnPx + "px";                         // NEW
-        entry.allocateBtn.style.fontSize = fontPx + "px";                      // NEW
-        entry.allocateBtn.style.padding = padYPx + "px " + padXPx + "px";      // NEW
-        entry.allocateBtn.style.borderRadius = radiusPx + "px";                // NEW        
-
+    function applyDashboardUiScale(entry, dashCell) {
+        if (!entry || !entry.contentScaleBox) return;
+        const s = getEffectiveDashUiScale(entry, dashCell);
+        entry.contentScaleBox.style.transformOrigin = "top left";
+        entry.contentScaleBox.style.transform = `scale(${s})`;
+        syncScaledContentBoxSize(entry, s);
     }
 
+    function getNaturalContentWidthPx(entry) {
+        if (!entry || !entry.content) return 0;
+        // scrollWidth is the natural layout width (not affected by transforms on ancestors)
+        const w = entry.content.scrollWidth || entry.content.offsetWidth || 0;
+        return Math.max(0, w);
+    }
+
+    function getNaturalContentHeightPx(entry) {
+        if (!entry || !entry.content) return 0;
+        const h = entry.content.scrollHeight || entry.content.offsetHeight || 0;
+        return Math.max(0, h);
+    }
+
+    function getGraphZoomScale() {
+        const s = graph && graph.view && graph.view.scale;
+        return Number.isFinite(s) ? s : 1;
+    }
+
+    function syncScaledContentBoxSize(entry, scale) {
+        if (!entry || !entry.contentScaleBox) return;
+        const cw = getNaturalContentWidthPx(entry);                                          // uses existing helper
+        const ch = getNaturalContentHeightPx(entry);
+        if (!(cw > 0) || !(ch > 0)) {
+            entry.contentScaleBox.style.width = "";
+            entry.contentScaleBox.style.height = "";
+            return;
+        }
+        entry.contentScaleBox.style.width = Math.ceil(cw * scale) + "px";
+        entry.contentScaleBox.style.height = Math.ceil(ch * scale) + "px";
+    }
+
+    function getViewportInnerSizePx(entry) {
+        if (!entry || !entry.contentViewport) return { w: 0, h: 0 };
+        const w = entry.contentViewport.clientWidth || 0;
+        const h = entry.contentViewport.clientHeight || 0;
+        const innerW = Math.max(0, w - 2 * CTRL_PAD);
+        const innerH = Math.max(0, h - 2 * CTRL_PAD);
+        return { w: innerW, h: innerH };
+    }
+
+    function getMinDashUiScale(entry) {
+        const { w: vw, h: vh } = getViewportInnerSizePx(entry);
+        const cw = getNaturalContentWidthPx(entry);
+        const ch = getNaturalContentHeightPx(entry);
+        if (!(vw > 0) || !(vh > 0) || !(cw > 0) || !(ch > 0)) return 0.5;
+
+        const fitW = vw / cw;
+        const fitH = vh / ch;
+        const fit = Math.min(fitW, fitH);
+
+        return Math.max(0.5, Math.min(2.5, fit));
+    }
+
+    function getEffectiveDashUiScale(entry, dashCell) {
+        const zoom = getGraphZoomScale();
+        const fit = getMinDashUiScale(entry);
+        const desired = zoom;
+        return Math.max(fit, Math.max(0.5, Math.min(2.5, desired)));
+    }
+
+    function applyScaledHeaderLayout(entry) {
+        if (!entry) return;
+
+        const s = (graph.view && Number.isFinite(graph.view.scale)) ? graph.view.scale : 1;
+        const gapPx = Math.round(BTN_GAP * s);
+        const padPx = Math.round(CTRL_PAD * s);
+
+        entry.header.style.padding = padPx + "px";
+
+        // Use CSS gap inside each bar for consistent spacing
+        for (const bar of [entry.leftBar, entry.centerBar, entry.rightBar]) {
+            if (!bar) continue;
+            bar.style.gap = gapPx + "px";
+        }
+    }
 
     function positionOverlay(dashCell) {
-        if (!dashCell) return;
-
         const st = graph.view.getState(dashCell);
         if (!st) return;
 
-        const dashId = dashCell.getId();
-        const entry = overlayByDashId.get(dashId);
+        const entry = overlayByDashId.get(dashCell.getId());
         if (!entry) return;
 
-        // Overlay fills the dashboard cell rect (deterministic; no DOM measuring). 
         entry.wrap.style.left = Math.round(st.x) + "px";
         entry.wrap.style.top = Math.round(st.y) + "px";
         entry.wrap.style.width = Math.max(0, Math.round(st.width)) + "px";
         entry.wrap.style.height = Math.max(0, Math.round(st.height)) + "px";
 
-        // Make content area fit remaining space (header is natural height). 
-        // Keep simple: rely on overflow:auto and wrap padding. 
-
-        applyScaledControlStyles(entry);
+        applyScaledHeaderLayout(entry);
+        applyDashboardUiScale(entry, dashCell);
     }
+
 
     function renderOverlay(dashCell, metrics, year) {
         const entry = ensureOverlay(dashCell);
         entry.syncYearLabel();
-        entry.content.innerHTML = formatOverlayTableHtml(metrics, year);
-        positionOverlay(dashCell);
+        entry.content.innerHTML = formatOverlayTableHtml(metrics, year);           
+        syncScaledContentBoxSize(entry, getEffectiveDashUiScale(entry, dashCell));
+        positionOverlay(dashCell);                                                        
     }
 
     function cleanupMissingDashboards() {
@@ -933,9 +1197,9 @@ Draw.loadPlugin(function (ui) {
         // Safer: use graph.insertVertex which handles value nodes correctly
         const inserted = graph.insertVertex(parent, null, "", x, y, w, h, DASH_STYLE);
 
-        setCellAttr(inserted, DASH_ATTR, "1");                                              // CHANGE (moved up)
-        setDashboardYear(inserted, new Date().getFullYear());                               // CHANGE (moved up)
-        applyYearVisibilityToModule(moduleCell, getDashboardYear(inserted));                // CHANGE (moved down)        
+        setCellAttr(inserted, DASH_ATTR, "1");
+        setDashboardYear(inserted, new Date().getFullYear());
+        applyYearVisibilityToModule(moduleCell, getDashboardYear(inserted));
 
         // Ensure it is visually on top of other children (optional)
         try { graph.orderCells(false, [inserted]); } catch (e) { }
@@ -946,43 +1210,43 @@ Draw.loadPlugin(function (ui) {
         return inserted;
     }
 
-    function hasGardenSettingsSet(moduleCell) {                                               // NEW
-        return !!(moduleCell && moduleCell.getAttribute &&                                   // NEW
-            moduleCell.getAttribute("city_name") &&                                          // NEW
-            moduleCell.getAttribute("unit_system"));                                         // NEW
-    }                                                                                        // NEW
+    function hasGardenSettingsSet(moduleCell) {
+        return !!(moduleCell && moduleCell.getAttribute &&
+            moduleCell.getAttribute("city_name") &&
+            moduleCell.getAttribute("unit_system"));
+    }
 
-    // -------------------- Auto-create dashboard on garden module event -------------------- // NEW
-    if (!graph.__gardenDashboardAutoCreateInstalled) {                                         // NEW
-        graph.__gardenDashboardAutoCreateInstalled = true;                                     // NEW
+    // -------------------- Auto-create dashboard on garden module event -------------------- 
+    if (!graph.__gardenDashboardAutoCreateInstalled) {
+        graph.__gardenDashboardAutoCreateInstalled = true;
 
-        graph.addListener("usl:gardenModuleNeedsSettings", function (sender, evt) {            // NEW
-            const mod = evt.getProperty("cell");                                               // NEW
-            if (!mod || !isGardenModule(mod)) return;                                          // NEW
+        graph.addListener("usl:gardenModuleNeedsSettings", function (sender, evt) {
+            const mod = evt.getProperty("cell");
+            if (!mod || !isGardenModule(mod)) return;
 
-            // Idempotent: do nothing if already present                                       // NEW
-            if (findDashboardCell(mod)) return;                                                // NEW
+            // Idempotent: do nothing if already present                                       
+            if (findDashboardCell(mod)) return;
 
-            // Optional gating: only create after mandatory settings exist                      // NEW
-            // If you want immediate dashboard creation, delete this block.                     // NEW
-            if (!hasGardenSettingsSet(mod)) return;                                            // NEW
+            // Optional gating: only create after mandatory settings exist                      
+            // If you want immediate dashboard creation, delete this block.                     
+            if (!hasGardenSettingsSet(mod)) return;
 
-            setTimeout(function () {                                                           // NEW
-                // Re-check after delay                                                         // NEW
-                if (!model.getCell(mod.getId ? mod.getId() : mod.id)) return;                  // NEW
-                if (!isGardenModule(mod)) return;                                              // NEW
-                if (findDashboardCell(mod)) return;                                            // NEW
-                if (!hasGardenSettingsSet(mod)) return;                                        // NEW
+            setTimeout(function () {
+                // Re-check after delay                                                         
+                if (!model.getCell(mod.getId ? mod.getId() : mod.id)) return;
+                if (!isGardenModule(mod)) return;
+                if (findDashboardCell(mod)) return;
+                if (!hasGardenSettingsSet(mod)) return;
 
-                model.beginUpdate();                                                           // NEW
+                model.beginUpdate();
                 try {
-                    createDashboardCell(mod);                                                  // NEW
+                    createDashboardCell(mod);
                 } finally {
-                    model.endUpdate();                                                         // NEW
+                    model.endUpdate();
                 }
-            }, 0);                                                                             // NEW
-        });                                                                                    // NEW
-    }                                                                                          // NEW
+            }, 0);
+        });
+    }
 
 
     // -------------------- View/model event wiring --------------------
@@ -1080,8 +1344,8 @@ Draw.loadPlugin(function (ui) {
                 ensureOverlayForDashboard(c);
                 recomputeAndRenderDashboard(c);
 
-                const mod = findModuleAncestor(graph, c);                                        // FIX
-                if (mod) applyYearVisibilityToModule(mod, getDashboardYear(c));                  // FIX
+                const mod = findModuleAncestor(graph, c);
+                if (mod) applyYearVisibilityToModule(mod, getDashboardYear(c));
             }
         }
 

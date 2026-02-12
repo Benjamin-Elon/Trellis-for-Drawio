@@ -4373,9 +4373,6 @@ Draw.loadPlugin(function (ui) {
         setAttr(cell, 'harvest_start', fmt(tl0.harvestStart));
         setAttr(cell, 'harvest_end', fmt(tl0.harvestEnd));
         setAttr(cell, 'yield_multiplier', String(Number.isFinite(f0) ? f0 : 1));
-        setAttr(cell, 'plants_required', String(Number.isFinite(p0) ? p0 : 0));
-        setAttr(cell, 'yield_target_kg', String(yieldTargetKg ?? 0));
-        setAttr(cell, 'expected_total_yield_kg', String(expectedTotalYield ?? 0));
     }
 
     function stampSuccessionGroup(cell, i, { abbr, unit, yieldPerPlant }, {
@@ -4383,9 +4380,7 @@ Draw.loadPlugin(function (ui) {
     }) {
         setAttr(cell, 'succession_index', i + 1);
         setAttr(cell, 'plant_abbr', abbr);
-        setAttr(cell, 'plants_required', plantsRequired);
         setAttr(cell, 'plant_yield', yieldPerPlant);
-        setAttr(cell, 'target_yield', Number(perSuccessionTarget || 0).toFixed(3));
         setAttr(cell, 'yield_multiplier', (Number.isFinite(fi) ? fi : 1));
 
         const fmt = d => (d ? d.toISOString().slice(0, 10) : '');

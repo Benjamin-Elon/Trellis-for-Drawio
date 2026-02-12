@@ -27,7 +27,6 @@ Draw.loadPlugin(function (ui) {
 
     // Yield
     const YIELD_UNIT = "kg"; // default display unit
-    const ATTR_YIELD_TARGET = "planting_target_yield_kg";                     // CHANGE
     const ATTR_YIELD_EXPECTED = "planting_expected_yield_kg";                 // CHANGE
     const ATTR_YIELD_ACTUAL = "planting_actual_yield_kg";                     // CHANGE
 
@@ -234,8 +233,6 @@ Draw.loadPlugin(function (ui) {
 
             // Pull unit and potential targets from attrs
             const unit = groupCell.getAttribute('yield_unit') || YIELD_UNIT;
-
-            const plantingTargetKg = Number(groupCell.getAttribute('planting_target_yield_kg') || ''); // CHANGE
 
             // Build label parts: "FullName × count [· target ...] [· current ...]"
             const parts = [];
@@ -775,7 +772,6 @@ Draw.loadPlugin(function (ui) {
             yield_per_plant_kg: "",
             yield_unit: YIELD_UNIT,
             plant_count: "0",
-            planting_target_yield_kg: "0",          // CHANGE
             planting_expected_yield_kg: "0",        // CHANGE
             planting_actual_yield_kg: "0"
         });
@@ -1305,7 +1301,6 @@ Draw.loadPlugin(function (ui) {
             yield_per_plant_kg: plantYield,
             yield_unit: yieldUnit,
             plant_count: "1",
-            planting_target_yield_kg: circleCell.getAttribute("planting_target_yield_kg") || "0", // CHANGE
             planting_expected_yield_kg: "0",                                                     // CHANGE
             planting_actual_yield_kg: "0"
         });
