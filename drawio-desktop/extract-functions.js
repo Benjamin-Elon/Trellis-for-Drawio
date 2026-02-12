@@ -128,7 +128,7 @@ function buildClipboardTextFromNodes(nodes, opts) {
   for (const root of nodes) walk(root, 0);
   return parts.join("\n");
 }
-  
+
 
 
 function prettyPrintNode(astNode) {
@@ -346,7 +346,7 @@ function projectTree(nodes, opts) {
     // FULL-DETAIL: emit code, not metadata
     if (isFull) {
       const src = prettyPrintNode(n.astNode) ?? trimCommonIndent(n.src) ?? null;
-    
+
       const out = {
         id: n.id,
         name: n.name,
@@ -354,22 +354,22 @@ function projectTree(nodes, opts) {
         startLine: n.startLine,
         endLine: n.endLine,
         params: n.params ?? "",
-    
+
         src, // EMBEDDED HERE
-    
+
         calls: filterIds(n.calls).map(refFor),
         calledBy: filterIds(n.calledBy).map(refFor),
       };
-    
+
       if (includeChildren) {
         out.children = (n.children ?? []).map(projectNode);
       } else if (includeChildCountWhenOmittingChildren) {
         out.childCount = (n.children ?? []).length;
       }
-    
+
       return out;
     }
-    
+
 
     // STRUCTURAL-ONLY: minimal metadata (configurable by includeFieldsStructural)
     const out = {};
@@ -832,34 +832,46 @@ try {
 
   // --- NEW: seeds + dual radii ---
   const seedAns = await rl.question(
-    "Seed function(s) (comma-separated; can be id or name; substring allowed as fallback)\n> "
+    'Seed function(s) (comma-separated; can be id or name; substring allowed as fallback). Leave blank for FULL STRUCTURE.\n> ' // CHANGE
   ); // NEW
   const seedTokens = parseCsvList(seedAns);                                            // NEW
   const seedIds = resolveSeedIds(seedTokens, nodesById);                               // NEW
 
-  if (seedIds.size === 0) {                                                           // NEW
-    console.error("No seed functions matched. Try an exact name/id.");
-    process.exit(2);
-  }
+  const noSeedsMeansWholeTree = seedTokens.length === 0;                               // NEW
 
-  const fullRadAns = await rl.question("Full-detail radius (bidirectional, >=0) [default: 1]\n> ");     // NEW
-  const ctxRadAns = await rl.question("Structural-context radius (bidirectional, >= full) [default: 2]\n> "); // NEW
-  const fullRadius = parseIntOrDefault(fullRadAns, 1);                                 // NEW
-  const contextRadiusRaw = parseIntOrDefault(ctxRadAns, 2);                            // NEW
-  const contextRadius = Math.max(contextRadiusRaw, fullRadius);                        // NEW
+  let includedIds;                                                                     // NEW
+  let fullDetailIds;                                                                   // NEW
+  let filteredRoots;                                                                   // NEW
 
-  // Compute included ids
-  const fullIds0 = bfsRadius(seedIds, fullRadius, callsById, calledById);              // NEW
-  const contextIds0 = bfsRadius(seedIds, contextRadius, callsById, calledById);        // NEW
+  if (noSeedsMeansWholeTree) {                                                         // NEW
+    includedIds = new Set(nodesById.keys());                                            // NEW
+    fullDetailIds = new Set();                                                         // NEW
+    filteredRoots = roots;                                                             // NEW
+  } else {                                                                             // NEW
+    if (seedIds.size === 0) {                                                          // CHANGE
+      console.error("No seed functions matched. Try an exact name/id.");
+      process.exit(2);
+    }
 
-  const includedIds = addAncestors(new Set([...contextIds0, ...fullIds0]), parentById);
-  const fullDetailIds = new Set(fullIds0);
-  
-  // Filter the root tree to only included ids
-  const filteredRoots = filterTreeByIncludedIds(roots, includedIds);                   // NEW
+    const fullRadAns = await rl.question("Full-detail radius (bidirectional, >=0) [default: 1]\n> ");     // unchanged
+    const ctxRadAns = await rl.question("Structural-context radius (bidirectional, >= full) [default: 2]\n> "); // unchanged
+    const fullRadius = parseIntOrDefault(fullRadAns, 1);                                 // unchanged
+    const contextRadiusRaw = parseIntOrDefault(ctxRadAns, 2);                            // unchanged
+    const contextRadius = Math.max(contextRadiusRaw, fullRadius);                        // unchanged
 
-  // Structural-only nodes: forced minimal fields (ignores user choices)               // NEW
-  const chosenFieldsStructural = new Set(["id", "name", "type", "startLine", "endLine"]); // NEW
+    // Compute included ids
+    const fullIds0 = bfsRadius(seedIds, fullRadius, callsById, calledById);              // unchanged
+    const contextIds0 = bfsRadius(seedIds, contextRadius, callsById, calledById);        // unchanged
+
+    includedIds = addAncestors(new Set([...contextIds0, ...fullIds0]), parentById);      // CHANGE
+    fullDetailIds = new Set(fullIds0);                                                   // CHANGE
+
+    // Filter the root tree to only included ids
+    filteredRoots = filterTreeByIncludedIds(roots, includedIds);                         // CHANGE
+  }                                                                                      // NEW
+
+  // Structural-only nodes: forced minimal fields (ignores user choices)
+  const chosenFieldsStructural = new Set(["id", "name", "type", "startLine", "endLine"]); // unchanged
 
   const includeChildrenAns = await rl.question("Include children (keep tree structure)? [Y/n]\n> ");
   const includeChildren = normalizeYesNo(includeChildrenAns, true);
@@ -892,21 +904,21 @@ try {
 
   const clipAns = await rl.question("Copy ENTIRE output tree to clipboard? [y/N]\n> ");
   const doClip = normalizeYesNo(clipAns, false);
-  
+
   if (doClip) {
     const jsText = `export default ${toJsLiteral(projected, 0)};\n`;
     await clipboardy.write(jsText);
     console.error(`Copied ${jsText.length} chars to clipboard.`);
   } else {
     console.log(pretty ? JSON.stringify(projected, null, 2) : JSON.stringify(projected));
-  }  
+  }
 
-  
+
 
 
   if (!doClip) {
     console.log(pretty ? JSON.stringify(projected, null, 2) : JSON.stringify(projected));
   }
-  } finally {
+} finally {
   rl.close();
 }

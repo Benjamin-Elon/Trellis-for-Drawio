@@ -26,7 +26,7 @@ Draw.loadPlugin(function (ui) {
 
     // -------------------- Config --------------------
     const PX_PER_CM = 5;
-    const DRAW_SCALE = 0.18; // meters per drawn-centimeter (assumption)
+    const DRAW_SCALE = 0.18;
 
     const DASH_ATTR = "garden_dashboard";
     const DASH_YEAR_ATTR = "dashboard_year";
@@ -154,7 +154,7 @@ Draw.loadPlugin(function (ui) {
         if (!planIndex) return null;
 
         // Prefer stable IDs if present on tiler groups
-        const tgVarietyId = Number(getCellAttr(tg, "variety_id", ""));  assumption
+        const tgVarietyId = Number(getCellAttr(tg, "variety_id", ""));  
         if (Number.isFinite(tgVarietyId) && planIndex.byVarietyId.has(tgVarietyId)) {
             return planIndex.byVarietyId.get(tgVarietyId);
         }

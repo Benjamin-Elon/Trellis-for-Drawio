@@ -6,7 +6,6 @@ Draw.loadPlugin(function (ui) {
     const graph = ui.editor.graph;
 
     // -------------------- Config --------------------
-    const DB_PATH = "C:/Users/user/Desktop/Trellis for Drawio/drawio-desktop/Trellis_database.sqlite";
     const PX_PER_CM = 5;
     const DRAW_SCALE = 0.18;
     const DEFAULT_ICON_DIAM_RATIO = 0.55;
@@ -27,8 +26,8 @@ Draw.loadPlugin(function (ui) {
 
     // Yield
     const YIELD_UNIT = "kg"; // default display unit
-    const ATTR_YIELD_EXPECTED = "planting_expected_yield_kg";                 // CHANGE
-    const ATTR_YIELD_ACTUAL = "planting_actual_yield_kg";                     // CHANGE
+    const ATTR_YIELD_EXPECTED = "planting_expected_yield_kg";                 
+    const ATTR_YIELD_ACTUAL = "planting_actual_yield_kg";                     
 
     const SHOW_YIELD_IN_GROUP_LABEL = false; // update group title with total yield
     const SHOW_YIELD_IN_SUMMARY = true; // append total yield in summary label
@@ -117,7 +116,7 @@ Draw.loadPlugin(function (ui) {
             throw new Error("dbBridge not available; check preload/main wiring");
         }
         const dbPath = await getDbPath();
-        const opened = await window.dbBridge.open(dbPath, { readOnly: true }); // CHANGE
+        const opened = await window.dbBridge.open(dbPath, { readOnly: true }); 
         try {
             const res = await window.dbBridge.query(opened.dbId, sql, params);
             return Array.isArray(res?.rows) ? res.rows : [];
@@ -238,9 +237,9 @@ Draw.loadPlugin(function (ui) {
             const parts = [];
             parts.push(`× ${count}`);
 
-            if (Number.isFinite(plantingTargetKg) && plantingTargetKg > 0) {                            // CHANGE
-                parts.push(`target ${formatYield(plantingTargetKg, unit)}`);                            // CHANGE
-            }                                                                                           // CHANGE
+            if (Number.isFinite(plantingTargetKg) && plantingTargetKg > 0) {                            
+                parts.push(`target ${formatYield(plantingTargetKg, unit)}`);                            
+            }                                                                                           
 
             if (SHOW_YIELD_IN_SUMMARY) {
                 parts.push(`Expected yield ${formatYield(y.expectedYield, y.unit)}`);
@@ -283,7 +282,7 @@ Draw.loadPlugin(function (ui) {
         const model = graph.getModel();
         model.beginUpdate();
         try {
-            clearChildren(graph, groupCell); // keep: clean slate under group
+            clearChildren(graph, groupCell); 
 
             const { rows, cols, count } = computeGridStatsXY(
                 groupCell,
@@ -401,19 +400,19 @@ Draw.loadPlugin(function (ui) {
     }
 
 
-    function hasGardenSettingsSet(moduleCell) {                                              // CHANGE
+    function hasGardenSettingsSet(moduleCell) {                                              
         if (!(moduleCell && moduleCell.getAttribute)) return false;
         const city = String(moduleCell.getAttribute("city_name") || "").trim();
         const units = String(moduleCell.getAttribute("unit_system") || "").trim();
-        return !!(city && units);                                                            // CHANGE
+        return !!(city && units);                                                            
     }
 
 
     // garden settings dialog (city + units)
-    async function showGardenSettingsDialog(ui, graph, moduleCell) {                        // CHANGE
-        const model = graph.getModel();                                                     // CHANGE
-        const curCity = getXmlAttr(moduleCell, "city_name", "");                            // CHANGE
-        const curUnits = getXmlAttr(moduleCell, "unit_system", "");                         // CHANGE
+    async function showGardenSettingsDialog(ui, graph, moduleCell) {                        
+        const model = graph.getModel();                                                     
+        const curCity = getXmlAttr(moduleCell, "city_name", "");                            
+        const curUnits = getXmlAttr(moduleCell, "unit_system", "");                         
 
         let cities = [];
         try {
@@ -614,7 +613,7 @@ Draw.loadPlugin(function (ui) {
         return !!cell && cell.getAttribute && cell.getAttribute("garden_bed") === "1";
     }
 
-    const BOARD_KEY = 'KANBAN_BOARD'; // already in your other plugin; include here if not present // CHANGE
+    const BOARD_KEY = 'KANBAN_BOARD'; // already in your other plugin; include here if not present 
 
     function isKanbanBoard(cell) { 
         if (!cell) return false; 
@@ -675,16 +674,16 @@ Draw.loadPlugin(function (ui) {
         if (cell.isEdge && cell.isEdge()) return false;
         if (isTypedObject(cell)) return false;
 
-        if (isKanbanBoard(cell)) return false; // CHANGE
-        if (findKanbanBoardAncestor(graph, cell)) return false; // CHANGE
+        if (isKanbanBoard(cell)) return false; 
+        if (findKanbanBoardAncestor(graph, cell)) return false; 
 
         if (findTilerGroupAncestor(graph, cell)) return false; // prevent converting plant tiles/summaries etc.
         return true;
     }
 
 
-    function addBedStyle(existingStyle) { // CHANGE
-        const st = String(existingStyle || ""); // CHANGE
+    function addBedStyle(existingStyle) { 
+        const st = String(existingStyle || ""); 
         const add = [
             "dashed=1",
             "dashPattern=4 3",
@@ -772,7 +771,7 @@ Draw.loadPlugin(function (ui) {
             yield_per_plant_kg: "",
             yield_unit: YIELD_UNIT,
             plant_count: "0",
-            planting_expected_yield_kg: "0",        // CHANGE
+            planting_expected_yield_kg: "0",        
             planting_actual_yield_kg: "0"
         });
 
@@ -1081,7 +1080,7 @@ Draw.loadPlugin(function (ui) {
                         getXmlAttr(target, "spacing_cm", "30")
                     )
                 );
-                const label = `Set Plant Spacing (cm)…  [${curX} × ${curY}]`; // fixed template string
+                const label = `Set Plant Spacing (cm)…  [${curX} × ${curY}]`; 
                 try {
                     mxLog.debug(
                         "[PlantTiler][popup] adding spacing item " +
@@ -1189,7 +1188,7 @@ Draw.loadPlugin(function (ui) {
                         model.beginUpdate();
                         try {
                             for (const g of selectedGroups) {
-                                retileGroup(graph, g, { forceCollapse: true });                                         // CHANGE
+                                retileGroup(graph, g, { forceCollapse: true });                                         
                                 graph.refresh(g); // refresh each
                             }
                         } finally {
@@ -1207,7 +1206,7 @@ Draw.loadPlugin(function (ui) {
 
             // --- Add New Plant Group (requires garden settings) ----------------------------------
             if (targetMod && isGardenModule(targetMod)) {
-                if (hasGardenSettingsSet(targetMod)) {                                               // CHANGE
+                if (hasGardenSettingsSet(targetMod)) {                                               
                     menu.addItem("Add New Plant Group", null, function () {
                         try {
                             const pt = graph.getPointForEvent(evt);
@@ -1301,7 +1300,7 @@ Draw.loadPlugin(function (ui) {
             yield_per_plant_kg: plantYield,
             yield_unit: yieldUnit,
             plant_count: "1",
-            planting_expected_yield_kg: "0",                                                     // CHANGE
+            planting_expected_yield_kg: "0",                                                     
             planting_actual_yield_kg: "0"
         });
 
@@ -1466,9 +1465,9 @@ Draw.loadPlugin(function (ui) {
                 ? Number(opts.countOverride)
                 : getNumberAttr(groupCell, "plant_count", 0);
 
-        const expectedYield = perYield * (Number.isFinite(count) ? count : 0);             // CHANGE
+        const expectedYield = perYield * (Number.isFinite(count) ? count : 0);             
 
-        setXmlAttr(groupCell, "planting_expected_yield_kg", expectedYield);                // CHANGE (new canonical)
+        setXmlAttr(groupCell, "planting_expected_yield_kg", expectedYield);                 (new canonical)
         try {
             mxLog.debug(
                 "[PlantTiler][yield] " +
