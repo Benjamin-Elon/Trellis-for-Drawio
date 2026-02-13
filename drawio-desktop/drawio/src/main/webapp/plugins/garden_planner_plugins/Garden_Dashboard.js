@@ -31,7 +31,7 @@ Draw.loadPlugin(function (ui) {
     const DASH_ATTR = "garden_dashboard";
     const DASH_YEAR_ATTR = "dashboard_year";
     const YEAR_HIDDEN_ATTR = "year_hidden";
-    const PLAN_YEAR_JSON_ATTR = "plan_year_json"; 
+    const PLAN_YEAR_JSON_ATTR = "plan_year_json";
 
     const BTN_SIZE = 22;
     const BTN_GAP = 6;
@@ -46,6 +46,13 @@ Draw.loadPlugin(function (ui) {
 
     const PLAN_YEAR_EVENT = "usl:planYearRequested";
     const ALLOCATE_PLAN_EVENT = "usl:allocatePlanRequested";
+
+    const GROUP_LABEL_FONT_PX = 12;                                      
+    const GROUP_LABEL_LINE_HEIGHT = 1.25;                                
+    const GROUP_LABEL_BAND_PAD_PX = 6;                                   
+    const GROUP_LABEL_BAND_PX = Math.ceil(                               
+        GROUP_LABEL_FONT_PX * GROUP_LABEL_LINE_HEIGHT + GROUP_LABEL_BAND_PAD_PX
+    );                                                                       
 
     // -------------------- Helpers --------------------
     function getStyleSafe(cell) {
@@ -95,11 +102,11 @@ Draw.loadPlugin(function (ui) {
 
     // -------------------- Germ Rate helpers ------------
 
-    function safeJsonParse(s, defVal) {                           
+    function safeJsonParse(s, defVal) {
         try { return JSON.parse(String(s || "")); } catch (e) { return defVal; }
-    }                                                             
+    }
 
-    function getPlanYearObject(moduleCell, year) {                
+    function getPlanYearObject(moduleCell, year) {
         const raw = getCellAttr(moduleCell, PLAN_YEAR_JSON_ATTR, "");
         if (!raw) return null;
         const root = safeJsonParse(raw, null);
@@ -109,20 +116,20 @@ Draw.loadPlugin(function (ui) {
         const yKey = String(year);
         const obj = root[yKey];
         return (obj && typeof obj === "object") ? obj : null;
-    }                                                             
+    }
 
-    function normKeyPart(s) {                                      
+    function normKeyPart(s) {
         return String(s || "").trim().toLowerCase();
-    }                                                              
+    }
 
-    function cropKeyFromParts(plant, variety) {                    
+    function cropKeyFromParts(plant, variety) {
         const p = String(plant || "").trim();
         const v = String(variety || "").trim();
         if (p && v) return `${p} — ${v}`;
         return p || v || "(Unnamed crop)";
-    }                                                              
+    }
 
-    function buildPlanIndex(planYearObj) {                         
+    function buildPlanIndex(planYearObj) {
         // Returns:
         // {
         //   byVarietyId: Map<number, crop>,
@@ -148,13 +155,13 @@ Draw.loadPlugin(function (ui) {
             out.byNameKey.set(nameKey, arr);
         }
         return out;
-    }                                                              
+    }
 
-    function findPlanCropForTiler(planIndex, tg) {                 
+    function findPlanCropForTiler(planIndex, tg) {
         if (!planIndex) return null;
 
         // Prefer stable IDs if present on tiler groups
-        const tgVarietyId = Number(getCellAttr(tg, "variety_id", ""));  
+        const tgVarietyId = Number(getCellAttr(tg, "variety_id", ""));
         if (Number.isFinite(tgVarietyId) && planIndex.byVarietyId.has(tgVarietyId)) {
             return planIndex.byVarietyId.get(tgVarietyId);
         }
@@ -162,17 +169,17 @@ Draw.loadPlugin(function (ui) {
         // Fallback: match by "Plant — Variety" label
         const tgKey = normKeyPart(getCropKey(tg));
         const hits = planIndex.byNameKey.get(tgKey);
-        if (hits && hits.length) return hits[0];                 
+        if (hits && hits.length) return hits[0];
         return null;
-    }                                                              
+    }
 
-    function germAdjustedSeeds(plants, germRate) {                 
+    function germAdjustedSeeds(plants, germRate) {
         const p = Number(plants);
         const g = Number(germRate);
         if (!Number.isFinite(p) || p <= 0) return 0;
         if (!Number.isFinite(g) || g <= 0 || g > 1.5) return Math.ceil(p); // guard
         return Math.ceil(p / g);
-    }                                                              
+    }
 
 
     // -------------------- Helpers --------------------
@@ -256,13 +263,14 @@ Draw.loadPlugin(function (ui) {
     }
 
 
-    function pxToAreaM2(wPx, hPx) {
-        const wCm = wPx / PX_PER_CM;
-        const hCm = hPx / PX_PER_CM;
-        const wM = wCm * DRAW_SCALE;
-        const hM = hCm * DRAW_SCALE;
-        return wM * hM;
-    }
+    function unitsToAreaM2(wUnits, hUnits) {                             
+        const k = (PX_PER_CM * DRAW_SCALE * 100);                       
+        const wM = Number(wUnits) / k;                                   
+        const hM = Number(hUnits) / k;                                   
+        if (!Number.isFinite(wM) || !Number.isFinite(hM)) return 0;      
+        return wM * hM;                                                  
+    }                                                                    
+
 
     function getCropKey(tg) {
         const plant = getCellAttr(tg, "plant_name", "").trim();
@@ -291,18 +299,18 @@ Draw.loadPlugin(function (ui) {
         let totalExpectedKg = 0;
 
         // --- Seed rows from plan first (prevents double-counting and shows plan-only crops) --- 
-        if (planIndex && Array.isArray(planIndex.crops)) {                                               
-            for (const pc of planIndex.crops) {                                                            
-                const crop = cropKeyFromParts(pc && pc.plant, pc && pc.variety);                              
-                const planGermRate = Number(pc && pc.germRate);                                              
+        if (planIndex && Array.isArray(planIndex.crops)) {
+            for (const pc of planIndex.crops) {
+                const crop = cropKeyFromParts(pc && pc.plant, pc && pc.variety);
+                const planGermRate = Number(pc && pc.germRate);
 
 
-                const planPlants = Number(pc && pc.plantsReq);                     
+                const planPlants = Number(pc && pc.plantsReq);
                 const safePlanPlants = Number.isFinite(planPlants) ? planPlants : 0;
 
-                const gr = (Number.isFinite(planGermRate) ? planGermRate : NaN);                              
+                const gr = (Number.isFinite(planGermRate) ? planGermRate : NaN);
 
-                const row = byCrop.get(crop) || {                                                             
+                const row = byCrop.get(crop) || {
                     crop,
                     area_m2: 0,
                     actual_plants: 0,
@@ -316,24 +324,24 @@ Draw.loadPlugin(function (ui) {
                     _planBound: false,
                     _planCropId: null
                 };
-                
+
                 row.plan_plants += safePlanPlants; // actually store plantsReq as plan plants
 
                 // Always accumulate plan totals for this crop (handles multiple plan entries per crop).      
-                const seedsReq = Number(pc && pc.seedsReq);                        
-                const safeSeedsReq = Number.isFinite(seedsReq) ? seedsReq : NaN;   
+                const seedsReq = Number(pc && pc.seedsReq);
+                const safeSeedsReq = Number.isFinite(seedsReq) ? seedsReq : NaN;
                 const planSeeds = Number.isFinite(safeSeedsReq)
                     ? safeSeedsReq
-                    : germAdjustedSeeds(safePlanPlants, gr);                     
-                row.plan_seeds_adj += planSeeds;                                   
-                
+                    : germAdjustedSeeds(safePlanPlants, gr);
+                row.plan_seeds_adj += planSeeds;
+
                 // a germ rate if we have one; don’t overwrite a valid one with NaN.                      
-                if (!Number.isFinite(row.germ_rate) && Number.isFinite(gr)) row.germ_rate = gr;               
+                if (!Number.isFinite(row.germ_rate) && Number.isFinite(gr)) row.germ_rate = gr;
 
-                row._planBound = true;                                                                         
-                row._planCropId = (pc && pc.id) ? String(pc.id) : row._planCropId;                              
+                row._planBound = true;
+                row._planCropId = (pc && pc.id) ? String(pc.id) : row._planCropId;
 
-                byCrop.set(crop, row);                                                                         
+                byCrop.set(crop, row);
             }
         }
 
@@ -341,7 +349,11 @@ Draw.loadPlugin(function (ui) {
         for (const tg of tilersInYear) {
             const geo = model.getGeometry(tg);
             let areaM2 = 0;
-            if (geo) areaM2 = pxToAreaM2(geo.width, geo.height);
+            if (geo) {
+                const wUnits = geo.width;                                        
+                const hUnits = Math.max(0, geo.height - GROUP_LABEL_BAND_PX);     
+                areaM2 = unitsToAreaM2(wUnits, hUnits);                          
+            }
 
             const actualPlants = toNum(getCellAttr(tg, "plant_count", 0), 0);
             const expectedKg = toNum(getCellAttr(tg, "plant_yield", 0), 0);
@@ -352,7 +364,7 @@ Draw.loadPlugin(function (ui) {
 
             const crop = getCropKey(tg);
 
-            const planCrop = findPlanCropForTiler(planIndex, tg);                                                
+            const planCrop = findPlanCropForTiler(planIndex, tg);
             const planGermRate = planCrop && Number.isFinite(Number(planCrop.germRate)) ? Number(planCrop.germRate) : NaN;
             const actualSeedsAdj = germAdjustedSeeds(actualPlants, planGermRate);
 
@@ -372,8 +384,8 @@ Draw.loadPlugin(function (ui) {
                 expected_kg: 0,
                 count: 0,
 
-                _planBound: false,         
-                _planCropId: null          
+                _planBound: false,
+                _planCropId: null
             };
 
             cur.area_m2 += areaM2;
@@ -382,15 +394,15 @@ Draw.loadPlugin(function (ui) {
             cur.actual_seeds_adj += actualSeedsAdj;
 
             // If this tiler row wasn’t plan-seeded but we found a plan crop, bind plan ONCE here. 
-            if (planCrop && !cur._planBound) {                                                                    
-                const planPlants = Number.isFinite(Number(planCrop.plantsReq)) ? Number(planCrop.plantsReq) : 0;  
-                const seedsReq = Number.isFinite(Number(planCrop.seedsReq)) ? Number(planCrop.seedsReq) : NaN;    
-                const planSeedsAdj = Number.isFinite(seedsReq) ? seedsReq : germAdjustedSeeds(planPlants, planGermRate); 
-                cur.plan_plants += planPlants;                                                                     
-                cur.plan_seeds_adj += planSeedsAdj;                                                                
-                cur.germ_rate = Number.isFinite(planGermRate) ? planGermRate : cur.germ_rate;                      
-                cur._planBound = true;                                                                             
-                cur._planCropId = (planCrop && planCrop.id) ? String(planCrop.id) : cur._planCropId;               
+            if (planCrop && !cur._planBound) {
+                const planPlants = Number.isFinite(Number(planCrop.plantsReq)) ? Number(planCrop.plantsReq) : 0;
+                const seedsReq = Number.isFinite(Number(planCrop.seedsReq)) ? Number(planCrop.seedsReq) : NaN;
+                const planSeedsAdj = Number.isFinite(seedsReq) ? seedsReq : germAdjustedSeeds(planPlants, planGermRate);
+                cur.plan_plants += planPlants;
+                cur.plan_seeds_adj += planSeedsAdj;
+                cur.germ_rate = Number.isFinite(planGermRate) ? planGermRate : cur.germ_rate;
+                cur._planBound = true;
+                cur._planCropId = (planCrop && planCrop.id) ? String(planCrop.id) : cur._planCropId;
             }
 
             cur.target_kg += targetKg;
@@ -408,15 +420,15 @@ Draw.loadPlugin(function (ui) {
         }
 
         // --- Compute plan totals from rows (each row has plan bound at most once) --- 
-        for (const r of byCrop.values()) {                                                                       
-            totalPlanPlants += Number(r.plan_plants || 0);                                                        
-            totalPlanSeedsAdj += Number(r.plan_seeds_adj || 0);                                                    
-        }                                                                                                         
+        for (const r of byCrop.values()) {
+            totalPlanPlants += Number(r.plan_plants || 0);
+            totalPlanSeedsAdj += Number(r.plan_seeds_adj || 0);
+        }
 
         const rows = Array.from(byCrop.values())
-            .map(r => {                                                                                      
-                const { _planBound, _planCropId, ...clean } = r;                                                  
-                return clean;                                                                                     
+            .map(r => {
+                const { _planBound, _planCropId, ...clean } = r;
+                return clean;
             })
             .sort((a, b) => a.crop.localeCompare(b.crop));
 
@@ -434,8 +446,8 @@ Draw.loadPlugin(function (ui) {
 
             totalActualPlants,
             totalActualSeedsAdj,
-            totalPlanPlants,          
-            totalPlanSeedsAdj,        
+            totalPlanPlants,
+            totalPlanSeedsAdj,
 
             totalTargetKg,
             totalExpectedKg,
@@ -572,7 +584,7 @@ Draw.loadPlugin(function (ui) {
         const fmt1 = (n) => (Number.isFinite(n) ? n.toFixed(1) : "0.0");
         const fmt0 = (n) => (Number.isFinite(n) ? Math.round(n).toString() : "0");
         const esc = (v) => mxUtils.htmlEntities(String(v ?? ""));
-        const fmtPct = (n) => (Number.isFinite(n) ? (n * 100).toFixed(0) + "%" : ""); 
+        const fmtPct = (n) => (Number.isFinite(n) ? (n * 100).toFixed(0) + "%" : "");
 
         const cropRows = (metrics.rows || []).map((r) => `
         <tr>
@@ -699,7 +711,7 @@ Draw.loadPlugin(function (ui) {
         push(["Filter", `perennial OR season_start_year == ${year}`]);
 
         push([""]);
-        push(["Crop", "Area (m²)", "Plan plants", "Actual plants", "Delta", "Germ", "Plan seeds", "Target (kg)", "Expected (kg)"]); 
+        push(["Crop", "Area (m²)", "Plan plants", "Actual plants", "Delta", "Germ", "Plan seeds", "Target (kg)", "Expected (kg)"]);
 
         const list = metrics.rows || [];
         if (list.length === 0) {
@@ -873,7 +885,7 @@ Draw.loadPlugin(function (ui) {
         content.style.border = "0";
         content.style.borderRadius = "0";
         content.style.padding = "0";
-        content.style.boxSizing = "border-box";                            
+        content.style.boxSizing = "border-box";
 
         const contentScaleBox = document.createElement("div");
         contentScaleBox.style.transformOrigin = "top left";
@@ -1152,9 +1164,9 @@ Draw.loadPlugin(function (ui) {
     function renderOverlay(dashCell, metrics, year) {
         const entry = ensureOverlay(dashCell);
         entry.syncYearLabel();
-        entry.content.innerHTML = formatOverlayTableHtml(metrics, year);           
+        entry.content.innerHTML = formatOverlayTableHtml(metrics, year);
         syncScaledContentBoxSize(entry, getEffectiveDashUiScale(entry, dashCell));
-        positionOverlay(dashCell);                                                        
+        positionOverlay(dashCell);
     }
 
     function cleanupMissingDashboards() {

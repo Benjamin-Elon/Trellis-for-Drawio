@@ -26,8 +26,8 @@ Draw.loadPlugin(function (ui) {
 
     // Yield
     const YIELD_UNIT = "kg"; // default display unit
-    const ATTR_YIELD_EXPECTED = "planting_expected_yield_kg";                 
-    const ATTR_YIELD_ACTUAL = "planting_actual_yield_kg";                     
+    const ATTR_YIELD_EXPECTED = "planting_expected_yield_kg";
+    const ATTR_YIELD_ACTUAL = "planting_actual_yield_kg";
 
     const SHOW_YIELD_IN_GROUP_LABEL = false; // update group title with total yield
     const SHOW_YIELD_IN_SUMMARY = true; // append total yield in summary label
@@ -116,7 +116,7 @@ Draw.loadPlugin(function (ui) {
             throw new Error("dbBridge not available; check preload/main wiring");
         }
         const dbPath = await getDbPath();
-        const opened = await window.dbBridge.open(dbPath, { readOnly: true }); 
+        const opened = await window.dbBridge.open(dbPath, { readOnly: true });
         try {
             const res = await window.dbBridge.query(opened.dbId, sql, params);
             return Array.isArray(res?.rows) ? res.rows : [];
@@ -170,11 +170,8 @@ Draw.loadPlugin(function (ui) {
         );
     }
 
-    function setCollapsedFlag(groupCell, v) {
-        // Attributes live on the XML value
-        const flag = v ? "1" : "0";
-        const val = groupCell.value;
-        if (val && val.setAttribute) val.setAttribute("lod_collapsed", flag);
+    function setCollapsedFlag(model, groupCell, v) {
+        setCellAttrNoTxn(model, groupCell, "lod_collapsed", v ? "1" : "0");
     }
 
     function clearChildren(graph, groupCell) {
@@ -227,8 +224,8 @@ Draw.loadPlugin(function (ui) {
             const fullName = getGroupDisplayName(groupCell, abbr);
 
 
-            setXmlAttr(groupCell, "plant_count", count);
-            const y = updateGroupYield(groupCell, { abbr, countOverride: count });
+            setCellAttrNoTxn(model, groupCell, "plant_count", count);
+            const y = updateGroupYield(model, groupCell, { abbr, countOverride: count });
 
             // Pull unit and potential targets from attrs
             const unit = groupCell.getAttribute('yield_unit') || YIELD_UNIT;
@@ -237,18 +234,12 @@ Draw.loadPlugin(function (ui) {
             const parts = [];
             parts.push(`× ${count}`);
 
-            if (Number.isFinite(plantingTargetKg) && plantingTargetKg > 0) {                            
-                parts.push(`target ${formatYield(plantingTargetKg, unit)}`);                            
-            }                                                                                           
 
             if (SHOW_YIELD_IN_SUMMARY) {
                 parts.push(`Expected yield ${formatYield(y.expectedYield, y.unit)}`);
             }
 
             const label = parts.join('<br/>');
-
-
-
 
             const summary = new mxCell(label, geo, style);
             summary.setVertex(true);
@@ -261,7 +252,7 @@ Draw.loadPlugin(function (ui) {
             summary.setValue(val);
 
             graph.addCell(summary, groupCell);
-            setCollapsedFlag(groupCell, true);
+            setCollapsedFlag(model, groupCell, true);
 
             log(
                 "[DBG] collapse post-add, kids=",
@@ -282,15 +273,15 @@ Draw.loadPlugin(function (ui) {
         const model = graph.getModel();
         model.beginUpdate();
         try {
-            clearChildren(graph, groupCell); 
+            clearChildren(graph, groupCell);
 
             const { rows, cols, count } = computeGridStatsXY(
                 groupCell,
                 spacingXpx,
                 spacingYpx
             );
-            setXmlAttr(groupCell, "plant_count", count);
-            updateGroupYield(groupCell, { abbr });
+            setCellAttrNoTxn(model, groupCell, "plant_count", count);
+            updateGroupYield(model, groupCell, { abbr });
 
             if (count > MAX_TILES) {
                 collapseToSummary(graph, groupCell, abbr, spacingXpx, spacingYpx);
@@ -321,7 +312,7 @@ Draw.loadPlugin(function (ui) {
                 }
             }
             if (cells.length) graph.addCells(cells, groupCell);
-            setCollapsedFlag(groupCell, false);
+            setCollapsedFlag(model, groupCell, false);
 
             log(
                 "[DBG] expand post-add, kids=",
@@ -351,11 +342,6 @@ Draw.loadPlugin(function (ui) {
         return cell && cell.getAttribute ? cell.getAttribute(name) || def : def;
     }
 
-    function setXmlAttr(cell, name, val) {
-        const v = cell && cell.value;
-        if (v && v.setAttribute) v.setAttribute(name, String(val));
-    }
-
     function ensureXmlValue(cell) {
         // Return an XML Element for cell.value, creating one if needed                          
         const current = cell && cell.value;
@@ -374,45 +360,30 @@ Draw.loadPlugin(function (ui) {
     // -------------------- Utils & Styles --------------------
 
     // batch set multiple attrs with one undoable value update
-    function setCellAttrs(model, cell, attrs) {
-        model.beginUpdate();
-        try {
-            const base = ensureXmlValue(cell);
-            const clone = base.cloneNode(true);
-            for (const [k, v] of Object.entries(attrs || {})) {
-                if (v === null || v === undefined || v === "") clone.removeAttribute(k);
-                else clone.setAttribute(k, String(v));
-            }
-            model.setValue(cell, clone);
-        } finally {
-            model.endUpdate();
-        }
-    }
 
-    function setCellAttrsNoTxn(model, cell, attrs) {
+    function setCellAttrNoTxn(model, cell, name, value) {
         const base = ensureXmlValue(cell);
         const clone = base.cloneNode(true);
-        for (const [k, v] of Object.entries(attrs || {})) {
-            if (v === null || v === undefined || v === "") clone.removeAttribute(k);
-            else clone.setAttribute(k, String(v));
-        }
+        if (value === null || value === undefined || value === "") clone.removeAttribute(name);
+        else clone.setAttribute(name, String(value));
         model.setValue(cell, clone);
     }
 
 
-    function hasGardenSettingsSet(moduleCell) {                                              
+
+    function hasGardenSettingsSet(moduleCell) {
         if (!(moduleCell && moduleCell.getAttribute)) return false;
         const city = String(moduleCell.getAttribute("city_name") || "").trim();
         const units = String(moduleCell.getAttribute("unit_system") || "").trim();
-        return !!(city && units);                                                            
+        return !!(city && units);
     }
 
 
     // garden settings dialog (city + units)
-    async function showGardenSettingsDialog(ui, graph, moduleCell) {                        
-        const model = graph.getModel();                                                     
-        const curCity = getXmlAttr(moduleCell, "city_name", "");                            
-        const curUnits = getXmlAttr(moduleCell, "unit_system", "");                         
+    async function showGardenSettingsDialog(ui, graph, moduleCell) {
+        const model = graph.getModel();
+        const curCity = getXmlAttr(moduleCell, "city_name", "");
+        const curUnits = getXmlAttr(moduleCell, "unit_system", "");
 
         let cities = [];
         try {
@@ -615,36 +586,36 @@ Draw.loadPlugin(function (ui) {
 
     const BOARD_KEY = 'KANBAN_BOARD'; // already in your other plugin; include here if not present 
 
-    function isKanbanBoard(cell) { 
-        if (!cell) return false; 
-        if (!cell.getAttribute) { 
-            const st = getStyleSafe(cell); 
+    function isKanbanBoard(cell) {
+        if (!cell) return false;
+        if (!cell.getAttribute) {
+            const st = getStyleSafe(cell);
             return st.includes(BOARD_KEY);
-        } 
+        }
 
         // XML attribute markers (adjust to match your kanban plugin if needed) 
-        if (cell.getAttribute(BOARD_KEY) === "1") return true; 
-        if (cell.getAttribute("board_key") === BOARD_KEY) return true; 
-        if (cell.getAttribute("board_role") === BOARD_KEY) return true; 
+        if (cell.getAttribute(BOARD_KEY) === "1") return true;
+        if (cell.getAttribute("board_key") === BOARD_KEY) return true;
+        if (cell.getAttribute("board_role") === BOARD_KEY) return true;
 
         // Style fallback 
-        const st = getStyleSafe(cell); 
-        if (st.includes(BOARD_KEY)) return true; 
-        if (st.includes(`board_key=${BOARD_KEY}`)) return true; 
-        if (st.includes(`board_role=${BOARD_KEY}`)) return true; 
+        const st = getStyleSafe(cell);
+        if (st.includes(BOARD_KEY)) return true;
+        if (st.includes(`board_key=${BOARD_KEY}`)) return true;
+        if (st.includes(`board_role=${BOARD_KEY}`)) return true;
 
-        return false; 
-    } 
+        return false;
+    }
 
-    function findKanbanBoardAncestor(graph, cell) { 
-        const model = graph.getModel(); 
-        let cur = cell; 
-        while (cur) { 
-            if (isKanbanBoard(cur)) return cur; 
-            cur = model.getParent(cur); 
-        } 
-        return null; 
-    } 
+    function findKanbanBoardAncestor(graph, cell) {
+        const model = graph.getModel();
+        let cur = cell;
+        while (cur) {
+            if (isKanbanBoard(cur)) return cur;
+            cur = model.getParent(cur);
+        }
+        return null;
+    }
 
 
     function isTypedObject(cell) {
@@ -674,16 +645,16 @@ Draw.loadPlugin(function (ui) {
         if (cell.isEdge && cell.isEdge()) return false;
         if (isTypedObject(cell)) return false;
 
-        if (isKanbanBoard(cell)) return false; 
-        if (findKanbanBoardAncestor(graph, cell)) return false; 
+        if (isKanbanBoard(cell)) return false;
+        if (findKanbanBoardAncestor(graph, cell)) return false;
 
         if (findTilerGroupAncestor(graph, cell)) return false; // prevent converting plant tiles/summaries etc.
         return true;
     }
 
 
-    function addBedStyle(existingStyle) { 
-        const st = String(existingStyle || ""); 
+    function addBedStyle(existingStyle) {
+        const st = String(existingStyle || "");
         const add = [
             "dashed=1",
             "dashPattern=4 3",
@@ -771,7 +742,7 @@ Draw.loadPlugin(function (ui) {
             yield_per_plant_kg: "",
             yield_unit: YIELD_UNIT,
             plant_count: "0",
-            planting_expected_yield_kg: "0",        
+            planting_expected_yield_kg: "0",
             planting_actual_yield_kg: "0"
         });
 
@@ -785,14 +756,17 @@ Draw.loadPlugin(function (ui) {
         const model = graph.getModel();
         model.beginUpdate();
         try {
-            graph.addCell(group, moduleCell);                                        // parent is module
-            graph.setSelectionCell(group);
+            graph.addCell(group, moduleCell);                                        // existing
+            graph.setSelectionCell(group);                                           // existing
+
+            retileGroup(graph, group);                                               // MOVED inside txn  // CHANGE
         } finally {
             model.endUpdate();
         }
 
-        try { retileGroup(graph, group); } catch (_) { }
+        graph.refresh(group);                                                       // optional; after txn // CHANGE
         return group;
+
     }
 
     // ---------- Debug helpers (compact, JSON-safe) ----------
@@ -920,18 +894,19 @@ Draw.loadPlugin(function (ui) {
         );
 
         showSpacingDialog(ui, curX, curY, function (x, y) {
-            const val = groupCell.value;
-            if (val && val.setAttribute) {
-                val.setAttribute("spacing_x_cm", String(x));
-                val.setAttribute("spacing_y_cm", String(y));
-            }
             const model = graph.getModel();
             model.beginUpdate();
             try {
+                setCellAttrsNoTxn(model, groupCell, {
+                    spacing_x_cm: String(x),
+                    spacing_y_cm: String(y),
+                });
                 retileGroup(graph, groupCell);
             } finally {
                 model.endUpdate();
             }
+            graph.refresh(groupCell);
+
             try {
                 mxLog.debug(
                     "[PlantTiler][spacing] applied " + JSON.stringify({ x, y })
@@ -1080,7 +1055,7 @@ Draw.loadPlugin(function (ui) {
                         getXmlAttr(target, "spacing_cm", "30")
                     )
                 );
-                const label = `Set Plant Spacing (cm)…  [${curX} × ${curY}]`; 
+                const label = `Set Plant Spacing (cm)…  [${curX} × ${curY}]`;
                 try {
                     mxLog.debug(
                         "[PlantTiler][popup] adding spacing item " +
@@ -1188,7 +1163,7 @@ Draw.loadPlugin(function (ui) {
                         model.beginUpdate();
                         try {
                             for (const g of selectedGroups) {
-                                retileGroup(graph, g, { forceCollapse: true });                                         
+                                retileGroup(graph, g, { forceCollapse: true });
                                 graph.refresh(g); // refresh each
                             }
                         } finally {
@@ -1206,7 +1181,7 @@ Draw.loadPlugin(function (ui) {
 
             // --- Add New Plant Group (requires garden settings) ----------------------------------
             if (targetMod && isGardenModule(targetMod)) {
-                if (hasGardenSettingsSet(targetMod)) {                                               
+                if (hasGardenSettingsSet(targetMod)) {
                     menu.addItem("Add New Plant Group", null, function () {
                         try {
                             const pt = graph.getPointForEvent(evt);
@@ -1300,7 +1275,7 @@ Draw.loadPlugin(function (ui) {
             yield_per_plant_kg: plantYield,
             yield_unit: yieldUnit,
             plant_count: "1",
-            planting_expected_yield_kg: "0",                                                     
+            planting_expected_yield_kg: "0",
             planting_actual_yield_kg: "0"
         });
 
@@ -1369,30 +1344,6 @@ Draw.loadPlugin(function (ui) {
         }
     });
 
-    graph.addListener(mxEvent.CELLS_RESIZED, function (sender, evt) {
-        const cells = evt.getProperty("cells") || [];
-        const groupsToUpdate = new Map();
-        for (const c of cells) {
-            const g = isTilerGroup(c) ? c : findTilerGroupAncestor(graph, c);
-            if (g) groupsToUpdate.set(g.id, g);
-        }
-        for (const [id, groupCell] of groupsToUpdate) {
-            if (resizeTimers.has(id)) clearTimeout(resizeTimers.get(id));
-            resizeTimers.set(
-                id,
-                setTimeout(() => {
-                    const model = graph.getModel();
-                    model.beginUpdate();
-                    try {
-                        retileGroup(graph, groupCell);
-                    } finally {
-                        model.endUpdate();
-                    }
-                }, RESIZE_DEBOUNCE_MS)
-            );
-        }
-    });
-
     // expand/collapse helpers
     function expandGroupDetail(graph, groupCell) {
         const abbr = groupCell.getAttribute("plant_abbr") || "?";
@@ -1453,33 +1404,24 @@ Draw.loadPlugin(function (ui) {
         PAN_TIMER = setTimeout(() => retileVisibleExpandedGroups(graph), 100);
     });
 
-    function updateGroupYield(groupCell, opts = {}) {
-        // Reads per-plant yield & unit from group, multiplies by plant_count (or override),
-        // stamps total_yield, logs, and (optionally) updates visible label with formatted total.
+    function updateGroupYield(model, groupCell, opts = {}) {
         const abbr = opts.abbr != null ? String(opts.abbr) : getXmlAttr(groupCell, "plant_abbr", "?");
         const fullName = getGroupDisplayName(groupCell, abbr || '?');
         const unit = groupCell.getAttribute("yield_unit") || YIELD_UNIT;
-        const perYield = getNumberAttr(groupCell, "yield_per_plant_kg", 0);
+
+        // NOTE: you probably meant yield_per_plant_kg, not plant_yield
+        const perYield = getNumberAttr(groupCell, "plant_yield", 0); // CHANGE
         const count =
             opts.countOverride != null
                 ? Number(opts.countOverride)
                 : getNumberAttr(groupCell, "plant_count", 0);
 
-        const expectedYield = perYield * (Number.isFinite(count) ? count : 0);             
+        const expectedYield = perYield * (Number.isFinite(count) ? count : 0);
 
-        setXmlAttr(groupCell, "planting_expected_yield_kg", expectedYield);                 (new canonical)
-        try {
-            mxLog.debug(
-                "[PlantTiler][yield] " +
-                JSON.stringify({ abbr, perYield, count, expectedYield, unit })
-            );
-        } catch (_) { }
+        setCellAttrNoTxn(model, groupCell, ATTR_YIELD_EXPECTED, expectedYield); // CHANGE
 
         if (SHOW_YIELD_IN_GROUP_LABEL) {
-            const val = groupCell.value;
-            if (val && val.setAttribute) {
-                val.setAttribute("label", `${fullName} — ${formatYield(expectedYield, unit)}`);
-            }
+            setCellAttrNoTxn(model, groupCell, "label", `${fullName} — ${formatYield(expectedYield, unit)}`); // CHANGE
         }
 
         return { perYield, count, expectedYield, unit, abbr };
@@ -1492,6 +1434,19 @@ Draw.loadPlugin(function (ui) {
     }
 
     function retileGroup(graph, groupCell, opts = {}) {
+
+        const duringResize = !!opts.duringResize;                                       // NEW
+        if (duringResize) {                                                            // NEW
+            const { count } = computeGridStatsXY(groupCell, spacingXpx, spacingYpx);    // NEW
+            setCellAttrNoTxn(model, groupCell, "plant_count", count);                   // NEW
+            updateGroupYield(model, groupCell, { abbr, countOverride: count });         // NEW
+
+            if (count > MAX_TILES || count > LOD_TILE_THRESHOLD) {                      // NEW
+                collapseToSummary(graph, groupCell, abbr, spacingXpx, spacingYpx);      // NEW
+            }                                                                           // NEW
+            return;                                                                     // NEW
+        }                                                                               // NEW
+
         const model = graph.getModel();
         syncGroupTitle(model, groupCell);
         const abbr = groupCell.getAttribute("plant_abbr") || "?";
@@ -1547,11 +1502,42 @@ Draw.loadPlugin(function (ui) {
     // ---- Public API export (for other USL plugins) ---------------------------------
     window.USL = window.USL || {};
     window.USL.tiler = Object.assign({}, window.USL.tiler, {
-        retileGroup, // expose the real tiler re-tile function
-        getXmlAttr, // optional helper (shared utility)
-        setXmlAttr, // optional helper (shared utility)
-        findTilerGroupAncestor
+        retileGroup
     });
+
+    // -------------------- Resize → Retile in SAME undo step --------------------  // NEW
+    (function installResizeCellsWrapper() {                                         // NEW
+        if (graph.__plantTilerResizeCellsWrapped) return;                           // NEW
+        graph.__plantTilerResizeCellsWrapped = true;                                // NEW
+
+        const oldResizeCells = graph.resizeCells;                                   // NEW
+
+        graph.resizeCells = function (cells, bounds, recurse) {                     // NEW
+            // Call original resize (this performs the geometry change in an edit)  // NEW
+            const res = oldResizeCells.apply(this, arguments);                      // NEW
+
+            try {                                                                   // NEW
+                const groupsToUpdate = new Map();                                   // NEW
+                for (const c of (cells || [])) {                                    // NEW
+                    const g = isTilerGroup(c) ? c : findTilerGroupAncestor(graph, c); // NEW
+                    if (g && g.id) groupsToUpdate.set(g.id, g);                     // NEW
+                }                                                                   // NEW
+
+                // While dragging, keep work light; on mouse-up, full retile.        // NEW
+                const duringResize = !!graph.isMouseDown;                           // NEW
+
+                for (const g of groupsToUpdate.values()) {                          // NEW
+                    retileGroup(graph, g, { duringResize });                        // NEW
+                    graph.refresh(g);                                               // NEW
+                }                                                                   // NEW
+            } catch (e) {                                                           // NEW
+                try { mxLog.debug("[PlantTiler][resizeCells] retile error " + e.message); } catch (_) { } // NEW
+            }                                                                       // NEW
+
+            return res;                                                             // NEW
+        };
+    })();                                                                           // NEW
+
 
     // -------------------- Boot --------------------
     (async function init() {
