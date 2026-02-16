@@ -12,7 +12,7 @@ Draw.loadPlugin(function (ui) {
     const MIN_ICON_DIAM_PX = 12;
     const MAX_ICON_DIAM_PX = 28;
     const GROUP_PADDING_PX = 4;
-    const MAX_TILES = 1500; // hard cap to avoid freezes
+    const MAX_TILES = 1000; // hard cap to avoid freezes
     const RESIZE_DEBOUNCE_MS = 120; // debounce tiling during resize
 
     const GROUP_LABEL_FONT_PX = 12;
@@ -24,7 +24,7 @@ Draw.loadPlugin(function (ui) {
     const LOD_TILE_THRESHOLD = 300; // collapse if rows*cols > this
     const LOD_SUMMARY_MIN_SIZE = 24; // min px size of summary marker
 
-    // Yield
+    // ----------- Yield ---------------
     const YIELD_UNIT = "kg"; // default display unit
     const ATTR_YIELD_EXPECTED = "planting_expected_yield_kg";
     const ATTR_YIELD_ACTUAL = "planting_actual_yield_kg";
@@ -32,7 +32,19 @@ Draw.loadPlugin(function (ui) {
     const SHOW_YIELD_IN_GROUP_LABEL = false; // update group title with total yield
     const SHOW_YIELD_IN_SUMMARY = true; // append total yield in summary label
 
-    // -------------------- Debug helper --------------------
+    // ---------------- Disabled tiles + count semantics --------------
+    const ATTR_PLANT_COUNT = "plant_count";                           // EXISTING (keep synced to actual) 
+    const ATTR_PLANT_COUNT_CAP = "plant_count_capacity";
+    const ATTR_PLANT_COUNT_ACT = "plant_count_actual";
+    const ATTR_DISABLED_PLANTS = "disabled_plants";
+
+    // --------------- Tiler group scaling font size -----------------
+    const GROUP_BASE_AREA_PX2 = 240 * 240; // NEW
+    const GROUP_LABEL_FONT_MIN_PX = 10;    // NEW
+    const GROUP_LABEL_FONT_MAX_PX = 100;    // NEW
+
+
+    // -------------------- Debug helper ------------------
     function log(...args) {
         try {
             mxLog.show();
@@ -48,7 +60,59 @@ Draw.loadPlugin(function (ui) {
         return Math.max(lo, Math.min(hi, v));
     }
 
-    function plantCircleStyle() {
+    function tileFontPx(iconDiamPx) { // NEW
+        // Scale label with circle size; clamp for readability
+        const fs = Math.round(iconDiamPx * 0.45);
+        return clamp(fs, 8, 50);
+    }
+
+    function groupLabelMetrics(groupCell) { // NEW
+        const g = groupCell && groupCell.getGeometry ? groupCell.getGeometry() : null;
+        const w = g ? Math.max(1, Number(g.width) || 1) : 1;
+        const h = g ? Math.max(1, Number(g.height) || 1) : 1;
+        const area = w * h;
+
+        // Scale ~sqrt(area) so it grows proportionally with linear dimensions
+        const scale = Math.sqrt(area / GROUP_BASE_AREA_PX2);
+        const fontPx = clamp(
+            Math.round(GROUP_LABEL_FONT_PX * scale),
+            GROUP_LABEL_FONT_MIN_PX,
+            GROUP_LABEL_FONT_MAX_PX
+        );
+
+        const bandPx = Math.ceil(fontPx * GROUP_LABEL_LINE_HEIGHT + GROUP_LABEL_BAND_PAD_PX);
+        return { fontPx, bandPx };
+    }
+
+    function upsertStyleKV(styleStr, key, value) { // NEW
+        const st = String(styleStr || "");
+        const parts = st.split(";").filter(Boolean);
+        const out = [];
+        let found = false;
+        for (const p of parts) {
+            const i = p.indexOf("=");
+            if (i <= 0) { out.push(p); continue; }
+            const k = p.slice(0, i);
+            if (k === key) {
+                out.push(`${key}=${value}`);
+                found = true;
+            } else {
+                out.push(p);
+            }
+        }
+        if (!found) out.push(`${key}=${value}`);
+        return out.join(";") + ";";
+    }
+
+    function applyGroupLabelFont(model, groupCell) { // NEW
+        if (!model || !groupCell) return;
+        const { fontPx } = groupLabelMetrics(groupCell);
+        const next = upsertStyleKV(getStyleSafe(groupCell), "fontSize", String(fontPx));
+        if (next !== getStyleSafe(groupCell)) model.setStyle(groupCell, next);
+    }
+
+    function plantCircleStyle(fontPx = 10) { // CHANGED
+        const fs = clamp(Math.round(Number(fontPx) || 10), 6, 24); // CHANGED
         return [
             "shape=ellipse",
             "aspect=fixed",
@@ -56,12 +120,13 @@ Draw.loadPlugin(function (ui) {
             "strokeColor=#111827",
             "strokeWidth=1",
             "fillColor=#ffffff",
-            "fontSize=12",
+            "fillOpacity=50",
+            `fontSize=${fs}`, // CHANGED
             "align=center",
             "verticalAlign=middle",
             "html=0",
             "resizable=0",
-            "movable=0",
+            "movable=1",
             "deletable=1",
             "editable=0",
             "whiteSpace=nowrap",
@@ -87,6 +152,8 @@ Draw.loadPlugin(function (ui) {
             "editable=0",
             "whiteSpace=nowrap",
             "html=0",
+            "resizeChildren=0",
+            "recursiveResize=0"
         ].join(";");
     }
 
@@ -149,6 +216,51 @@ Draw.loadPlugin(function (ui) {
         return rows.map((r) => r.city_name);
     }
 
+    // ------------------- Layering (garden beds, other, tiler groups) ----------------
+
+    function reorderModuleChildrenForLayering(model, moduleCell) {
+        if (!moduleCell || !isGardenModule(moduleCell)) return;
+
+        // Only reorder direct children
+        const n = model.getChildCount(moduleCell);
+        if (!n || n <= 1) return;
+
+        const beds = [];
+        const groups = [];
+        const others = [];
+
+        for (let i = 0; i < n; i++) {
+            const ch = model.getChildAt(moduleCell, i);
+            if (!ch) continue;
+            if (isGardenBed(ch)) beds.push(ch);
+            else if (isTilerGroup(ch)) groups.push(ch);
+            else others.push(ch);
+        }
+
+        // Already valid?
+        // Condition: no bed appears after any group.
+        let seenGroup = false;
+        let ok = true;
+        for (let i = 0; i < n; i++) {
+            const ch = model.getChildAt(moduleCell, i);
+            if (isTilerGroup(ch)) seenGroup = true;
+            else if (isGardenBed(ch) && seenGroup) { ok = false; break; }
+        }
+        if (ok) return;
+
+        // Desired order: beds ... others ... groups (groups highest child index)
+        const ordered = beds.concat(others, groups);
+
+        // Apply by moving each child to its new index.
+        // Using model.add(parent, child, index) produces undoable mxChildChange edits.
+        for (let i = 0; i < ordered.length; i++) {
+            model.add(moduleCell, ordered[i], i);
+        }
+    }
+
+
+    // ----------------- Tiler group helpers ----------------------
+
     function findTilerGroupAncestor(graph, cell) {
         const model = graph.getModel();
         let cur = cell;
@@ -171,20 +283,40 @@ Draw.loadPlugin(function (ui) {
     }
 
     function setCollapsedFlag(model, groupCell, v) {
-        setCellAttrNoTxn(model, groupCell, "lod_collapsed", v ? "1" : "0");
+        setCellAttrsNoTxn(model, groupCell, { lod_collapsed: v ? "1" : "0" });
     }
 
-    function clearChildren(graph, groupCell) {
+
+    function clearChildren(graph, groupCell, cellsToRemove) {
+        // If explicit list provided, remove only those cells (that are inside group) 
+        if (Array.isArray(cellsToRemove) && cellsToRemove.length) {
+            const model = graph.getModel();
+            const filtered = [];
+            for (const c of cellsToRemove) {
+                if (!c) continue;
+                if (model.getParent(c) !== groupCell) continue;
+                filtered.push(c);
+            }
+            if (filtered.length) graph.removeCells(filtered);
+            return;
+        }
+
+        // Default: remove all child vertices (existing behavior)
         const kids = graph.getChildVertices(groupCell);
         if (kids && kids.length) graph.removeCells(kids);
     }
+
 
     function collapseToSummary(graph, groupCell, abbr, spacingXpx, spacingYpx) {
         const model = graph.getModel();
         model.beginUpdate();
         try {
+            // Snapshot layout BEFORE removing children so expand can restore it. // NEW
+            const snap = captureLodLayoutSnapshot(graph, groupCell); // NEW
+            writeLodLayoutSnapshot(model, groupCell, snap); // NEW
+        
             clearChildren(graph, groupCell); // wipe current children under group
-
+        
             // DEBUG: assert empty before add
             const kids = graph.getChildVertices(groupCell) || [];
             log("[DBG] collapse pre-add, kids=", kids.length);
@@ -220,19 +352,18 @@ Draw.loadPlugin(function (ui) {
                 "editable=0",
             ].join(";");
 
-            // --- NEW: Use full plant name in label ----------------------------------------------
-            const fullName = getGroupDisplayName(groupCell, abbr);
 
-
-            setCellAttrNoTxn(model, groupCell, "plant_count", count);
-            const y = updateGroupYield(model, groupCell, { abbr, countOverride: count });
+            const disabledSet = readDisabledSet(groupCell);
+            applyCounts(model, groupCell, count, disabledSet);
+            const actual = getNumberAttr(groupCell, ATTR_PLANT_COUNT_ACT, count);
+            const y = updateGroupYield(model, groupCell, { abbr, countOverride: actual });
 
             // Pull unit and potential targets from attrs
             const unit = groupCell.getAttribute('yield_unit') || YIELD_UNIT;
 
             // Build label parts: "FullName × count [· target ...] [· current ...]"
             const parts = [];
-            parts.push(`× ${count}`);
+            parts.push(`× ${actual}`);
 
 
             if (SHOW_YIELD_IN_SUMMARY) {
@@ -263,6 +394,85 @@ Draw.loadPlugin(function (ui) {
         }
     }
 
+    // ---------------- LOD layout snapshot ----------------
+    const ATTR_LOD_LAYOUT_SNAPSHOT = "lod_layout_snapshot_v1"; // NEW
+    const ATTR_LOD_LAYOUT_SNAPSHOT_AT = "lod_layout_snapshot_at"; // NEW
+
+    function nowIso() { // NEW
+        try { return new Date().toISOString(); } catch (_) { return ""; }
+    }
+
+    // Capture ONLY the tiles that need preserving (dirty or non-auto) keyed by r,c. // NEW
+    function captureLodLayoutSnapshot(graph, groupCell) { // NEW
+        if (!groupCell || !isTilerGroup(groupCell)) return null;
+
+        const kids = graph.getChildVertices(groupCell) || [];
+        const tiles = [];
+        for (const k of kids) {
+            if (!isPlantCircle(k)) continue;
+            if (!hasTileRC(k)) continue;
+
+            const auto = String(k.getAttribute("auto") || "0");
+            const dirty = String(k.getAttribute("dirty") || "0");
+
+            // Preserve only tiles whose geometry you care about keeping. // NEW
+            // - dirty==1: user moved/modified
+            // - auto!=1: user-made/manual
+            if (!(dirty === "1" || auto !== "1")) continue;
+
+            const r = Number(k.getAttribute("tile_r"));
+            const c = Number(k.getAttribute("tile_c"));
+            if (!Number.isFinite(r) || !Number.isFinite(c)) continue;
+
+            const g = k.getGeometry && k.getGeometry();
+            if (!g) continue;
+
+            tiles.push({
+                r, c,
+                x: g.x, y: g.y, w: g.width, h: g.height,
+                auto, dirty,
+                abbr: String(k.getAttribute("abbr") || ""), // optional
+                label: String(k.getAttribute("label") || ""), // optional
+            });
+        }
+
+        // Keep it compact and versioned. // NEW
+        return {
+            v: 1,
+            tiles
+        };
+    }
+
+    function writeLodLayoutSnapshot(model, groupCell, snapObj) { // NEW
+        if (!model || !groupCell) return;
+        const json = snapObj ? JSON.stringify(snapObj) : "";
+        setCellAttrsNoTxn(model, groupCell, {
+            [ATTR_LOD_LAYOUT_SNAPSHOT]: json,
+            [ATTR_LOD_LAYOUT_SNAPSHOT_AT]: snapObj ? nowIso() : ""
+        });
+    }
+
+    function readLodLayoutSnapshot(groupCell) { // NEW
+        const raw = getXmlAttr(groupCell, ATTR_LOD_LAYOUT_SNAPSHOT, "");
+        if (!raw) return null;
+        const obj = safeJsonParse(raw, null);
+        if (!obj || obj.v !== 1 || !Array.isArray(obj.tiles)) return null;
+        return obj;
+    }
+
+    // Map snapshot tiles by "r,c" for fast lookup. // NEW
+    function snapshotTileMap(snapObj) { // NEW
+        const map = new Map();
+        if (!snapObj || !Array.isArray(snapObj.tiles)) return map;
+        for (const t of snapObj.tiles) {
+            if (!t) continue;
+            const r = Number(t.r), c = Number(t.c);
+            if (!Number.isFinite(r) || !Number.isFinite(c)) continue;
+            map.set(`${r},${c}`, t);
+        }
+        return map;
+    }
+
 
     function shouldExpandLOD(graph, groupCell, spacingXpx, spacingYpx) {
         const { count } = computeGridStatsXY(groupCell, spacingXpx, spacingYpx);
@@ -270,62 +480,108 @@ Draw.loadPlugin(function (ui) {
     }
 
     function expandTiles(graph, groupCell, abbr, spacingXpx, spacingYpx, iconDiamPx) {
+        
+        const { bandPx } = groupLabelMetrics(groupCell); // NEW
+        const fontPx = tileFontPx(iconDiamPx); // NEW
+
         const model = graph.getModel();
         model.beginUpdate();
         try {
             clearChildren(graph, groupCell);
-
-            const { rows, cols, count } = computeGridStatsXY(
-                groupCell,
-                spacingXpx,
-                spacingYpx
-            );
-            setCellAttrNoTxn(model, groupCell, "plant_count", count);
-            updateGroupYield(model, groupCell, { abbr });
-
+    
+            const { rows, cols, count } = computeGridStatsXY(groupCell, spacingXpx, spacingYpx);
+    
+            const disabledSet = readDisabledSet(groupCell);
+            pruneDisabledToGrid(model, groupCell, rows, cols);
+            const disabledSet2 = readDisabledSet(groupCell);
+            const { actual } = applyCounts(model, groupCell, count, disabledSet2);
+            updateGroupYield(model, groupCell, { abbr, countOverride: actual });
+    
             if (count > MAX_TILES) {
                 collapseToSummary(graph, groupCell, abbr, spacingXpx, spacingYpx);
                 return;
             }
-
-            const g = groupCell.getGeometry();
+    
+            // --- NEW: restore dirty/manual tiles from snapshot by slot (r,c) ---
+            const snapObj = readLodLayoutSnapshot(groupCell); // NEW
+            const snapMap = snapshotTileMap(snapObj); // NEW
+    
             const x0Rel = GROUP_PADDING_PX + spacingXpx / 2;
-            const y0Rel = GROUP_PADDING_PX + GROUP_LABEL_BAND_PX + spacingYpx / 2;
-
+            const y0Rel = GROUP_PADDING_PX + (bandPx || groupLabelMetrics(groupCell).bandPx) + spacingYpx / 2; // CHANGED
+    
             const cells = [];
             for (let r = 0; r < rows; r++) {
                 const cyRel = y0Rel + r * spacingYpx;
-
+    
                 for (let c = 0; c < cols; c++) {
-                    const cxRel = x0Rel + c * spacingXpx;
-
-                    const geo = new mxGeometry(
-                        cxRel - iconDiamPx / 2,
-                        cyRel - iconDiamPx / 2,
-                        iconDiamPx,
-                        iconDiamPx
-                    );
-                    const v = new mxCell(abbr, geo, plantCircleStyle());
+                    if (disabledSet2.has(`${r},${c}`)) continue;
+    
+                    const snap = snapMap.get(`${r},${c}`); // NEW
+                    let geo; // NEW
+                    let autoAttr = "1"; // NEW
+                    let dirtyAttr = "0"; // NEW
+    
+                    if (snap) { // NEW
+                        // Use saved geometry, but normalize size to current iconDiam for coherence. // NEW
+                        const sx = Number(snap.x), sy = Number(snap.y);
+                        const okXY = Number.isFinite(sx) && Number.isFinite(sy);
+    
+                        const w = iconDiamPx; // NEW (normalize)
+                        const h = iconDiamPx; // NEW (normalize)
+    
+                        if (okXY) {
+                            geo = new mxGeometry(sx, sy, w, h); // NEW
+                            autoAttr = String(snap.auto || "0"); // NEW
+                            dirtyAttr = String(snap.dirty || "1"); // NEW
+                        }
+                    }
+    
+                    // Default grid placement for non-snap tiles // NEW
+                    if (!geo) { // NEW
+                        const cxRel = x0Rel + c * spacingXpx;
+                        geo = new mxGeometry(
+                            cxRel - iconDiamPx / 2,
+                            cyRel - iconDiamPx / 2,
+                            iconDiamPx,
+                            iconDiamPx
+                        );
+                    }
+    
+                    const vVal = createXmlValue("PlantTile", {
+                        plant_tiler: "1",
+                        auto: autoAttr,           // CHANGED
+                        abbr: abbr,
+                        label: abbr,
+                        tile_r: String(r),
+                        tile_c: String(c),
+                        dirty: dirtyAttr,         // CHANGED
+                    });
+    
+                    const v = new mxCell(vVal, geo, plantCircleStyle(fontPx || tileFontPx(iconDiamPx))); // CHANGED
                     v.setVertex(true);
                     v.setConnectable(false);
                     cells.push(v);
                 }
             }
+    
             if (cells.length) graph.addCells(cells, groupCell);
             setCollapsedFlag(model, groupCell, false);
-
+    
             log(
                 "[DBG] expand post-add, kids=",
                 (graph.getChildVertices(groupCell) || []).length,
                 "rendered=",
                 cells.length,
                 "of",
-                count
+                getNumberAttr(groupCell, ATTR_PLANT_COUNT_ACT, count)
             );
         } finally {
             model.endUpdate();
         }
+    
+        graph.refresh(groupCell);
     }
+    
 
     // -------------------- Palette (XML value) --------------------
     function createXmlValue(tag, attrs) {
@@ -337,7 +593,7 @@ Draw.loadPlugin(function (ui) {
         return node;
     }
 
-    // ---------- (Optional) SHIMS if your plugin doesn't define these helpers ----------
+    // ---------- helpers --------------------------
     function getXmlAttr(cell, name, def = "") {
         return cell && cell.getAttribute ? cell.getAttribute(name) || def : def;
     }
@@ -359,16 +615,15 @@ Draw.loadPlugin(function (ui) {
 
     // -------------------- Utils & Styles --------------------
 
-    // batch set multiple attrs with one undoable value update
-
-    function setCellAttrNoTxn(model, cell, name, value) {
+    function setCellAttrsNoTxn(model, cell, attrs) {
         const base = ensureXmlValue(cell);
         const clone = base.cloneNode(true);
-        if (value === null || value === undefined || value === "") clone.removeAttribute(name);
-        else clone.setAttribute(name, String(value));
+        for (const [k, v] of Object.entries(attrs || {})) {
+            if (v === null || v === undefined || v === "") clone.removeAttribute(k);
+            else clone.setAttribute(k, String(v));
+        }
         model.setValue(cell, clone);
     }
-
 
 
     function hasGardenSettingsSet(moduleCell) {
@@ -490,12 +745,17 @@ Draw.loadPlugin(function (ui) {
             if (!chosenUnits) { showError("Units are required."); unitsSel.focus(); return; }
 
             ui.hideDialog();
-            setCellAttrs(model, moduleCell, {
-                city_name: chosenCity,
-                unit_system: chosenUnits,
-                // meters_per_px omitted (scale removed)
-            });
+            model.beginUpdate();
+            try {
+                setCellAttrsNoTxn(model, moduleCell, {
+                    city_name: chosenCity,
+                    unit_system: chosenUnits,
+                });
+            } finally {
+                model.endUpdate();
+            }
             graph.refresh(moduleCell);
+
         });
 
         btnRow.appendChild(cancelBtn);
@@ -524,23 +784,6 @@ Draw.loadPlugin(function (ui) {
                 showGardenSettingsDialog(ui, graph, moduleCell);
             }, 0);
         });
-    }
-
-
-    function setCellAttr(model, cell, name, value) {
-        model.beginUpdate();
-        try {
-            const base = ensureXmlValue(cell);
-            const clone = base.cloneNode(true);
-            if (value === null) {
-                clone.removeAttribute(name);
-            } else {
-                clone.setAttribute(name, String(value));
-            }
-            model.setValue(cell, clone);  // ensures persistence, undo, events                   
-        } finally {
-            model.endUpdate();
-        }
     }
 
     function getGroupDisplayName(groupCell, fallbackAbbr = '?') {
@@ -691,9 +934,18 @@ Draw.loadPlugin(function (ui) {
         const model = graph.getModel();
         model.beginUpdate();
         try {
+            const modulesToFix = new Map();
+
             for (const c of (cells || [])) {
                 setCellAttrsNoTxn(model, c, { garden_bed: "1" });
                 model.setStyle(c, addBedStyle(getStyleSafe(c)));
+
+                const p = model.getParent(c);
+                if (p && isGardenModule(p)) modulesToFix.set(p.id, p);
+            }
+
+            for (const m of modulesToFix.values()) {
+                reorderModuleChildrenForLayering(model, m);
             }
         } finally {
             model.endUpdate();
@@ -702,15 +954,12 @@ Draw.loadPlugin(function (ui) {
     }
 
 
-
-
     /**
      * Creates an empty tiler group inside the given garden module.
      * - No plant is preselected.
      * - Defaults spacing to 30 cm (both axes).
      * - Centers a 240x240 group within the module bounds.
      */
-    // Replace/create this helper in the tiler plugin:
     function createEmptyTilerGroup(graph, moduleCell, clickX, clickY) {
         const DEFAULT_GROUP_PX = 240;
         const spacingCm = 30;
@@ -756,17 +1005,15 @@ Draw.loadPlugin(function (ui) {
         const model = graph.getModel();
         model.beginUpdate();
         try {
-            graph.addCell(group, moduleCell);                                        // existing
-            graph.setSelectionCell(group);                                           // existing
+            graph.addCell(group, moduleCell);
+            graph.setSelectionCell(group);
 
-            retileGroup(graph, group);                                               // MOVED inside txn  // CHANGE
+            retileGroup(graph, group);
+
+            reorderModuleChildrenForLayering(model, moduleCell);
         } finally {
             model.endUpdate();
         }
-
-        graph.refresh(group);                                                       // optional; after txn // CHANGE
-        return group;
-
     }
 
     // ---------- Debug helpers (compact, JSON-safe) ----------
@@ -914,6 +1161,118 @@ Draw.loadPlugin(function (ui) {
             } catch (_) { }
         });
     }
+
+    function collectSelectedPlantTilesByGroup(graph, fallbackTarget) {
+        const sel = graph.getSelectionCells ? (graph.getSelectionCells() || []) : [];
+        const out = new Map(); // groupId -> { group, tiles: [] }
+
+        function addTile(tile) {
+            if (!tile || !isPlantCircle(tile)) return;
+            if (!hasTileRC(tile)) return; // require row/col
+            const g = findTilerGroupAncestor(graph, tile);
+            if (!g) return;
+            if (!out.has(g.id)) out.set(g.id, { group: g, tiles: [] });
+            out.get(g.id).tiles.push(tile);
+        }
+
+        for (const c of sel) addTile(c);
+
+        // If selection contains no tiles, try hit/target cell                              
+        if (out.size === 0 && fallbackTarget) addTile(fallbackTarget);
+
+        return Array.from(out.values());
+    }
+
+    function groupHasDisabled(groupCell) {
+        const set = readDisabledSet(groupCell);
+        return set.size > 0;
+    }
+
+    function disableTilesInGroup(graph, groupCell, tileCells) {
+        if (!groupCell || !isTilerGroup(groupCell)) return;
+        const model = graph.getModel();
+
+        const disabledSet = readDisabledSet(groupCell);
+        let added = 0;
+
+        // Track exact tiles to remove (only those newly disabled)
+        const newlyDisabled = new Set();
+
+        for (const t of (tileCells || [])) {
+            if (!t || !isPlantCircle(t) || !hasTileRC(t)) continue;
+            const r = Number(t.getAttribute("tile_r"));
+            const c = Number(t.getAttribute("tile_c"));
+            if (!Number.isFinite(r) || !Number.isFinite(c)) continue;
+
+            const key = `${r},${c}`;
+            if (!disabledSet.has(key)) {
+                disabledSet.add(key);
+                newlyDisabled.add(key);
+                added++;
+            }
+        }
+        if (!added) return;
+
+        model.beginUpdate();
+        try {
+            writeDisabledSet(model, groupCell, disabledSet);
+
+            // Remove only tiles that correspond to newly-disabled keys
+            const toRemove = [];
+            for (const t of (tileCells || [])) {
+                if (!t || !isPlantCircle(t) || !hasTileRC(t)) continue;
+                const key = `${t.getAttribute("tile_r")},${t.getAttribute("tile_c")}`;
+                if (newlyDisabled.has(key)) toRemove.push(t);
+            }
+            if (toRemove.length) clearChildren(graph, groupCell, toRemove);
+
+            // Update counts/yield to reflect disabled tiles (no full re-tile)
+            const abbr = groupCell.getAttribute("plant_abbr") || "?";
+            const spacingXcm = Number(groupCell.getAttribute("spacing_x_cm") ||
+                groupCell.getAttribute("spacing_cm") || "30");
+            const spacingYcm = Number(groupCell.getAttribute("spacing_y_cm") ||
+                groupCell.getAttribute("spacing_cm") || "30");
+            const spacingXpx = toPx(spacingXcm);
+            const spacingYpx = toPx(spacingYcm);
+
+            const { rows, cols, count } = computeGridStatsXY(groupCell, spacingXpx, spacingYpx);
+            pruneDisabledToGrid(model, groupCell, rows, cols);
+            const disabledSet2 = readDisabledSet(groupCell);
+            const { actual } = applyCounts(model, groupCell, count, disabledSet2);
+            updateGroupYield(model, groupCell, { abbr, countOverride: actual });
+        } finally {
+            model.endUpdate();
+        }
+
+        graph.refresh(groupCell);
+    }
+
+    function restoreTilesInGroup(graph, groupCell) {
+        if (!groupCell || !isTilerGroup(groupCell)) return;
+        const model = graph.getModel();
+        const set = readDisabledSet(groupCell);
+        if (!set.size) return;
+
+        writeDisabledSet(model, groupCell, new Set());
+
+        const abbr = groupCell.getAttribute("plant_abbr") || "?";
+        const spacingXcm = Number(groupCell.getAttribute("spacing_x_cm") || groupCell.getAttribute("spacing_cm") || "30");
+        const spacingYcm = Number(groupCell.getAttribute("spacing_y_cm") || groupCell.getAttribute("spacing_cm") || "30");
+        const spacingXpx = toPx(spacingXcm);
+        const spacingYpx = toPx(spacingYcm);
+
+        if (isCollapsedLOD(groupCell)) {
+            updateCollapsedSummaryInPlace(graph, groupCell, abbr, spacingXpx, spacingYpx);
+            graph.refresh(groupCell);
+            return;
+        }
+
+        // Restore expanded: simplest correct option is rebuild once                              
+        retileGroup(graph, groupCell, { forceExpand: true });
+        graph.refresh(groupCell);
+    }
+
+
 
     // ---------- Popup menu: install robust factory wrapper ----------
     if (graph && graph.popupMenuHandler) {
@@ -1173,6 +1532,46 @@ Draw.loadPlugin(function (ui) {
                 }
             }
 
+            // ----- Disable/Restore plant circles (selection-aware) ----------------------------- 
+            try {
+                const hit = evt ? hitTestCell(evt) : cell;
+                const tileGroups = collectSelectedPlantTilesByGroup(graph, hit);
+
+                // Disable: only if we have at least one tile selected                               
+                if (tileGroups.length) {
+                    const totalTiles = tileGroups.reduce((s, x) => s + (x.tiles?.length || 0), 0);
+                    if (totalTiles > 0) {
+                        menu.addItem(`Disable plant circles (${totalTiles})`, null, function () {
+                            const model = graph.getModel();
+                            model.beginUpdate();
+                            try {
+                                for (const tg of tileGroups) {
+                                    disableTilesInGroup(graph, tg.group, tg.tiles);
+                                }
+                            } finally {
+                                model.endUpdate();
+                            }
+                        });
+                    }
+                }
+
+                // Restore: if any selected/target tiler groups have disabled tiles                   
+                const groupsForRestore = collectSelectedTilerGroups(graph, target);
+                const restorable = groupsForRestore.filter(g => groupHasDisabled(g));
+                if (restorable.length) {
+                    const noun2 = restorable.length > 1 ? "plantings" : "planting";
+                    menu.addItem(`Restore plant circles (${noun2})`, null, function () {
+                        const model = graph.getModel();
+                        model.beginUpdate();
+                        try {
+                            for (const g of restorable) restoreTilesInGroup(graph, g);
+                        } finally {
+                            model.endUpdate();
+                        }
+                    });
+                }
+            } catch (_) { }
+
             if (targetMod && isGardenModule(targetMod)) {
                 menu.addItem("Garden Settings…", null, async function () {
                     await showGardenSettingsDialog(ui, graph, targetMod);
@@ -1239,34 +1638,63 @@ Draw.loadPlugin(function (ui) {
     }
 
     let WRAP_GUARD = false; // re-entrancy guard
-    const resizeTimers = new Map(); // debounce per group id
 
-    function createTilerGroupFromCircle(graph, circleCell) {
-        const cg = circleCell.getGeometry();
-        log("Wrapping circle at", { x: cg.x, y: cg.y, w: cg.width, h: cg.height });
+    function createTilerGroupFromCircle(graph, circleCells) {
+        if (!circleCells || circleCells.length === 0) return null;
 
-        const abbr = circleCell.getAttribute("abbr") || "?";
-        const plantId = circleCell.getAttribute('plant_id') || '';
-        const plantName = circleCell.getAttribute('plant_name') || '';
-        const varietyName = circleCell.getAttribute('variety_name') || '';
+        const model = graph.getModel();
+        const first = circleCells[0];
+
+        const parent = model.getParent(first) || graph.getDefaultParent();
+
+        // Assumption: all circles share the same parent after the move.                                   
+        // If not, bucket before calling this function.                                                    
+
+        // Use first circle as metadata source                                                             
+        const abbr = first.getAttribute("abbr") || "?";
+        const plantId = first.getAttribute("plant_id") || "";
+        const plantName = first.getAttribute("plant_name") || "";
+        const varietyName = first.getAttribute("variety_name") || "";
+
         const titleName = (varietyName && plantName)
             ? `${plantName} - ${varietyName}`
-            : (plantName || abbr || '?');
+            : (plantName || abbr || "?");
 
-        // Default X/Y from source circle (both seeded from spacing_cm)
-        const spacingCm = circleCell.getAttribute("spacing_cm") || "30";
-        const spacingXcm = circleCell.getAttribute("spacing_x_cm") || spacingCm;
-        const spacingYcm = circleCell.getAttribute("spacing_y_cm") || spacingCm;
-        const vegDiamCm = circleCell.getAttribute("veg_diameter_cm") || "";
-        const plantYield = circleCell.getAttribute("yield_per_plant_kg") || "";
-        const yieldUnit = circleCell.getAttribute("yield_unit") || YIELD_UNIT;
+        const spacingCm = first.getAttribute("spacing_cm") || "30";
+        const spacingXcm = first.getAttribute("spacing_x_cm") || spacingCm;
+        const spacingYcm = first.getAttribute("spacing_y_cm") || spacingCm;
+        const vegDiamCm = first.getAttribute("veg_diameter_cm") || "";
+        const plantYield = first.getAttribute("yield_per_plant_kg") || "";
+        const yieldUnit = first.getAttribute("yield_unit") || YIELD_UNIT;
+
+        // Compute bounding box in PARENT coordinates                                                      
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const c of circleCells) {
+            const g = c.getGeometry();
+            if (!g) continue;
+            minX = Math.min(minX, g.x);
+            minY = Math.min(minY, g.y);
+            maxX = Math.max(maxX, g.x + g.width);
+            maxY = Math.max(maxY, g.y + g.height);
+        }
+        if (!isFinite(minX) || !isFinite(minY) || !isFinite(maxX) || !isFinite(maxY)) return null;
+
+        const pad = GROUP_PADDING_PX;
+        const groupX = Math.max(0, minX - pad);
+        const groupY = Math.max(0, minY - pad);
+        const groupW = (maxX - minX) + pad * 2;
+        const tmpGeo = new mxGeometry(groupX, groupY, groupW, groupH || 0); // NEW 
+        const rawH = (maxY - minY) + pad * 2; // NEW
+        const tmp = { getGeometry: () => ({ width: groupW, height: rawH }) }; // NEW
+        const { bandPx } = groupLabelMetrics(tmp); // NEW
+        const groupH = rawH + bandPx; // CHANGED
 
         const groupVal = createXmlValue("TilerGroup", {
             label: `${titleName}`,
             tiler_group: "1",
             plant_abbr: abbr,
-            plant_id: plantId,                               // persist id on group
-            plant_name: plantName,                           // persist name on group
+            plant_id: plantId,
+            plant_name: plantName,
             variety_name: varietyName,
             spacing_cm: spacingCm,
             spacing_x_cm: spacingXcm,
@@ -1274,47 +1702,67 @@ Draw.loadPlugin(function (ui) {
             veg_diameter_cm: vegDiamCm,
             yield_per_plant_kg: plantYield,
             yield_unit: yieldUnit,
-            plant_count: "1",
+            plant_count: String(circleCells.length),
             planting_expected_yield_kg: "0",
             planting_actual_yield_kg: "0"
         });
 
-        const group = new mxCell(
-            groupVal,
-            new mxGeometry(cg.x, cg.y, cg.width, cg.height),
-            groupFrameStyle()
-        );
+        const group = new mxCell(groupVal, new mxGeometry(groupX, groupY, groupW, groupH), groupFrameStyle());
         group.setVertex(true);
         group.setConnectable(false);
         group.setCollapsed(false);
 
-        const intendedParent =
-            graph.getModel().getParent(circleCell) || graph.getDefaultParent(); // keep group with the circle’s current parent
-        graph.addCell(group, intendedParent);
+        graph.addCell(group, parent);
 
-        const localGeo = cg.clone();
-        localGeo.x = (group.getGeometry().width - cg.width) / 2;
-        localGeo.y = (group.getGeometry().height - cg.height) / 2;
-        circleCell.setGeometry(localGeo);
-        graph.addCell(circleCell, group);
+        // Move circles into group; convert to GROUP-RELATIVE coordinates                                  
+        for (const c of circleCells) {
+            const cg = c.getGeometry();
+            if (!cg) continue;
+
+            const local = cg.clone();
+            local.x = cg.x - groupX;
+            local.y = (cg.y - groupY) + bandPx; // CHANGED
+
+            c.setGeometry(local);
+            graph.addCell(c, group);
+        }
+
+        // Retile group after it has children (will honor LOD, count, etc.)                                 
+        retileGroup(graph, group);
+
+        if (parent && isGardenModule(parent)) {
+            reorderModuleChildrenForLayering(model, parent);
+        }
 
         graph.setSelectionCell(group);
-        log("Group created and circle moved into group at", {
-            x: localGeo.x,
-            y: localGeo.y,
-        });
         return group;
     }
 
     function computeGridStatsXY(groupCell, spacingXpx, spacingYpx) {
         const g = groupCell.getGeometry();
+        const { bandPx } = groupLabelMetrics(groupCell); // NEW
         const usableW = Math.max(0, g.width - GROUP_PADDING_PX * 2);
-        const usableH = Math.max(0, g.height - GROUP_PADDING_PX * 2 - GROUP_LABEL_BAND_PX);
+        const usableH = Math.max(0, g.height - GROUP_PADDING_PX * 2 - bandPx); // CHANGED
         if (usableW <= 0 || usableH <= 0) return { rows: 0, cols: 0, count: 0 };
         const cols = Math.max(1, Math.floor(usableW / spacingXpx));
         const rows = Math.max(1, Math.floor(usableH / spacingYpx));
         return { rows, cols, count: rows * cols };
     }
+
+
+    function hasTileRC(cell) {
+        if (!cell || !cell.getAttribute) return false;
+        const r = cell.getAttribute("tile_r");
+        const c = cell.getAttribute("tile_c");
+        return (r !== null && r !== "") || (c !== null && c !== "");
+    }
+
+    function isAutoGeneratedTile(cell) {
+        if (!cell || !cell.getAttribute) return false;
+        // auto=1 is your signal for generated tiles; keep RC as fallback                     
+        return cell.getAttribute("auto") === "1" || hasTileRC(cell);
+    }
+
 
     graph.addListener(mxEvent.CELLS_ADDED, function (sender, evt) {
         const cells = evt.getProperty("cells") || [];
@@ -1331,18 +1779,61 @@ Draw.loadPlugin(function (ui) {
             for (const cell of cells) {
                 if (!isPlantCircle(cell)) continue;
 
+                // If this is a tile dragged out of a group, do not wrap it                           
+                if (isAutoGeneratedTile(cell)) {
+                    log("Plant tile moved out; skip auto-wrap");
+                    continue;
+                }
+
                 const parent = model.getParent(cell);
                 if (isTilerGroup(parent)) {
                     log("Already inside tiler group; skip");
                     continue;
                 }
-                createTilerGroupFromCircle(graph, cell);
+
+                createTilerGroupFromCircle(graph, [cell]);
             }
+
         } finally {
             model.endUpdate();
             WRAP_GUARD = false;
         }
     });
+
+    // ---------------- dirty plant circles helers -----------------
+
+    function isDIrty(cell) {
+        if (!cell || !cell.getAttribute) return false;
+        return cell.getAttribute("dirty") === "1";
+    }
+
+    function isAutoTile(cell) {
+        if (!cell || !cell.getAttribute) return false;
+        return cell.getAttribute("plant_tiler") === "1" && cell.getAttribute("auto") === "1";
+    }
+
+    function setAttrsTxn(model, cell, attrs) {
+        // uses your setCellAttrsNoTxn but wrapped in begin/endUpdate by caller
+        setCellAttrsNoTxn(model, cell, attrs);
+    }
+
+    function isDirty(cell) {
+        return !!cell && cell.getAttribute && cell.getAttribute("dirty") === "1";
+    }
+
+    function isChildOutOfGroupBounds(groupCell, childCell) {
+        if (!groupCell || !childCell) return false;
+        const gg = groupCell.getGeometry && groupCell.getGeometry();
+        const cg = childCell.getGeometry && childCell.getGeometry();
+        if (!gg || !cg) return false;
+        // Child geos are RELATIVE to group; compare to [0..w]x[0..h]                      
+        const eps = 0.01;
+        if (cg.x < -eps) return true;
+        if (cg.y < -eps) return true;
+        if (cg.x + cg.width > gg.width + eps) return true;
+        if (cg.y + cg.height > gg.height + eps) return true;
+        return false;
+    }
 
     // expand/collapse helpers
     function expandGroupDetail(graph, groupCell) {
@@ -1409,8 +1900,7 @@ Draw.loadPlugin(function (ui) {
         const fullName = getGroupDisplayName(groupCell, abbr || '?');
         const unit = groupCell.getAttribute("yield_unit") || YIELD_UNIT;
 
-        // NOTE: you probably meant yield_per_plant_kg, not plant_yield
-        const perYield = getNumberAttr(groupCell, "plant_yield", 0); // CHANGE
+        const perYield = getNumberAttr(groupCell, "plant_yield", 0);
         const count =
             opts.countOverride != null
                 ? Number(opts.countOverride)
@@ -1418,10 +1908,10 @@ Draw.loadPlugin(function (ui) {
 
         const expectedYield = perYield * (Number.isFinite(count) ? count : 0);
 
-        setCellAttrNoTxn(model, groupCell, ATTR_YIELD_EXPECTED, expectedYield); // CHANGE
+        setCellAttrsNoTxn(model, groupCell, { [ATTR_YIELD_EXPECTED]: expectedYield });
 
         if (SHOW_YIELD_IN_GROUP_LABEL) {
-            setCellAttrNoTxn(model, groupCell, "label", `${fullName} — ${formatYield(expectedYield, unit)}`); // CHANGE
+            setCellAttrsNoTxn(model, groupCell, { label: `${fullName} — ${formatYield(expectedYield, unit)}` });
         }
 
         return { perYield, count, expectedYield, unit, abbr };
@@ -1430,25 +1920,19 @@ Draw.loadPlugin(function (ui) {
     function syncGroupTitle(model, groupCell) {
         const abbr = getXmlAttr(groupCell, "plant_abbr", "?");
         const fullName = getGroupDisplayName(groupCell, abbr);
-        setCellAttr(model, groupCell, "label", `${fullName}`);
+        setCellAttrsNoTxn(model, groupCell, { label: `${fullName}` });
     }
+
 
     function retileGroup(graph, groupCell, opts = {}) {
 
-        const duringResize = !!opts.duringResize;                                       // NEW
-        if (duringResize) {                                                            // NEW
-            const { count } = computeGridStatsXY(groupCell, spacingXpx, spacingYpx);    // NEW
-            setCellAttrNoTxn(model, groupCell, "plant_count", count);                   // NEW
-            updateGroupYield(model, groupCell, { abbr, countOverride: count });         // NEW
-
-            if (count > MAX_TILES || count > LOD_TILE_THRESHOLD) {                      // NEW
-                collapseToSummary(graph, groupCell, abbr, spacingXpx, spacingYpx);      // NEW
-            }                                                                           // NEW
-            return;                                                                     // NEW
-        }                                                                               // NEW
-
         const model = graph.getModel();
-        syncGroupTitle(model, groupCell);
+        model.beginUpdate();
+        try {
+            syncGroupTitle(model, groupCell);
+        } finally {
+            model.endUpdate();
+        }
         const abbr = groupCell.getAttribute("plant_abbr") || "?";
         const spacingXcm = Number(groupCell.getAttribute("spacing_x_cm") ||
             groupCell.getAttribute("spacing_cm") || "30");
@@ -1456,6 +1940,22 @@ Draw.loadPlugin(function (ui) {
             groupCell.getAttribute("spacing_cm") || "30");
         const spacingXpx = toPx(spacingXcm);
         const spacingYpx = toPx(spacingYcm);
+
+        const duringResize = !!opts.duringResize;
+        if (duringResize) {
+            const { count } = computeGridStatsXY(groupCell, spacingXpx, spacingYpx);
+
+            const { rows, cols } = computeGridStatsXY(groupCell, spacingXpx, spacingYpx);
+            const pruned = pruneDisabledToGrid(model, groupCell, rows, cols);
+            const disabledSet = pruned.set || readDisabledSet(groupCell);
+            const { actual } = applyCounts(model, groupCell, count, disabledSet);
+            updateGroupYield(model, groupCell, { abbr, countOverride: actual });
+
+            if (count > MAX_TILES || count > LOD_TILE_THRESHOLD) {
+                collapseToSummary(graph, groupCell, abbr, spacingXpx, spacingYpx);
+            }
+            return;
+        }
 
         const vegDiamCm = Number(groupCell.getAttribute("veg_diameter_cm") || 0);
         let iconDiam = vegDiamCm > 0 ? toPx(vegDiamCm)
@@ -1499,45 +1999,514 @@ Draw.loadPlugin(function (ui) {
         }
     }
 
+    let REORDER_GUARD = false;
+
+    graph.addListener(mxEvent.CELLS_ADDED, function (sender, evt) {
+        if (REORDER_GUARD) return;
+
+        const cells = evt.getProperty("cells") || [];
+        const model = graph.getModel();
+
+        const modulesToFix = new Map();
+        for (const c of cells) {
+            if (!c) continue;
+
+            // Only direct children matter; check parent and type
+            const p = model.getParent(c);
+            if (!p || !isGardenModule(p)) continue;
+
+            if (isGardenBed(c) || isTilerGroup(c)) {
+                modulesToFix.set(p.id, p);
+            }
+        }
+
+        if (!modulesToFix.size) return;
+
+        REORDER_GUARD = true;
+        model.beginUpdate();
+        try {
+            for (const m of modulesToFix.values()) {
+                reorderModuleChildrenForLayering(model, m);
+            }
+        } finally {
+            model.endUpdate();
+            REORDER_GUARD = false;
+        }
+    });
+
+
+    (function installDirtyOnManualMove() {
+        if (graph.__plantTilerDirtyMoveInstalled) return;
+        graph.__plantTilerDirtyMoveInstalled = true;
+
+        graph.addListener(mxEvent.CELLS_MOVED, function (sender, evt) {
+            const cells = evt.getProperty("cells") || [];
+            if (!cells.length) return;
+
+            const model = graph.getModel();
+            model.beginUpdate();
+            try {
+                for (const cell of cells) {
+                    if (!cell) continue;
+
+                    const parent = model.getParent(cell);
+                    if (!parent || !isTilerGroup(parent)) continue;
+
+                    // Only mark plant circles
+                    if (!isPlantCircle(cell)) continue;
+
+                    // If it was auto-placed and user moved it, set as dirty
+                    if (cell.getAttribute("auto") === "1" && cell.getAttribute("dirty") !== "1") {
+                        setAttrsTxn(model, cell, { auto: "0", dirty: "1" });
+                    }
+                }
+            } finally {
+                model.endUpdate();
+            }
+
+            // Refresh moved cells so styles/labels update if you choose to reflect dirty state visually
+            for (const cell of cells) graph.refresh(cell);
+        });
+    })();
+
+    function minGroupSizePx(spacingXpx, spacingYpx, bandPx) { // CHANGED
+        const b = Number.isFinite(Number(bandPx)) ? Number(bandPx) : GROUP_LABEL_BAND_PX; // NEW (fallback)
+        const minW = (GROUP_PADDING_PX * 2) + spacingXpx;
+        const minH = (GROUP_PADDING_PX * 2) + b + spacingYpx; // CHANGED
+        return { minW, minH };
+    }
+
+    function asBoundsArray(bounds, n) {
+        if (Array.isArray(bounds)) return bounds;
+        // mxGraph often passes a single mxRectangle for single-cell resizes;             
+        // replicate defensively for multi-cell resizes.                                  
+        if (bounds && typeof bounds === "object" && n > 1) {
+            const out = [];
+            for (let i = 0; i < n; i++) out.push(bounds);
+            return out;
+        }
+        return bounds ? [bounds] : [];
+    }
+
+    function clampTilerBounds(cells, bounds, snapshots) {
+        const bArr = asBoundsArray(bounds, (cells || []).length);
+        if (!bArr.length) return bounds;
+
+        // Clone only when needed to avoid mutating mxGraph internals unexpectedly.        
+        let changed = false;
+        const out = bArr.slice();
+
+        for (let i = 0; i < (cells || []).length; i++) {
+            const c = cells[i];
+            const b = out[i];
+            if (!c || !b) continue;
+
+            const gId = (isTilerGroup(c) ? c.id : null);
+            const snap = gId ? snapshots.get(gId) : null;
+            if (!snap) continue;
+
+            const { minW, minH } = minGroupSizePx(snap.spacingXpx, snap.spacingYpx, snap.bandPx); // CHANGED
+            const nextW = Math.max(minW, b.width);
+            const nextH = Math.max(minH, b.height);
+
+            if (nextW !== b.width || nextH !== b.height) {
+                // Ensure a true mxRectangle clone when present                            
+                const nb = b.clone ? b.clone() : new mxRectangle(b.x, b.y, b.width, b.height);
+                nb.width = nextW;
+                nb.height = nextH;
+                out[i] = nb;
+                changed = true;
+            }
+        }
+
+        if (!changed) return bounds;
+        // Return in the same "shape" mxGraph expects.                                     
+        return Array.isArray(bounds) ? out : out[0];
+    }
+
+
+    function gridSnapshot(groupCell, spacingXpx, spacingYpx) {
+        const { rows, cols, count } = computeGridStatsXY(groupCell, spacingXpx, spacingYpx);
+        return { rows, cols, count };
+    }
+
+    function ensureLineSlotsPresent(graph, groupCell, abbr, rows, cols, spacingXpx, spacingYpx, iconDiamPx) {
+        // Only needed for 1×N or N×1 shapes
+        if (isCollapsedLOD(groupCell)) return 0;
+        if (!(rows === 1 || cols === 1)) return 0;
+        if (rows <= 0 || cols <= 0) return 0;
+    
+        const model = graph.getModel();
+        const slotMap = buildSlotMap(graph, groupCell);
+    
+        // NEW: dynamic label band + tile font scaling
+        const { bandPx } = groupLabelMetrics(groupCell);
+        const fontPx = tileFontPx(iconDiamPx);
+    
+        let added = 0;
+        model.beginUpdate();
+        try {
+            const disabledSet = readDisabledSet(groupCell);
+    
+            for (let r = 0; r < rows; r++) {
+                for (let c = 0; c < cols; c++) {
+                    const key = `${r},${c}`;
+                    if (slotMap.has(key)) continue;
+    
+                    const v = addTileAtSlot(
+                        graph,
+                        groupCell,
+                        abbr,
+                        r,
+                        c,
+                        spacingXpx,
+                        spacingYpx,
+                        iconDiamPx,
+                        disabledSet,
+                        bandPx,   // NEW
+                        fontPx    // NEW
+                    );
+    
+                    if (v) {
+                        slotMap.set(key, v);
+                        added++;
+                    }
+                }
+            }
+        } finally {
+            model.endUpdate();
+        }
+    
+        if (added) graph.refresh(groupCell);
+        return added;
+    }
+    
+
+
+    function addTileAtSlot(graph, groupCell, abbr, r, c, spacingXpx, spacingYpx, iconDiamPx, disabledSet, bandPx, fontPx) { // CHANGED
+        if (disabledSet && disabledSet.has(`${r},${c}`)) return null;
+
+        const x0Rel = GROUP_PADDING_PX + spacingXpx / 2;
+        const y0Rel = GROUP_PADDING_PX + (bandPx || GROUP_LABEL_BAND_PX) + spacingYpx / 2; // CHANGED
+
+        const cxRel = x0Rel + c * spacingXpx;
+        const cyRel = y0Rel + r * spacingYpx;
+
+        const geo = new mxGeometry(
+            cxRel - iconDiamPx / 2,
+            cyRel - iconDiamPx / 2,
+            iconDiamPx,
+            iconDiamPx
+        );
+
+        const vVal = createXmlValue("PlantTile", {
+            plant_tiler: "1",
+            auto: "1",
+            abbr: abbr,
+            label: abbr,
+            tile_r: String(r),
+            tile_c: String(c),
+            dirty: "0",
+        });
+
+        const v = new mxCell(vVal, geo, plantCircleStyle(fontPx)); // CHANGED
+        v.setVertex(true);
+        v.setConnectable(false);
+
+        graph.addCell(v, groupCell);
+        return v;
+    }
+
+    function applyResizeDelta(graph, groupCell, prev, next, spacingXpx, spacingYpx, iconDiamPx) {
+        const model = graph.getModel();
+        const abbr = groupCell.getAttribute("plant_abbr") || "?";
+
+        const disabledSet = readDisabledSet(groupCell);
+
+        // If LOD collapsed, don’t maintain tiles. Keep your existing collapse/summary behavior.
+        if (isCollapsedLOD(groupCell)) return;
+
+        const { bandPx } = groupLabelMetrics(groupCell); // NEW
+        const fontPx = tileFontPx(iconDiamPx); // NEW
+
+        const slotMap = buildSlotMap(graph, groupCell);
+
+        model.beginUpdate();
+        try {
+            // ---- Add new rows ----
+            if (next.rows > prev.rows) {
+                for (let r = prev.rows; r < next.rows; r++) {
+                    for (let c = 0; c < next.cols; c++) {
+                        const key = `${r},${c}`;
+                        if (slotMap.has(key)) continue;
+                        const v = addTileAtSlot(graph, groupCell, abbr, r, c, spacingXpx, spacingYpx, iconDiamPx, disabledSet, bandPx, fontPx); // CHANGED
+                        if (v) slotMap.set(key, v);
+                    }
+                }
+            }
+
+            // ---- Add new cols ----
+            if (next.cols > prev.cols) {
+                const rMax = Math.min(prev.rows, next.rows);
+                for (let r = 0; r < rMax; r++) {
+                    for (let c = prev.cols; c < next.cols; c++) {
+                        const key = `${r},${c}`;
+                        if (slotMap.has(key)) continue;
+                        const v = addTileAtSlot(graph, groupCell, abbr, r, c, spacingXpx, spacingYpx, iconDiamPx, disabledSet, bandPx, fontPx); // CHANGED
+                        slotMap.set(key, v);
+                    }
+                }
+            }
+
+            // ---- Remove removed rows/cols (auto tiles) + remove dirty tiles that are now OOB ---- 
+            const kids = graph.getChildVertices(groupCell) || [];
+            const toRemove = [];
+
+            for (const k of kids) {
+                if (!isPlantCircle(k)) continue;
+
+                // (A) Remove dirty circles that are outside group bounds                   
+                if (isDirty(k) && isChildOutOfGroupBounds(groupCell, k)) {
+                    toRemove.push(k);
+                    continue;
+                }
+
+                // (B) Existing rule: remove AUTO tiles that are outside new grid slots     
+                if (!isAutoTile(k)) continue;
+                if (isDIrty(k)) continue;
+
+                const r = Number(k.getAttribute("tile_r"));
+                const c = Number(k.getAttribute("tile_c"));
+                if (!Number.isFinite(r) || !Number.isFinite(c)) continue;
+
+                if (r >= next.rows || c >= next.cols) toRemove.push(k);
+            }
+
+            if (toRemove.length) graph.removeCells(toRemove);
+
+        } finally {
+            model.endUpdate();
+        }
+
+        graph.refresh(groupCell);
+    }
+
+
+    function buildSlotMap(graph, groupCell) {
+        const kids = graph.getChildVertices(groupCell) || [];
+        const map = new Map(); // key "r,c" -> cell
+        for (const k of kids) {
+            if (!isPlantCircle(k)) continue;
+            const r = Number(k.getAttribute("tile_r"));
+            const c = Number(k.getAttribute("tile_c"));
+            if (!Number.isFinite(r) || !Number.isFinite(c)) continue;
+            map.set(`${r},${c}`, k);
+        }
+        return map;
+    }
+
+
+    function safeJsonParse(s, fallback) {
+        try { return JSON.parse(s); } catch (_) { return fallback; }
+    }
+
+    // Stored format: JSON array of [r,c] pairs, e.g. [[0,1],[2,3]]     
+    function readDisabledSet(groupCell) {
+        const raw = getXmlAttr(groupCell, ATTR_DISABLED_PLANTS, "");
+        const arr = raw ? safeJsonParse(raw, []) : [];
+        const set = new Set();
+        for (const it of (Array.isArray(arr) ? arr : [])) {
+            if (!Array.isArray(it) || it.length !== 2) continue;
+            const r = Number(it[0]), c = Number(it[1]);
+            if (!Number.isFinite(r) || !Number.isFinite(c)) continue;
+            if (r < 0 || c < 0) continue;
+            set.add(`${r},${c}`);
+        }
+        return set;
+    }
+
+    function writeDisabledSet(model, groupCell, set) {
+        const arr = [];
+        for (const key of (set || new Set())) {
+            const [rs, cs] = String(key).split(",");
+            const r = Number(rs), c = Number(cs);
+            if (!Number.isFinite(r) || !Number.isFinite(c)) continue;
+            arr.push([r, c]);
+        }
+        setCellAttrsNoTxn(model, groupCell, {
+            [ATTR_DISABLED_PLANTS]: arr.length ? JSON.stringify(arr) : ""
+        });
+    }
+
+    function pruneDisabledToGrid(model, groupCell, rows, cols) {
+        const set = readDisabledSet(groupCell);
+        if (!set.size) return { changed: false, set };
+
+        let changed = false;
+        for (const key of Array.from(set)) {
+            const [rs, cs] = key.split(",");
+            const r = Number(rs), c = Number(cs);
+            if (!Number.isFinite(r) || !Number.isFinite(c) || r < 0 || c < 0 || r >= rows || c >= cols) {
+                set.delete(key);
+                changed = true;
+            }
+        }
+        if (changed) writeDisabledSet(model, groupCell, set);
+        return { changed, set };
+    }
+
+    function applyCounts(model, groupCell, capacityCount, disabledSet) {
+        const disabledN = disabledSet ? disabledSet.size : 0;
+        const actual = Math.max(0, Number(capacityCount) - disabledN);
+        setCellAttrsNoTxn(model, groupCell, {
+            [ATTR_PLANT_COUNT_CAP]: String(capacityCount),
+            [ATTR_PLANT_COUNT_ACT]: String(actual),
+            [ATTR_PLANT_COUNT]: String(actual),
+        });
+        return { capacity: capacityCount, actual, disabledN };
+    }
+
+
+    // -------------------- Resize → Retile in SAME undo step --------------------  
+    (function installResizeCellsWrapper() {
+        if (graph.__plantTilerResizeCellsWrapped) return;
+        graph.__plantTilerResizeCellsWrapped = true;
+
+        const oldResizeCells = graph.resizeCells;
+        graph.resizeCells = function (cells, bounds, recurse) {
+            const model = graph.getModel();
+
+            // Collect affected tiler groups and snapshot BEFORE resize
+            const groups = new Map();
+            for (const c of (cells || [])) {
+                const g = isTilerGroup(c) ? c : findTilerGroupAncestor(graph, c);
+                if (g && g.id) groups.set(g.id, g);
+            }
+
+            const snapshots = new Map(); // groupId -> { prev, spacingXpx, spacingYpx, iconDiamPx, bandPx } // CHANGED
+            for (const g of groups.values()) {
+                const sx = toPx(Number(g.getAttribute("spacing_x_cm") || g.getAttribute("spacing_cm") || "30"));
+                const sy = toPx(Number(g.getAttribute("spacing_y_cm") || g.getAttribute("spacing_cm") || "30"));
+
+                const vegDiamCm = Number(g.getAttribute("veg_diameter_cm") || 0);
+                let iconDiam = vegDiamCm > 0
+                    ? toPx(vegDiamCm)
+                    : clamp(DEFAULT_ICON_DIAM_RATIO * Math.min(sx, sy), MIN_ICON_DIAM_PX, MAX_ICON_DIAM_PX);
+                iconDiam = Math.max(iconDiam, 6);
+
+                const { bandPx } = groupLabelMetrics(g); // NEW
+
+                snapshots.set(g.id, {
+                    prev: gridSnapshot(g, sx, sy),
+                    spacingXpx: sx,
+                    spacingYpx: sy,
+                    iconDiamPx: iconDiam,
+                    bandPx, // NEW
+                });
+            }
+
+            // Do the actual resize (geometry edit) — prevent child stretching for tiler groups
+            const hasTiler = groups.size > 0;
+
+            // --- NEW: clamp tiler group bounds to minimum 1×1 capacity --------------------- 
+            if (hasTiler) {
+                bounds = clampTilerBounds(cells, bounds, snapshots);
+            }
+
+            const res = oldResizeCells.call(this, cells, bounds, hasTiler ? false : recurse);
+
+            // While dragging, keep it light: no delta operations
+            const duringResize = !!graph.isMouseDown;
+            if (duringResize) {
+                return res;
+            }
+
+            // After mouse-up: apply delta / expand / collapse as needed
+            for (const g of groups.values()) {
+                const snap = snapshots.get(g.id);
+                if (!snap) continue;
+
+                const next = gridSnapshot(g, snap.spacingXpx, snap.spacingYpx);
+
+                model.beginUpdate();               // NEW
+                try {                              // NEW
+                    applyGroupLabelFont(model, g); // NEW
+                } finally {                        // NEW
+                    model.endUpdate();             // NEW
+                }
+
+                // Prune disabled entries that are now outside the new grid                      
+                model.beginUpdate();
+                try {
+                    pruneDisabledToGrid(model, g, next.rows, next.cols);
+                } finally {
+                    model.endUpdate();
+                }
+
+                // Update group count/yield to match new capacity
+                model.beginUpdate();
+                try {
+                    const disabledSet = readDisabledSet(g);
+                    const { actual } = applyCounts(model, g, next.count, disabledSet);
+                    updateGroupYield(model, g, {
+                        abbr: g.getAttribute("plant_abbr") || "?",
+                        countOverride: actual
+                    });
+                } finally {
+                    model.endUpdate();
+                }
+
+                // Respect LOD thresholds (optional: collapse if needed)
+                if (next.count > MAX_TILES || next.count > LOD_TILE_THRESHOLD) {
+                    collapseToSummary(
+                        graph,
+                        g,
+                        g.getAttribute("plant_abbr") || "?",
+                        snap.spacingXpx,
+                        snap.spacingYpx
+                    );
+                    continue;
+                }
+
+                // --- FIX: if currently LOD-collapsed but now under thresholds, expand --- 
+                if (isCollapsedLOD(g)) {
+                    expandTiles(
+                        graph,
+                        g,
+                        g.getAttribute("plant_abbr") || "?",
+                        snap.spacingXpx,
+                        snap.spacingYpx,
+                        snap.iconDiamPx
+                    );
+                    graph.refresh(g);
+                    continue;
+                }
+
+                applyResizeDelta(graph, g, snap.prev, next, snap.spacingXpx, snap.spacingYpx, snap.iconDiamPx);
+
+                ensureLineSlotsPresent(
+                    graph,
+                    g,
+                    g.getAttribute("plant_abbr") || "?",
+                    next.rows,
+                    next.cols,
+                    snap.spacingXpx,
+                    snap.spacingYpx,
+                    snap.iconDiamPx
+                );
+
+            }
+
+            return res;
+        };
+    })();
+
+
     // ---- Public API export (for other USL plugins) ---------------------------------
     window.USL = window.USL || {};
     window.USL.tiler = Object.assign({}, window.USL.tiler, {
         retileGroup
     });
-
-    // -------------------- Resize → Retile in SAME undo step --------------------  // NEW
-    (function installResizeCellsWrapper() {                                         // NEW
-        if (graph.__plantTilerResizeCellsWrapped) return;                           // NEW
-        graph.__plantTilerResizeCellsWrapped = true;                                // NEW
-
-        const oldResizeCells = graph.resizeCells;                                   // NEW
-
-        graph.resizeCells = function (cells, bounds, recurse) {                     // NEW
-            // Call original resize (this performs the geometry change in an edit)  // NEW
-            const res = oldResizeCells.apply(this, arguments);                      // NEW
-
-            try {                                                                   // NEW
-                const groupsToUpdate = new Map();                                   // NEW
-                for (const c of (cells || [])) {                                    // NEW
-                    const g = isTilerGroup(c) ? c : findTilerGroupAncestor(graph, c); // NEW
-                    if (g && g.id) groupsToUpdate.set(g.id, g);                     // NEW
-                }                                                                   // NEW
-
-                // While dragging, keep work light; on mouse-up, full retile.        // NEW
-                const duringResize = !!graph.isMouseDown;                           // NEW
-
-                for (const g of groupsToUpdate.values()) {                          // NEW
-                    retileGroup(graph, g, { duringResize });                        // NEW
-                    graph.refresh(g);                                               // NEW
-                }                                                                   // NEW
-            } catch (e) {                                                           // NEW
-                try { mxLog.debug("[PlantTiler][resizeCells] retile error " + e.message); } catch (_) { } // NEW
-            }                                                                       // NEW
-
-            return res;                                                             // NEW
-        };
-    })();                                                                           // NEW
-
 
     // -------------------- Boot --------------------
     (async function init() {

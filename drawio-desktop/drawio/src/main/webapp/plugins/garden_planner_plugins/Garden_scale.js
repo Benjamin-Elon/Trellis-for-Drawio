@@ -137,34 +137,113 @@ Draw.loadPlugin(function (ui) {
         hDiv.textContent = `H: ${formatLengthCm(hCm)}`;                          // NEW
     }                                                                            // NEW
     
-    function positionOverlayDivs(wDiv, hDiv, cell) {                             // NEW
-        const state = graph.view.getState(cell);
-        if (!state) return false;
-    
-        const geo = cell.getGeometry ? cell.getGeometry() : null;
-        if (!geo) return true;
-    
-        const wUnits = geo.width;
-        const hUnits = isTilerGroup(cell)
-            ? Math.max(0, geo.height - GROUP_LABEL_BAND_PX)
-            : geo.height;
-    
-        setOverlayTexts(wDiv, hDiv, wUnits, hUnits);
-    
-        // Width at top edge, left corner
-        const wLeft = Math.round(state.x + OVERLAY_W_X_OFFSET);
-        const wTop  = Math.round(state.y - OVERLAY_W_Y_OFFSET);
-        wDiv.style.left = `${wLeft}px`;
-        wDiv.style.top  = `${wTop}px`;
-    
-        // Height at left edge, top corner
-        const hLeft = Math.round(state.x - OVERLAY_H_X_OFFSET);
-        const hTop  = Math.round(state.y + OVERLAY_H_Y_OFFSET);
-        hDiv.style.left = `${hLeft}px`;
-        hDiv.style.top  = `${hTop}px`;
-    
-        return true;
-    }
+    // -------------------- Rotation helpers -------------------- // NEW
+function toRad(deg) { return (Number(deg) || 0) * Math.PI / 180; } // NEW
+
+function getRotationDeg(cell) {                                   // NEW
+    const style = graph.getCellStyle(cell) || {};                 // NEW
+    // mxGraph typically stores in mxConstants.STYLE_ROTATION ("rotation") // NEW
+    const r = (style[mxConstants.STYLE_ROTATION] != null)         // NEW
+        ? style[mxConstants.STYLE_ROTATION]                       // NEW
+        : style.rotation;                                         // NEW
+    const n = Number(r);                                          // NEW
+    return Number.isFinite(n) ? n : 0;                             // NEW
+}                                                                 // NEW
+
+function rotatePoint(px, py, cx, cy, angRad) {                    // NEW
+    const dx = px - cx;                                           // NEW
+    const dy = py - cy;                                           // NEW
+    const cos = Math.cos(angRad);                                 // NEW
+    const sin = Math.sin(angRad);                                 // NEW
+    return {                                                      // NEW
+        x: cx + dx * cos - dy * sin,                               // NEW
+        y: cy + dx * sin + dy * cos                                // NEW
+    };                                                            // NEW
+}                                                                 // NEW
+
+function addVec(p, vx, vy) {                                      // NEW
+    return { x: p.x + vx, y: p.y + vy };                           // NEW
+}                                                                 // NEW
+
+
+function positionOverlayDivs(wDiv, hDiv, cell) {                  // CHANGE
+    const state = graph.view.getState(cell);
+    if (!state) return false;
+
+    const geo = cell.getGeometry ? cell.getGeometry() : null;
+    if (!geo) return true;
+
+    // --- compute measurement units (unchanged) ---
+    const wUnits = geo.width;
+    const hUnits = isTilerGroup(cell)
+        ? Math.max(0, geo.height - GROUP_LABEL_BAND_PX)
+        : geo.height;
+
+    setOverlayTexts(wDiv, hDiv, wUnits, hUnits);
+
+    // --- build the rectangle in VIEW coords that we want to anchor to ---
+    // state.x/y/width/height are view coords for the bounding box.          // NEW
+    let rx = state.x;                                                    // NEW
+    let ry = state.y;                                                    // NEW
+    let rw = state.width;                                                // NEW
+    let rh = state.height;                                               // NEW
+
+    // If tiler group has a top label band, exclude it from the measurement rect. // NEW
+    if (isTilerGroup(cell)) {                                            // NEW
+        ry = state.y + GROUP_LABEL_BAND_PX;                               // NEW (assumes band at top)
+        rh = Math.max(0, state.height - GROUP_LABEL_BAND_PX);             // NEW
+    }                                                                     // NEW
+
+    // Center for rotation (use full state bounds center for stability).    // NEW
+    const cx = state.x + state.width / 2;                                  // NEW
+    const cy = state.y + state.height / 2;                                 // NEW
+
+    const rotDeg = getRotationDeg(cell);                                   // NEW
+    const a = toRad(rotDeg);                                               // NEW
+
+    // Midpoints of top edge and left edge (in unrotated rect coords).      // NEW
+    const topMid = { x: rx + rw / 2, y: ry };                              // NEW
+    const leftMid = { x: rx, y: ry + rh / 2 };                             // NEW
+
+    // Rotate these anchor points around (cx, cy).                           // NEW
+    const topMidR = rotatePoint(topMid.x, topMid.y, cx, cy, a);            // NEW
+    const leftMidR = rotatePoint(leftMid.x, leftMid.y, cx, cy, a);         // NEW
+
+    // Edge tangents in rotated frame:
+    // Top edge tangent points "right" along the edge; left edge tangent points "down". // NEW
+    const topT = { x: Math.cos(a), y: Math.sin(a) };                        // NEW
+    const leftT = { x: -Math.sin(a), y: Math.cos(a) };                      // NEW
+
+    // Outward normals:
+    // Top edge outward is "up" (negative local y) => rotate (0,-1) => (sin,-cos). // NEW
+    const topN = { x: Math.sin(a), y: -Math.cos(a) };                       // NEW
+    // Left edge outward is "left" (negative local x) => rotate (-1,0) => (-cos,-sin). // NEW
+    const leftN = { x: -Math.cos(a), y: -Math.sin(a) };                     // NEW
+
+    // Apply your offsets:
+    // - W label: move along top normal by OVERLAY_W_Y_OFFSET and along top tangent by OVERLAY_W_X_OFFSET. // NEW
+    const wPt = addVec(
+        topMidR,
+        topT.x * OVERLAY_W_X_OFFSET + topN.x * OVERLAY_W_Y_OFFSET,
+        topT.y * OVERLAY_W_X_OFFSET + topN.y * OVERLAY_W_Y_OFFSET
+    ); // NEW
+
+    // - H label: move along left normal by OVERLAY_H_X_OFFSET and along left tangent by OVERLAY_H_Y_OFFSET. // NEW
+    const hPt = addVec(
+        leftMidR,
+        leftT.x * OVERLAY_H_Y_OFFSET + leftN.x * OVERLAY_H_X_OFFSET,
+        leftT.y * OVERLAY_H_Y_OFFSET + leftN.y * OVERLAY_H_X_OFFSET
+    ); // NEW
+
+    wDiv.style.left = `${Math.round(wPt.x)}px`;                             // CHANGE
+    wDiv.style.top  = `${Math.round(wPt.y)}px`;                             // CHANGE
+
+    hDiv.style.left = `${Math.round(hPt.x)}px`;                             // CHANGE
+    hDiv.style.top  = `${Math.round(hPt.y)}px`;                             // CHANGE
+
+    return true;
+}
+
     
     // -------------------- Overlay lifecycle --------------------
     function removeOverlayForCellId(cellId) {
