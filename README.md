@@ -63,3 +63,5 @@ In the root directory of this repo:
 - Add task detailing for kanban boards
 - Add Gantt chart plugin for timeline schedule view
 - Extend scheduler with proper perennial scheduling.
+- Add inventory Plugin
+- Add labor plugin (depends on inventory plugin)
