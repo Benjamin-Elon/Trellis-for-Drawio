@@ -16,29 +16,46 @@ Draw.loadPlugin(function (ui) {
 
     // -------------------- Helpers --------------------
 
-    function asVertexArray(cells) {
-        if (!cells) return [];
-        const m = graph.getModel();
-        return cells.filter((c) => c && m.isVertex(c));
-    }
+    function asVertexArray(cells) {                                                          
+        if (!cells) return [];                                                               
+        const m = graph.getModel();                                                          
+        const out = [];                                                                      
+        const seen = new Set();                                                              
+    
+        for (const raw of cells) {                                                           
+            const c = normalizeForLinkingAndPrimary(raw);                                    
+            if (!c || !m.isVertex(c)) continue;                                              
+            if (seen.has(c.id)) continue;                                                    
+            seen.add(c.id);                                                                  
+            out.push(c);                                                                     
+        }                                                                                    
+        return out;                                                                          
+    }                                                                                        
+    
 
-    function ensureValueIsElement(cell) {
-        const val = cell.value;
-        if (!val || typeof val === 'string') {
-            const doc = mxUtils.createXmlDocument();
-            const obj = doc.createElement('object');
-            obj.setAttribute('label', val || '');
-            cell.value = obj;
-        }
-        return cell.value;
+    function ensureValueIsElementUndoable(cell) {                                     
+        if (!cell) return null;                                                      
+        const v = cell.value;                                                        
+        if (v && typeof v !== 'string' && v.getAttribute) return v;                   
+
+        const doc = mxUtils.createXmlDocument();                                      
+        const obj = doc.createElement('object');                                      
+        if (typeof v === 'string') obj.setAttribute('label', v);                      
+        else obj.setAttribute('label', '');                                           
+
+        // Make this change undoable                                                   
+        const change = new mxValueChange(cell, obj);                                   
+        model.execute(change);                                                        
+        return cell.value;                                                            
     }
 
     // ---- Undoable helpers ----
     function setCellAttrUndoable(cell, attr, value) {
-        ensureValueIsElement(cell);
+        ensureValueIsElementUndoable(cell);                                           
         const change = new mxCellAttributeChange(cell, attr, value);
         model.execute(change);
     }
+
 
     function getAttr(cell, key) {
         const v = cell && cell.value;
@@ -123,7 +140,7 @@ Draw.loadPlugin(function (ui) {
 
 
     function captureOriginalStrokeIfMissing(cell) {
-        const val = ensureValueIsElement(cell);
+        const val = ensureValueIsElementUndoable(cell);
         const hasOldColor = val.getAttribute(HL_OLD_COLOR) != null;
         const hasOldWidth = val.getAttribute(HL_OLD_WIDTH) != null;
         if (!hasOldColor) {
@@ -326,7 +343,7 @@ Draw.loadPlugin(function (ui) {
 
 
 
-    // (REPLACE) For an origin and its linked target cells, return a map: id -> {side, t}
+    // For an origin and its linked target cells, return a map: id -> {side, t}
     // Adds a pixel cap per adjacent link (default 10px), and a small corner margin (default 4px).
     function computeExitParamsForOrigin(origin, targets, maxGapPx = 10, marginPx = 4) {
         const srcC = getCellCenter(origin);
@@ -452,144 +469,162 @@ Draw.loadPlugin(function (ui) {
         if (!card) return null;
         const lane = findLaneAncestor(card);
         let laneRaw = lane ? getAttr(lane, 'lane_key') : null;
-    
+
         if (laneRaw) {
             const key = String(laneRaw).trim().toUpperCase();
-            console.log('[LaneStatus] from lane_key', { cardId: card.id, laneId: lane && lane.id, laneRaw, key }); 
+            console.log('[LaneStatus] from lane_key', { cardId: card.id, laneId: lane && lane.id, laneRaw, key });
             return key || null;
         }
-    
+
         const statusRaw = getAttr(card, 'status');
         const mapped = mapStatusToKey(statusRaw);
         console.log('[LaneStatus] from status', { cardId: card.id, statusRaw, mapped });
         return mapped;
     }
-    
 
-    function isTilerGroup(cell) {                                            
-        return !!cell && getAttr(cell, 'tiler_group') === '1';            
+
+    function isTilerGroup(cell) {
+        return !!cell && getAttr(cell, 'tiler_group') === '1';
     }
 
-/**                                                                             
- * Decide whether to show the edge from `source` → `target` using lane          
- * status and start dates.                                                      
- */
-function shouldShowEdgeInternal(source, target) {
+    function findTilerGroupAncestor(cell) {                                                  
+        const m = graph.getModel();                                                          
+        let cur = cell;                                                                      
+        while (cur) {                                                                        
+            if (isTilerGroup(cur)) return cur;                                               
+            cur = m.getParent(cur);                                                          
+        }                                                                                    
+        return null;                                                                         
+    }                                                                                        
 
-    const sid = source ? source.id : null;
-    const tid = target ? target.id : null;
+    function normalizeForLinkingAndPrimary(cell) {                                           
+        if (!cell) return null;                                                              
+        const tg = findTilerGroupAncestor(cell);                                             
+        // If it's inside a tiler group (including the group itself), operate on the group  
+        return tg || cell;                                                                   
+    }                                                                                        
 
-    const sourceIsTiler = isTilerGroup(source);
-    const targetIsTask  = isKanbanCard(target);
-    
-    console.log("[EdgePolicy] ENTER", {
-        sourceId: sid,
-        targetId: tid,
-        sourceIsTiler,
-        targetIsTask
-    });
 
-    // For anything other than tiler-group → task-card, always show edge:
-    if (!sourceIsTiler || !targetIsTask) {
-        console.log("[EdgePolicy] NOT tiler→task → SHOW");
-        return true;
-    }
+    /**                                                                             
+     * Decide whether to show the edge from `source` → `target` using lane          
+     * status and start dates.                                                      
+     */
+    function shouldShowEdgeInternal(source, target) {
 
-    // Status is defined by the TARGET task (its lane/status), not the tiler.
-    const key = getLaneStatusKeyForTask(target); 
+        const sid = source ? source.id : null;
+        const tid = target ? target.id : null;
 
-    console.log("[EdgePolicy] laneKey", {
-        taskId: tid,
-        laneKey: key,
-        rawStatus: getAttr(target, 'status'),
-        laneAncestor: (function(){
-            const lane = findLaneAncestor(target);
-            return lane ? { id: lane.id, lane_key: getAttr(lane,'lane_key')} : null;
-        })()
-    });
+        const sourceIsTiler = isTilerGroup(source);
+        const targetIsTask = isKanbanCard(target);
 
-    if (!key) {
-        console.log("[EdgePolicy] NO LANE KEY → SHOW");
-        return true;
-    }
+        console.log("[EdgePolicy] ENTER", {
+            sourceId: sid,
+            targetId: tid,
+            sourceIsTiler,
+            targetIsTask
+        });
 
-    // ACTIVE lanes: always show edges to tasks in active lanes
-    if (ACTIVE_LANES.has(key)) {
-        console.log("[EdgePolicy] ACTIVE lane → SHOW");
-        return true;
-    }
-
-    // For non-active lanes (UPCOMING + DONE), compute best card PER LANE KEY.   
-    const model = graph.getModel();                                             
-    const ids = Array.from(getLinkSet(source));                                 
-    const now = Date.now();                                                     
-
-    // UPCOMING: earliest future start date per upcoming lane key                
-    const bestUpcomingByKey = new Map(); // key -> { cell, time }               
-
-    // DONE: most recent start date per done lane key (fallback to first).      
-    const bestDoneByKey = new Map();    // key -> { cell, time }                
-    const firstDoneByKey = new Map();   // key -> cell                          
-
-    for (const id of ids) {                                                    
-        const other = model.getCell(id);                                       
-        if (!other || !model.isVertex(other)) continue;                        
-
-        const otherKey = getLaneStatusKeyForTask(other);                       
-        if (!otherKey) continue;                                               
-
-        const t = getStartDate(other);                                         
-
-        // --- UPCOMING group: per-lane earliest future start date ---          
-        if (UPCOMING_LANES.has(otherKey)) {                                    
-            if (t == null || t < now) continue;                                
-            const current = bestUpcomingByKey.get(otherKey);                   
-            if (!current || t < current.time) {                                
-                bestUpcomingByKey.set(otherKey, { cell: other, time: t });     
-            }
+        // For anything other than tiler-group → task-card, always show edge:
+        if (!sourceIsTiler || !targetIsTask) {
+            console.log("[EdgePolicy] NOT tiler→task → SHOW");
+            return true;
         }
-        // --- DONE/ARCHIVED group: per-lane most recent start date ---         
-        else if (DONE_LANES.has(otherKey)) {                                   
-            if (!firstDoneByKey.has(otherKey)) {                               
-                firstDoneByKey.set(otherKey, other);                           
+
+        // Status is defined by the TARGET task (its lane/status), not the tiler.
+        const key = getLaneStatusKeyForTask(target);
+
+        console.log("[EdgePolicy] laneKey", {
+            taskId: tid,
+            laneKey: key,
+            rawStatus: getAttr(target, 'status'),
+            laneAncestor: (function () {
+                const lane = findLaneAncestor(target);
+                return lane ? { id: lane.id, lane_key: getAttr(lane, 'lane_key') } : null;
+            })()
+        });
+
+        if (!key) {
+            console.log("[EdgePolicy] NO LANE KEY → SHOW");
+            return true;
+        }
+
+        // ACTIVE lanes: always show edges to tasks in active lanes
+        if (ACTIVE_LANES.has(key)) {
+            console.log("[EdgePolicy] ACTIVE lane → SHOW");
+            return true;
+        }
+
+        // For non-active lanes (UPCOMING + DONE), compute best card PER LANE KEY.   
+        const model = graph.getModel();
+        const ids = Array.from(getLinkSet(source));
+        const now = Date.now();
+
+        // UPCOMING: earliest future start date per upcoming lane key                
+        const bestUpcomingByKey = new Map(); // key -> { cell, time }               
+
+        // DONE: most recent start date per done lane key (fallback to first).      
+        const bestDoneByKey = new Map();    // key -> { cell, time }                
+        const firstDoneByKey = new Map();   // key -> cell                          
+
+        for (const id of ids) {
+            const other = model.getCell(id);
+            if (!other || !model.isVertex(other)) continue;
+
+            const otherKey = getLaneStatusKeyForTask(other);
+            if (!otherKey) continue;
+
+            const t = getStartDate(other);
+
+            // --- UPCOMING group: per-lane earliest future start date ---          
+            if (UPCOMING_LANES.has(otherKey)) {
+                if (t == null || t < now) continue;
+                const current = bestUpcomingByKey.get(otherKey);
+                if (!current || t < current.time) {
+                    bestUpcomingByKey.set(otherKey, { cell: other, time: t });
+                }
             }
-            const current = bestDoneByKey.get(otherKey);                       
-            if (t != null) {                                                   
-                if (!current || current.time == null || t > current.time) {    
-                    bestDoneByKey.set(otherKey, { cell: other, time: t });     
+            // --- DONE/ARCHIVED group: per-lane most recent start date ---         
+            else if (DONE_LANES.has(otherKey)) {
+                if (!firstDoneByKey.has(otherKey)) {
+                    firstDoneByKey.set(otherKey, other);
+                }
+                const current = bestDoneByKey.get(otherKey);
+                if (t != null) {
+                    if (!current || current.time == null || t > current.time) {
+                        bestDoneByKey.set(otherKey, { cell: other, time: t });
+                    }
                 }
             }
         }
+
+        const bestUpcomingEntry = bestUpcomingByKey.get(key) || null;
+        const bestDoneEntry = bestDoneByKey.get(key) ||
+            (firstDoneByKey.has(key) ? { cell: firstDoneByKey.get(key), time: null } : null);
+
+        console.log("[EdgePolicy] BEST per lane", {
+            laneKey: key,
+            bestUpcomingId: bestUpcomingEntry ? bestUpcomingEntry.cell.id : null,
+            bestDoneId: bestDoneEntry ? bestDoneEntry.cell.id : null
+        });
+
+        // UPCOMING lanes: only show edge to the chosen upcoming card for this lane 
+        if (UPCOMING_LANES.has(key)) {
+            const show = !!bestUpcomingEntry && bestUpcomingEntry.cell === target;
+            console.log("[EdgePolicy] UPCOMING lane →", show ? "SHOW" : "HIDE");
+            return show;
+        }
+
+        // DONE / ARCHIVED lanes: only show edge to the chosen done card for this lane 
+        if (DONE_LANES.has(key)) {
+            const show = !!bestDoneEntry && bestDoneEntry.cell === target;
+            console.log("[EdgePolicy] DONE lane →", show ? "SHOW" : "HIDE");
+            return show;
+        }
+
+        // Fallback: hide
+        console.log("[EdgePolicy] FALLBACK → HIDE");
+        return false;
     }
-
-    const bestUpcomingEntry = bestUpcomingByKey.get(key) || null;              
-    const bestDoneEntry = bestDoneByKey.get(key) ||                            
-        (firstDoneByKey.has(key) ? { cell: firstDoneByKey.get(key), time: null } : null); 
-
-    console.log("[EdgePolicy] BEST per lane", {                                 
-        laneKey: key,                                                           
-        bestUpcomingId: bestUpcomingEntry ? bestUpcomingEntry.cell.id : null,   
-        bestDoneId: bestDoneEntry ? bestDoneEntry.cell.id : null               
-    });
-
-    // UPCOMING lanes: only show edge to the chosen upcoming card for this lane 
-    if (UPCOMING_LANES.has(key)) {                                             
-        const show = !!bestUpcomingEntry && bestUpcomingEntry.cell === target;  
-        console.log("[EdgePolicy] UPCOMING lane →", show ? "SHOW" : "HIDE");   
-        return show;                                                           
-    }
-
-    // DONE / ARCHIVED lanes: only show edge to the chosen done card for this lane 
-    if (DONE_LANES.has(key)) {                                                 
-        const show = !!bestDoneEntry && bestDoneEntry.cell === target;         
-        console.log("[EdgePolicy] DONE lane →", show ? "SHOW" : "HIDE");       
-        return show;                                                           
-    }
-
-    // Fallback: hide
-    console.log("[EdgePolicy] FALLBACK → HIDE");
-    return false;
-}
 
 
 
@@ -862,11 +897,11 @@ function shouldShowEdgeInternal(source, target) {
 
     function isPrimary(cell) {
         if (!cell) return false;
-        const val = ensureValueIsElement(cell); // ensures XML <object>
+        const val = ensureValueIsElementUndoable(cell); // ensures XML <object>
         return val.getAttribute(PRIMARY_ATTR) === '1';
     }
 
-    // (REPLACE) setPrimary
+    // setPrimary
     function setPrimary(cell, flag) {
         setCellAttrUndoable(cell, PRIMARY_ATTR, flag ? '1' : null);
     }
@@ -949,6 +984,59 @@ function shouldShowEdgeInternal(source, target) {
     }
 
 
+    function computeApplicablePairsForLinking(verts) {                                  
+        const { P, S } = derivePrimariesAndSecondaries(verts);                          
+        const pairs = [];                                                              
+
+        if (P.length > 0) {                                                            
+            for (const a of P) for (const b of S) {                                     
+                if (a && b && a !== b) pairs.push([a, b]);                              
+            }
+        } else {                                                                       
+            for (let i = 0; i < verts.length; i++) {                                   
+                for (let j = i + 1; j < verts.length; j++) {                           
+                    const a = verts[i], b = verts[j];                                  
+                    if (a && b && a !== b) pairs.push([a, b]);                          
+                }
+            }
+        }
+        return pairs;                                                                  
+    }
+
+    function isPairLinked(a, b) {                                                      
+        if (!a || !b) return false;                                                    
+        const aSet = getLinkSet(a);                                                    
+        return aSet.has(b.id);                                                         
+    }
+
+    function countLinkedPairs(pairs) {                                                 
+        let linked = 0;                                                                
+        for (const [a, b] of pairs) {                                                  
+            if (isPairLinked(a, b) && isPairLinked(b, a)) linked++;                    
+        }
+        return linked;                                                                 
+    }
+
+    function unlinkRespectingPrimaries(verts) {                                        
+        const pairs = computeApplicablePairsForLinking(verts);                         
+        let removed = 0;                                                               
+
+        model.beginUpdate();                                                           
+        try {
+            for (const [a, b] of pairs) {                                              
+                if (removeBidirectionalLink(a, b)) {                                   
+                    removed++;                                                         
+                    graph.refresh(a);                                                  
+                    graph.refresh(b);                                                  
+                }
+            }
+        } finally { model.endUpdate(); }                                               
+
+        if (removed > 0) {                                                             
+            try { graph.fireEvent(new mxEventObject('linksChanged', 'cells', verts)); } catch (_) { } 
+        }
+        return { pairs: pairs.length, removed };                                       
+    }
 
 
     // Link respecting primaries:
@@ -998,7 +1086,7 @@ function shouldShowEdgeInternal(source, target) {
         return new Set(String(raw).split(',').map(s => s.trim()).filter(Boolean));
     }
 
-    // (REPLACE) setLinkSet
+    // setLinkSet
     function setLinkSet(cell, idSet) {
         if (!cell) return;
         setCellAttrUndoable(cell, LINK_ATTR, Array.from(idSet).join(','));
@@ -1073,7 +1161,7 @@ function shouldShowEdgeInternal(source, target) {
     }
 
 
-    // (REPLACE) Highlight a cell via DOM style (view-only) and track it       
+    // Highlight a cell via DOM style (view-only) and track it       
     function highlight(cell, color) {
         domHighlightVertex(cell, color);
     }
@@ -1087,19 +1175,19 @@ function shouldShowEdgeInternal(source, target) {
         if (!st || !st.shape || !st.shape.node) return;
 
         const root = st.shape.node;
-        // NEW: pick actual drawable child (path/rect) instead of the <g> container
-        let target = root.querySelector('path, rect');        
-        if (!target) target = root;                           
+        // pick actual drawable child (path/rect) instead of the <g> container
+        let target = root.querySelector('path, rect');
+        if (!target) target = root;
 
         if (!highlightDomCache.has(cell.id)) {
             highlightDomCache.set(cell.id, {
-                stroke: target.style.stroke || '',            
-                strokeWidth: target.style.strokeWidth || ''   
+                stroke: target.style.stroke || '',
+                strokeWidth: target.style.strokeWidth || ''
             });
         }
 
-        target.style.stroke = color || '#ff0000';             
-        target.style.strokeWidth = '3px';                     
+        target.style.stroke = color || '#ff0000';
+        target.style.strokeWidth = '3px';
         markHighlighted(cell);
     }
 
@@ -1111,12 +1199,12 @@ function shouldShowEdgeInternal(source, target) {
             const st = view.getState(cell);
             if (!st || !st.shape || !st.shape.node) continue;
 
-            const root = st.shape.node;                       
-            let target = root.querySelector('path, rect');    
-            if (!target) target = root;                       
+            const root = st.shape.node;
+            let target = root.querySelector('path, rect');
+            if (!target) target = root;
 
-            target.style.stroke = prev.stroke;                
-            target.style.strokeWidth = prev.strokeWidth;      
+            target.style.stroke = prev.stroke;
+            target.style.strokeWidth = prev.strokeWidth;
         }
         highlightDomCache.clear();
         highlightedIds.clear();
@@ -1125,11 +1213,11 @@ function shouldShowEdgeInternal(source, target) {
 
 
 
-    // (REPLACE) Clear visuals WITHOUT opening a transaction; caller groups.
+    // Clear visuals WITHOUT opening a transaction; caller groups.
     // Only clear what we previously changed, and only on vertices.
     function clearAllHighlights() {
-        linkOverlays.clearAll();                                              // (overlays)
-        clearDomHighlights();                                                 // (DOM restore)
+        linkOverlays.clearAll();                                             
+        clearDomHighlights();                                               
     }
 
 
@@ -1332,16 +1420,16 @@ function shouldShowEdgeInternal(source, target) {
     });
 
 
-    // (REPLACE) Selection Highlight Logic
+    // Selection Highlight Logic
     graph.getSelectionModel().addListener(mxEvent.CHANGE, function () {
         const selected = graph.getSelectionCells();
         if (selected.length !== 1) {
-            // (REPLACE) clearAllHighlights();  -> one grouped clear step
+            // clearAllHighlights();  -> one grouped clear step
             highlightLinked(null);
             return;
         }
-        const cell = selected[0];
-        if (model.isVertex(cell)) highlightLinked(cell);
+        const cell = normalizeForLinkingAndPrimary(selected[0]);                                 
+        if (cell && model.isVertex(cell)) highlightLinked(cell);                                         
     });
 
 
@@ -1357,28 +1445,69 @@ function shouldShowEdgeInternal(source, target) {
             if (verts.length >= 1) {
                 menu.addSeparator();
 
-                menu.addItem('Mark as Primary', null, function () {
-                    model.beginUpdate();
-                    try {
-                        for (const v of verts) setPrimary(v, true);
-                    } finally { model.endUpdate(); }
-                    console.log(`[Primary] Marked: ${verts.map(v => v.id).join(', ')}`);
-                    const sel = graph.getSelectionCell();
-                    if (sel && model.isVertex(sel)) highlightLinked(sel);
-                });
+                // --- Primary actions (conditional) --------------------------------------------
 
-                menu.addItem('Remove Primary', null, function () {
-                    model.beginUpdate();
-                    try {
-                        for (const v of verts) setPrimary(v, false);
-                    } finally { model.endUpdate(); }
-                    console.log(`[Primary] Removed: ${verts.map(v => v.id).join(', ')}`);
-                    const sel = graph.getSelectionCell();
-                    if (sel && model.isVertex(sel)) highlightLinked(sel);
-                });
+                // Counts
+                const total = verts.length;                                                      
+                const primCount = verts.reduce((n, v) => n + (isPrimary(v) ? 1 : 0), 0);          
+                const nonPrimCount = total - primCount;                                          
+
+                menu.addSeparator();                                                          
+
+                // Only primaries -> only "Remove Primary"
+                if (primCount === total) {                                                       
+                    menu.addItem(`Remove Primary (${total})`, null, function () {                 
+                        model.beginUpdate();
+                        try {
+                            for (const v of verts) setPrimary(v, false);
+                        } finally { model.endUpdate(); }
+                        console.log(`[Primary] Removed: ${verts.map(v => v.id).join(', ')}`);
+                        const sel = graph.getSelectionCell();
+                        if (sel && model.isVertex(sel)) highlightLinked(sel);
+                    });
+                }
+                // Only non-primaries -> only "Mark as Primary"
+                else if (nonPrimCount === total) {                                               
+                    menu.addItem(`Mark as Primary (${total})`, null, function () {                
+                        model.beginUpdate();
+                        try {
+                            for (const v of verts) setPrimary(v, true);
+                        } finally { model.endUpdate(); }
+                        console.log(`[Primary] Marked: ${verts.map(v => v.id).join(', ')}`);
+                        const sel = graph.getSelectionCell();
+                        if (sel && model.isVertex(sel)) highlightLinked(sel);
+                    });
+                }
+                // Mixed -> show both
+                else {                                                                                 // UNCHANGED
+                    menu.addItem(`Mark as Primary (${nonPrimCount})`, null, function () {              
+                        model.beginUpdate();
+                        try {
+                            for (const v of verts) {                                                   
+                                if (!isPrimary(v)) setPrimary(v, true);                                
+                            }
+                        } finally { model.endUpdate(); }
+                        console.log(`[Primary] Marked: ${verts.filter(v => !isPrimary(v)).map(v => v.id).join(', ')}`); // OPTIONAL (see note)
+                        const sel = graph.getSelectionCell();
+                        if (sel && model.isVertex(sel)) highlightLinked(sel);
+                    });
+
+                    menu.addItem(`Remove Primary (${primCount})`, null, function () {                  
+                        model.beginUpdate();
+                        try {
+                            for (const v of verts) {                                                   
+                                if (isPrimary(v)) setPrimary(v, false);                                
+                            }
+                        } finally { model.endUpdate(); }
+                        console.log(`[Primary] Removed: ${verts.filter(v => isPrimary(v)).map(v => v.id).join(', ')}`); // OPTIONAL (see note)
+                        const sel = graph.getSelectionCell();
+                        if (sel && model.isVertex(sel)) highlightLinked(sel);
+                    });
+
+                    console.log(`[Primary] Mixed selection: primary=${primCount}, nonPrimary=${nonPrimCount}`); // UNCHANGED
+                }
             }
-
-            // (NEW) Single-selection: show Remove Links if the vertex has any links
+            // Single-selection: show Remove Links if the vertex has any links
             if (verts.length === 1) {
                 const v = verts[0];
                 const linkCount = getLinkSet(v).size;
@@ -1398,33 +1527,45 @@ function shouldShowEdgeInternal(source, target) {
             }
 
             if (verts.length >= 2) {
-                menu.addItem('Link Selected (respect primaries)', null, function () {
-                    const res = linkRespectingPrimaries(verts);
-                    console.log(`[LINK P↔S] pairs=${res.pairs}, changed=${res.changes}`);
-                    const sel = graph.getSelectionCell();
-                    if (sel && model.isVertex(sel)) highlightLinked(sel);
-                });
+                const pairs = computeApplicablePairsForLinking(verts);                  
+                const totalPairs = pairs.length;                                        
+                const linkedPairs = countLinkedPairs(pairs);                            
+                const missingPairs = totalPairs - linkedPairs;                          
 
+                // Only linked -> only "Unlink"                                          
+                if (linkedPairs === totalPairs && totalPairs > 0) {                     
+                    menu.addItem(`Unlink Selected (${linkedPairs})`, null, function () { 
+                        const res = unlinkRespectingPrimaries(verts);                   
+                        console.log(`[BULK UNLINK] pairs=${res.pairs}, removed=${res.removed}`); 
+                        const sel = graph.getSelectionCell();                           
+                        if (sel && model.isVertex(sel)) highlightLinked(sel);           
+                    });
+                }
+                // Only missing -> only "Link"                                           
+                else if (missingPairs === totalPairs && totalPairs > 0) {               
+                    menu.addItem(`Link Selected (respect primaries) (${totalPairs})`, null, function () { 
+                        const res = linkRespectingPrimaries(verts);                     // UNCHANGED
+                        console.log(`[LINK P↔S] pairs=${res.pairs}, changed=${res.changes}`); // UNCHANGED
+                        const sel = graph.getSelectionCell();                           // UNCHANGED
+                        if (sel && model.isVertex(sel)) highlightLinked(sel);           // UNCHANGED
+                    });
+                }
+                // Mixed -> show both with counts                                        
+                else if (totalPairs > 0) {                                              
+                    menu.addItem(`Link Selected (respect primaries) (${missingPairs})`, null, function () { 
+                        const res = linkRespectingPrimaries(verts);                     // UNCHANGED
+                        console.log(`[LINK P↔S] pairs=${res.pairs}, changed=${res.changes}`); // UNCHANGED
+                        const sel = graph.getSelectionCell();                           // UNCHANGED
+                        if (sel && model.isVertex(sel)) highlightLinked(sel);           // UNCHANGED
+                    });
 
-                menu.addItem('Unlink Selected', null, function () {
-                    const V = verts;
-                    let pairs = 0, removed = 0;
-                    model.beginUpdate();
-                    try {
-                        for (let i = 0; i < V.length; i++) {
-                            for (let j = i + 1; j < V.length; j++) {
-                                const a = V[i], b = V[j];
-                                pairs++;
-                                if (removeBidirectionalLink(a, b)) {
-                                    removed++;
-                                    graph.refresh(a);
-                                    graph.refresh(b);
-                                }
-                            }
-                        }
-                    } finally { model.endUpdate(); }
-                    console.log(`[BULK UNLINK] pairs=${pairs}, removed=${removed}`);
-                });
+                    menu.addItem(`Unlink Selected (${linkedPairs})`, null, function () { 
+                        const res = unlinkRespectingPrimaries(verts);                   
+                        console.log(`[BULK UNLINK] pairs=${res.pairs}, removed=${res.removed}`); 
+                        const sel = graph.getSelectionCell();                           
+                        if (sel && model.isVertex(sel)) highlightLinked(sel);           
+                    });
+                }
             }
         }
 
@@ -1455,7 +1596,7 @@ function shouldShowEdgeInternal(source, target) {
     })();
 
 
-    // (FINAL OVERRIDE) Force selection of deepest visible child under mouse
+    // Force selection of deepest visible child under mouse
     (function enforceDirectChildSelection() {
         const graph = ui.editor.graph;
 
@@ -1544,7 +1685,7 @@ function shouldShowEdgeInternal(source, target) {
         console.log("[ManualLinker] Direct child selection (deepest under mouse) enabled.");
     })();
 
-    // (ADD) always read the current model inside helpers                    
+    // always read the current model inside helpers                    
     function M() { return graph.getModel(); }
 
     // ---------- Traversal helpers ----------

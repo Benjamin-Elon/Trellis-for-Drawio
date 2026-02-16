@@ -26,12 +26,12 @@ Draw.loadPlugin(function (ui) {
         '<circle cx="11" cy="11" r="10" fill="white" stroke="black" stroke-width="1"/>' +
         '<polygon points="9,6 13,11 9,16" fill="black"/></svg>'
     );
-    const TIME_ATTRS_ASC = ['transplant_date', 'sow_date'];                                    // CHANGE: order by transplant_date, else sow_date
+    const TIME_ATTRS_ASC = ['transplant_date', 'sow_date'];                                  
     const EPS = 0; // inclusive AABB; set >0 to treat near-miss as overlap
 
-    // NEW: overlap badges config                                                             // CHANGE
-    const MS_PER_DAY = 24 * 60 * 60 * 1000;                                                  // CHANGE
-    const OVERLAP_BADGE_W = 34;                                                              // CHANGE
+    // overlap badges config                                                             
+    const MS_PER_DAY = 24 * 60 * 60 * 1000;                                                  
+    const OVERLAP_BADGE_W = 34;                                                              
     const OVERLAP_BADGE_H = 18;
 
     // debounce
@@ -97,12 +97,12 @@ Draw.loadPlugin(function (ui) {
         return verts.filter(isTilerGroup);
     }
 
-    // -------------------- NEW: selection-aware helpers --------------------          // CHANGE
-let lastSelectedTGId = null;                                                      // CHANGE
-function clusterContainsId(key, cellId) {                                         // CHANGE
-    const st = clusterStates.get(key);                                            // CHANGE
-    return !!st && st.order.some(c => c.id === cellId);                           // CHANGE
-}                                                                                 // CHANGE
+    // -------------------- NEW: selection-aware helpers --------------------          
+    let lastSelectedTGId = null;                                                      
+    function clusterContainsId(key, cellId) {                                         
+        const st = clusterStates.get(key);                                            
+        return !!st && st.order.some(c => c.id === cellId);                           
+    }                                                                                 
 
 
     // -------------------- Time ordering --------------------
@@ -144,6 +144,13 @@ function clusterContainsId(key, cellId) {                                       
         return out;
     }
 
+    // -------------------- Config --------------------
+    const BASE_TG_OPACITY = '50';        
+    const SELECTED_TG_OPACITY = '100';    
+
+    // -------------------- Outline-only dimming (deep) --------------------
+
+
     // In setOutlineOnlyVisibleDeep, swap to use cached:                        
     function setOutlineOnlyVisibleDeep(roots, visible) {
         const cells = [];
@@ -159,10 +166,29 @@ function clusterContainsId(key, cellId) {                                       
             graph.setCellStyles('textOpacity', textV, cells);
             graph.setCellStyles('imageOpacity', imgV, cells);
             graph.setCellStyles('strokeOpacity', stroke, cells);
-            graph.setCellStyles('opacity', '100', cells);
         } finally {
             model.endUpdate();
         }
+    }
+
+    // deep opacity setter (root + descendants)
+    function setOpacityDeep(roots, opacityPct) {                                  
+        const cells = [];                                                        
+        (roots || []).forEach(r => cells.push(...collectVertexTreeCached(r)));    
+        if (!cells.length) return;                                               
+        model.beginUpdate();                                                     
+        try {                                                                    
+            graph.setCellStyles('opacity', String(opacityPct), cells);            
+        } finally {                                                              
+            model.endUpdate();                                                   
+        }                                                                        
+    }
+
+    // restore to baseline visuals for a tiler group (deep)
+    function restoreBaselineTGDeep(roots) {                                      
+        if (!roots || !roots.length) return;                                     
+        setOutlineOnlyVisibleDeep(roots, true);                              
+        setOpacityDeep(roots, BASE_TG_OPACITY);                             
     }
 
     // Invalidate when tree structure changes:                                   
@@ -232,8 +258,8 @@ function clusterContainsId(key, cellId) {                                       
                 btnNext: null,
                 badge: null,
                 dimmed: new Set(),
-                badgePrev: null,   // CHANGE
-                badgeNext: null    // CHANGE
+                badgePrev: null,   
+                badgeNext: null    
             };
             clusterStates.set(key, st);
         } else {
@@ -243,64 +269,64 @@ function clusterContainsId(key, cellId) {                                       
             st.currentIdx = k >= 0 ? k : 0;
             st.anchorId = st.order[st.currentIdx].id;
         }
-        return { key, st }; // CHANGE
-    }
-    
-
-    // Earliest start / latest end window for a group                                        // CHANGE
-    function plantingWindowOf(cell) {                                                           // CHANGE
-        // start = transplant_date if present, otherwise sow_date                                  // CHANGE
-        const start = parseISO(cell.getAttribute('transplant_date')) ||                           // CHANGE
-            parseISO(cell.getAttribute('sow_date'));                                    // CHANGE
-
-        // end = harvest_end only                                                                  // CHANGE
-        const end = parseISO(cell.getAttribute('harvest_end'));                                   // CHANGE
-
-        return (start && end && end >= start) ? { start, end } : null;                            // CHANGE
+        return { key, st }; 
     }
 
-    // Inclusive overlap in whole days                                                       // CHANGE
-    function inclusiveOverlapDays(w1, w2) {                                                   // CHANGE
-        if (!w1 || !w2) return null;                                                            // CHANGE
-        const s = Math.max(+w1.start, +w2.start);                                               // CHANGE
-        const e = Math.min(+w1.end, +w2.end);                                                   // CHANGE
-        if (e < s) return 0;                                                                    // CHANGE
-        return Math.floor((e - s) / MS_PER_DAY) + 1;                                            // CHANGE
+
+    // Earliest start / latest end window for a group                                        
+    function plantingWindowOf(cell) {                                                           
+        // start = transplant_date if present, otherwise sow_date                                  
+        const start = parseISO(cell.getAttribute('transplant_date')) ||                           
+            parseISO(cell.getAttribute('sow_date'));                                    
+
+        // end = harvest_end only                                                                  
+        const end = parseISO(cell.getAttribute('harvest_end'));                                   
+
+        return (start && end && end >= start) ? { start, end } : null;                            
+    }
+
+    // Inclusive overlap in whole days                                                       
+    function inclusiveOverlapDays(w1, w2) {                                                   
+        if (!w1 || !w2) return null;                                                            
+        const s = Math.max(+w1.start, +w2.start);                                               
+        const e = Math.min(+w1.end, +w2.end);                                                   
+        if (e < s) return 0;                                                                    
+        return Math.floor((e - s) / MS_PER_DAY) + 1;                                            
     }
 
     // -------------------- Overlap badges UI ----------------------------------------------
-    function styleOverlapBadge(el) {                                                          // CHANGE
-        el.style.position = 'absolute';                                                         // CHANGE
-        el.style.width = OVERLAP_BADGE_W + 'px';                                               // CHANGE
-        el.style.height = OVERLAP_BADGE_H + 'px';                                              // CHANGE
-        el.style.zIndex = '100000';                                                             // CHANGE
-        el.style.pointerEvents = 'none';                                                        // CHANGE
-        el.style.border = '1px solid #000';                                                     // CHANGE
-        el.style.borderRadius = '10px';                                                         // CHANGE
-        el.style.background = 'rgba(255,255,255,0.9)';                                          // CHANGE
-        el.style.font = '11px/18px sans-serif';                                                 // CHANGE
-        el.style.textAlign = 'center';                                                          // CHANGE
+    function styleOverlapBadge(el) {                                                          
+        el.style.position = 'absolute';                                                         
+        el.style.width = OVERLAP_BADGE_W + 'px';                                               
+        el.style.height = OVERLAP_BADGE_H + 'px';                                              
+        el.style.zIndex = '100000';                                                             
+        el.style.pointerEvents = 'none';                                                        
+        el.style.border = '1px solid #000';                                                     
+        el.style.borderRadius = '10px';                                                         
+        el.style.background = 'rgba(255,255,255,0.9)';                                          
+        el.style.font = '11px/18px sans-serif';                                                 
+        el.style.textAlign = 'center';                                                          
     }
 
-    function ensureOverlapBadgesFor(key) {                                                    // CHANGE
-        const host = getHost();                                                                 // CHANGE
-        const st = clusterStates.get(key); if (!st) return;                                     // CHANGE
-        if (!st.badgePrev) {                                                                    // CHANGE
-            st.badgePrev = document.createElement('div');                                         // CHANGE
-            styleOverlapBadge(st.badgePrev);                                                      // CHANGE
-            host.appendChild(st.badgePrev);                                                       // CHANGE
-        } else if (st.badgePrev.parentNode !== host) {                                          // CHANGE
-            host.appendChild(st.badgePrev);                                                       // CHANGE
-        }                                                                                       // CHANGE
-        if (!st.badgeNext) {                                                                    // CHANGE
-            st.badgeNext = document.createElement('div');                                         // CHANGE
-            styleOverlapBadge(st.badgeNext);                                                      // CHANGE
-            host.appendChild(st.badgeNext);                                                       // CHANGE
-        } else if (st.badgeNext.parentNode !== host) {                                          // CHANGE
-            host.appendChild(st.badgeNext);                                                       // CHANGE
-        }                                                                                       // CHANGE
-        st.badgePrev.style.display = '';                                                        // CHANGE
-        st.badgeNext.style.display = '';                                                        // CHANGE
+    function ensureOverlapBadgesFor(key) {                                                    
+        const host = getHost();                                                                 
+        const st = clusterStates.get(key); if (!st) return;                                     
+        if (!st.badgePrev) {                                                                    
+            st.badgePrev = document.createElement('div');                                         
+            styleOverlapBadge(st.badgePrev);                                                      
+            host.appendChild(st.badgePrev);                                                       
+        } else if (st.badgePrev.parentNode !== host) {                                          
+            host.appendChild(st.badgePrev);                                                       
+        }                                                                                       
+        if (!st.badgeNext) {                                                                    
+            st.badgeNext = document.createElement('div');                                         
+            styleOverlapBadge(st.badgeNext);                                                      
+            host.appendChild(st.badgeNext);                                                       
+        } else if (st.badgeNext.parentNode !== host) {                                          
+            host.appendChild(st.badgeNext);                                                       
+        }                                                                                       
+        st.badgePrev.style.display = '';                                                        
+        st.badgeNext.style.display = '';                                                        
     }
 
     function updateOverlapValuesFor(key) {
@@ -309,44 +335,44 @@ function clusterContainsId(key, cellId) {                                       
         const i = st.currentIdx;
         const curr = st.order[i];
         const wCurr = plantingWindowOf(curr);
-        console.debug('[Overlap] current', curr?.id, wCurr);                                    // CHANGE
-      
+        console.debug('[Overlap] current', curr?.id, wCurr);                                    
+
         let prevText = '–', prevDim = true;
         if (i > 0) {
-          const prevCell = st.order[i - 1];
-          const wPrev = plantingWindowOf(prevCell);
-          const d = inclusiveOverlapDays(wCurr, wPrev);
-          console.debug('[Overlap] prev', prevCell?.id, wPrev, 'days=', d);                     // CHANGE
-          if (d == null) { prevText = '–'; prevDim = true; } else { prevText = String(d); prevDim = (d === 0); }
+            const prevCell = st.order[i - 1];
+            const wPrev = plantingWindowOf(prevCell);
+            const d = inclusiveOverlapDays(wCurr, wPrev);
+            console.debug('[Overlap] prev', prevCell?.id, wPrev, 'days=', d);                     
+            if (d == null) { prevText = '–'; prevDim = true; } else { prevText = String(d); prevDim = (d === 0); }
         }
         let nextText = '–', nextDim = true;
         if (i < st.order.length - 1) {
-          const nextCell = st.order[i + 1];
-          const wNext = plantingWindowOf(nextCell);
-          const d = inclusiveOverlapDays(wCurr, wNext);
-          console.debug('[Overlap] next', nextCell?.id, wNext, 'days=', d);                     // CHANGE
-          if (d == null) { nextText = '–'; nextDim = true; } else { nextText = String(d); nextDim = (d === 0); }
+            const nextCell = st.order[i + 1];
+            const wNext = plantingWindowOf(nextCell);
+            const d = inclusiveOverlapDays(wCurr, wNext);
+            console.debug('[Overlap] next', nextCell?.id, wNext, 'days=', d);                     
+            if (d == null) { nextText = '–'; nextDim = true; } else { nextText = String(d); nextDim = (d === 0); }
         }
         st.badgePrev.textContent = prevText;
         st.badgePrev.style.opacity = prevDim ? '0.6' : '1.0';
         st.badgeNext.textContent = nextText;
         st.badgeNext.style.opacity = nextDim ? '0.6' : '1.0';
-      }
-      
-    function positionOverlapBadgesFor(key) {                                                // CHANGE
-        const st = clusterStates.get(key); if (!st) return;                                   // CHANGE
-        const box = getClusterBBox(key); if (!box) { hideUIFor(key); return; }                // CHANGE
-        // Place badges horizontally flush with where buttons would be                        // CHANGE
-        const prevLeft = Math.round(box.x - BTN_SIZE - BTN_INSET - OVERLAP_BADGE_W - 4);      // CHANGE
-        const prevTop  = Math.round(box.y + box.h/2 - OVERLAP_BADGE_H/2);                     // CHANGE
-        const nextLeft = Math.round(box.x + box.w + BTN_INSET + BTN_SIZE + 4);                // CHANGE
-        const nextTop  = prevTop;                                                             // CHANGE
-        st.badgePrev.style.left = prevLeft + 'px';                                            // CHANGE
-        st.badgePrev.style.top  = prevTop  + 'px';                                            // CHANGE
-        st.badgeNext.style.left = nextLeft + 'px';                                            // CHANGE
-        st.badgeNext.style.top  = nextTop  + 'px';                                            // CHANGE
-      }
-      
+    }
+
+    function positionOverlapBadgesFor(key) {                                                
+        const st = clusterStates.get(key); if (!st) return;                                   
+        const box = getClusterBBox(key); if (!box) { hideUIFor(key); return; }                
+        // Place badges horizontally flush with where buttons would be                        
+        const prevLeft = Math.round(box.x - BTN_SIZE - BTN_INSET - OVERLAP_BADGE_W - 4);      
+        const prevTop = Math.round(box.y + box.h / 2 - OVERLAP_BADGE_H / 2);                     
+        const nextLeft = Math.round(box.x + box.w + BTN_INSET + BTN_SIZE + 4);                
+        const nextTop = prevTop;                                                             
+        st.badgePrev.style.left = prevLeft + 'px';                                            
+        st.badgePrev.style.top = prevTop + 'px';                                            
+        st.badgeNext.style.left = nextLeft + 'px';                                            
+        st.badgeNext.style.top = nextTop + 'px';                                            
+    }
+
 
     // -------------------- Per-cluster UI helpers --------------------
     function styleBtn(el) {
@@ -408,25 +434,25 @@ function clusterContainsId(key, cellId) {                                       
         if (st.btnPrev) st.btnPrev.style.display = 'none';
         if (st.btnNext) st.btnNext.style.display = 'none';
         if (st.badge) st.badge.style.display = 'none';
-        if (st.badgePrev) st.badgePrev.style.display = 'none';                                  // CHANGE
-        if (st.badgeNext) st.badgeNext.style.display = 'none';                                  // CHANGE
+        if (st.badgePrev) st.badgePrev.style.display = 'none';                                  
+        if (st.badgeNext) st.badgeNext.style.display = 'none';                                  
     }
 
-    // NEW: compute cluster bounding box from member states                         // CHANGE
-    function getClusterBBox(key) {                                                 // CHANGE
-        const st = clusterStates.get(key); if (!st) return null;                   // CHANGE
-        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;  // CHANGE
-        for (const c of st.order) {                                                // CHANGE
-            const s = getState(c);                                                 // CHANGE
-            if (!s) continue;                                                      // CHANGE
-            if (s.x < minX) minX = s.x;                                            // CHANGE
-            if (s.y < minY) minY = s.y;                                            // CHANGE
-            const rx = s.x + s.width, ry = s.y + s.height;                         // CHANGE
-            if (rx > maxX) maxX = rx;                                              // CHANGE
-            if (ry > maxY) maxY = ry;                                              // CHANGE
-        }                                                                           // CHANGE
-        if (!isFinite(minX) || !isFinite(minY) || !isFinite(maxX) || !isFinite(maxY)) return null; // CHANGE
-        return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };               // CHANGE
+    // compute cluster bounding box from member states                         
+    function getClusterBBox(key) {                                                 
+        const st = clusterStates.get(key); if (!st) return null;                   
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;  
+        for (const c of st.order) {                                                
+            const s = getState(c);                                                 
+            if (!s) continue;                                                      
+            if (s.x < minX) minX = s.x;                                            
+            if (s.y < minY) minY = s.y;                                            
+            const rx = s.x + s.width, ry = s.y + s.height;                         
+            if (rx > maxX) maxX = rx;                                              
+            if (ry > maxY) maxY = ry;                                              
+        }                                                                           
+        if (!isFinite(minX) || !isFinite(minY) || !isFinite(maxX) || !isFinite(maxY)) return null; 
+        return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };               
     }
 
 
@@ -447,8 +473,8 @@ function clusterContainsId(key, cellId) {                                       
         st.badge.style.left = Math.round(cx - bw / 2) + 'px';
         st.badge.style.top = Math.round(box.y - bh - gap) + 'px';
 
-        updateOverlapValuesFor(key);                                                            // CHANGE
-        positionOverlapBadgesFor(key);                                                         // CHANGE
+        updateOverlapValuesFor(key);                                                            
+        positionOverlapBadgesFor(key);                                                         
     }
 
     function updateControlsVisibilityFor(key) {
@@ -460,10 +486,15 @@ function clusterContainsId(key, cellId) {                                       
 
     // -------------------- Per-cluster visibility --------------------
     function clearVisibilityFor(key) {
-        const st = clusterStates.get(key); if (!st || !st.dimmed.size) return;
-        const roots = Array.from(st.dimmed);
-        st.dimmed.clear();
-        setOutlineOnlyVisibleDeep(roots, true);
+        const st = clusterStates.get(key);
+        if (!st) return;
+
+        // Restore ALL members (not only st.dimmed), because current TG is never in dimmed. 
+        const members = (st.order || []).slice();                                 
+        if (!members.length) return;                                              
+
+        st.dimmed.clear();                                                        
+        restoreBaselineTGDeep(members);                                            
     }
 
     function applyVisibilityFor(key) {
@@ -473,18 +504,17 @@ function clusterContainsId(key, cellId) {                                       
         const curr = st.order[st.currentIdx];
         const nextDim = new Set(st.order.filter((c, i) => i !== st.currentIdx));
 
-        // Undim cells no longer in dim set                                          
-        const toUndim = [];
-        st.dimmed.forEach(c => { if (!nextDim.has(c)) toUndim.push(c); });
-        if (toUndim.length) setOutlineOnlyVisibleDeep(toUndim, true);
-
-        // Dim newly added                                                           
+        // Dim newly added
         const toDim = [];
         nextDim.forEach(c => { if (!st.dimmed.has(c)) toDim.push(c); });
-        if (toDim.length) setOutlineOnlyVisibleDeep(toDim, false);
+        if (toDim.length) {
+            setOutlineOnlyVisibleDeep(toDim, false);
+            setOpacityDeep(toDim, SELECTED_TG_OPACITY);                          
+        }
 
-        // Ensure current is fully visible                                            
+        // Ensure current is fully visible
         setOutlineOnlyVisibleDeep([curr], true);
+        setOpacityDeep([curr], SELECTED_TG_OPACITY);                            
 
         st.dimmed = nextDim;
     }
@@ -514,43 +544,42 @@ function clusterContainsId(key, cellId) {                                       
         positionUIFor(key);
         applyVisibilityFor(key);
 
-        updateOverlapValuesFor(key);                                                            // CHANGE
-        positionOverlapBadgesFor(key);                                                         // CHANGE
+        updateOverlapValuesFor(key);                                                            
+        positionOverlapBadgesFor(key);                                                         
     }
 
     // -------------------- Orchestration --------------------
-    function refreshClustersInParent(parent, preferredAnchorId, selectedId) {         // CHANGE
+    function refreshClustersInParent(parent, preferredAnchorId, selectedId) {
         const comps = buildAllComponentsInParent(parent);
         const liveKeys = new Set();
-    
+
         for (const members of comps) {
             const { key } = ensureClusterState(members, preferredAnchorId);
             liveKeys.add(key);
-    
-            // Only show UI/dimming for the cluster containing the selected tiler group // CHANGE
-            const isSelectedCluster = selectedId && members.some(c => c.id === selectedId); // CHANGE
-            if (!isSelectedCluster) {                                                 // CHANGE
-                hideUIFor(key);                                                       // CHANGE
-                clearVisibilityFor(key);                                              // CHANGE
-                continue;                                                             // CHANGE
-            }                                                                         
-    
+
+            // Only show UI/dimming for the cluster containing the selected tiler group
+            const isSelectedCluster = selectedId && members.some(c => c.id === selectedId);
+            if (!isSelectedCluster) {
+                hideUIFor(key);
+                clearVisibilityFor(key);                                       
+                continue;
+            }
+
             ensureButtonsFor(key);
             ensureBadgeFor(key);
             updateControlsVisibilityFor(key);
             positionUIFor(key);
             applyVisibilityFor(key);
         }
-    
+
         for (const [key, st] of clusterStates.entries()) {
             if (!liveKeys.has(key)) {
                 hideUIFor(key);
-                clearVisibilityFor(key);
+                clearVisibilityFor(key);                                          
                 clusterStates.delete(key);
             }
         }
     }
-    
 
     // Collect all tiler groups recursively under a root
     function collectAllTilerGroupsRec(root) {
@@ -603,54 +632,60 @@ function clusterContainsId(key, cellId) {                                       
     function refreshAllForSelectionOrAnchor() {
         const sel = graph.getSelectionCell();
         const preferred = sel && isTilerGroup(sel) ? sel.id : null;
-        lastSelectedTGId = preferred || null;                                         // CHANGE
-    
-        // If no tiler group is selected, hide all cluster UI and clear dimming       // CHANGE
-        if (!lastSelectedTGId) {                                                      // CHANGE
-            for (const [k] of clusterStates.entries()) {                              // CHANGE
-                hideUIFor(k);                                                         // CHANGE
-                clearVisibilityFor(k);                                                // CHANGE
-            }                                                                          // CHANGE
-            return;                                                                   // CHANGE
-        }                                                                             
-    
+        lastSelectedTGId = preferred || null;
+
+        // If no tiler group is selected, hide all cluster UI and restore baseline visuals.
+        if (!lastSelectedTGId) {
+            for (const [k] of clusterStates.entries()) {
+                hideUIFor(k);
+                clearVisibilityFor(k);                                          
+            }
+            return;
+        }
+
         // Drive clustering only for the selection's parent as before
         const selCell = model.getCell(lastSelectedTGId);
         const p = selCell ? model.getParent(selCell) : null;
         if (p) {
-            refreshClustersInParent(p, preferred, lastSelectedTGId);                  // CHANGE
+            refreshClustersInParent(p, preferred, lastSelectedTGId);                  
             // Prune clusters not under this parent
             for (const [k, st] of clusterStates.entries()) {
                 if (!st.order.every(c => model.getParent(c) === p)) {
-                    hideUIFor(k); clearVisibilityFor(k); clusterStates.delete(k);
+                    hideUIFor(k);
+                    clearVisibilityFor(k);
+                    clusterStates.delete(k);
                 }
             }
             return;
         }
-    
-        // Fallback (rare): scan parents but still gate by selected id                 // CHANGE
+
+        // Fallback (rare): scan parents but still gate by selected id                 
         const parents = parentsToScan();
         const live = new Set();
         parents.forEach(par => {
-            refreshClustersInParent(par, preferred, lastSelectedTGId);                // CHANGE
+            refreshClustersInParent(par, preferred, lastSelectedTGId);                
             for (const k of clusterStates.keys()) live.add(k);
         });
         for (const [k, st] of clusterStates.entries()) {
             const exists = st.order.every(c => !!model.getCell(c.id));
-            if (!exists) { hideUIFor(k); clearVisibilityFor(k); clusterStates.delete(k); }
+            if (!exists) {
+                hideUIFor(k);
+                clearVisibilityFor(k);
+                clusterStates.delete(k);
+            }
         }
     }
-    
+
 
 
     function repositionAllUI() {
         for (const [key, st] of clusterStates.entries()) {
-            // Only reposition visible UI (selected cluster only)                      // CHANGE
+            // Only reposition visible UI (selected cluster only)                      
             if (!st.btnPrev || st.btnPrev.style.display === 'none') continue;
             positionUIFor(key);
         }
     }
-    
+
 
 
     // -------------------- Events --------------------
