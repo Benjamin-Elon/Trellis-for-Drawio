@@ -4,12 +4,12 @@ Several of the plugins depend on local database access, requiring the slightly m
 
 **Features:**
 
-- Create yearly business plans.
+- Create comprehensive yearly business/garden plans.
 - Draw beds, garden zones, and modules.
 - Drag crops into place and generate schedules based on climate, GDD, frost windows, and plant traits.
 - Plan multi-crop successions and turnovers.
-- Manage tasks with Automated, linked Kanban boards.
-- Build multi-person workflows using role cards and team modules.
+- Manage and coordinate tasks with Automated, linked Kanban boards.
+- Build multi-person workflows and ownership using role cards and team modules.
 - Automatically track and visualize when diagram elements were created or edited, using time-based coloring, filtering, and navigation to explore change history directly on the canvas.
 - In addition to all the base features included in Draw.io
 
@@ -57,10 +57,11 @@ In the root directory of this repo:
 5. **Have Fun and contribute if you so desire!**
 
 **High priority TODO Features:**
-- Extend Dashboard plugin to include year planning
+- Add automatic fit garden plantings to year plan plugin
 - Add users plugin and extend changeMap plugin with user selector
-- Extend garden layout plugin to show scale on selected cells
 - Extend planner to include bed turnover mode
-- Add task deatailing for kanban boards
+- Add task detailing for kanban boards
 - Add Gantt chart plugin for timeline schedule view
 - Extend scheduler with proper perennial scheduling.
+- Add inventory Plugin
+- Add labor plugin (depends on inventory plugin)
