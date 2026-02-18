@@ -39,9 +39,9 @@ Draw.loadPlugin(function (ui) {
     const ATTR_DISABLED_PLANTS = "disabled_plants";
 
     // --------------- Tiler group scaling font size -----------------
-    const GROUP_BASE_AREA_PX2 = 240 * 240; 
-    const GROUP_LABEL_FONT_MIN_PX = 10;    
-    const GROUP_LABEL_FONT_MAX_PX = 100;    
+    const GROUP_BASE_AREA_PX2 = 240 * 240;
+    const GROUP_LABEL_FONT_MIN_PX = 10;
+    const GROUP_LABEL_FONT_MAX_PX = 100;
 
 
     // -------------------- Debug helper ------------------
@@ -60,13 +60,13 @@ Draw.loadPlugin(function (ui) {
         return Math.max(lo, Math.min(hi, v));
     }
 
-    function tileFontPx(iconDiamPx) { 
+    function tileFontPx(iconDiamPx) {
         // Scale label with circle size; clamp for readability
         const fs = Math.round(iconDiamPx * 0.45);
         return clamp(fs, 8, 50);
     }
 
-    function groupLabelMetrics(groupCell) { 
+    function groupLabelMetrics(groupCell) {
         const g = groupCell && groupCell.getGeometry ? groupCell.getGeometry() : null;
         const w = g ? Math.max(1, Number(g.width) || 1) : 1;
         const h = g ? Math.max(1, Number(g.height) || 1) : 1;
@@ -84,7 +84,7 @@ Draw.loadPlugin(function (ui) {
         return { fontPx, bandPx };
     }
 
-    function upsertStyleKV(styleStr, key, value) { 
+    function upsertStyleKV(styleStr, key, value) {
         const st = String(styleStr || "");
         const parts = st.split(";").filter(Boolean);
         const out = [];
@@ -104,15 +104,15 @@ Draw.loadPlugin(function (ui) {
         return out.join(";") + ";";
     }
 
-    function applyGroupLabelFont(model, groupCell) { 
+    function applyGroupLabelFont(model, groupCell) {
         if (!model || !groupCell) return;
         const { fontPx } = groupLabelMetrics(groupCell);
         const next = upsertStyleKV(getStyleSafe(groupCell), "fontSize", String(fontPx));
         if (next !== getStyleSafe(groupCell)) model.setStyle(groupCell, next);
     }
 
-    function plantCircleStyle(fontPx = 10) { 
-        const fs = clamp(Math.round(Number(fontPx) || 10), 6, 24); 
+    function plantCircleStyle(fontPx = 10) {
+        const fs = clamp(Math.round(Number(fontPx) || 10), 6, 24);
         return [
             "shape=ellipse",
             "aspect=fixed",
@@ -121,7 +121,7 @@ Draw.loadPlugin(function (ui) {
             "strokeWidth=1",
             "fillColor=#ffffff",
             "fillOpacity=50",
-            `fontSize=${fs}`, 
+            `fontSize=${fs}`,
             "align=center",
             "verticalAlign=middle",
             "html=0",
@@ -218,45 +218,69 @@ Draw.loadPlugin(function (ui) {
 
     // ------------------- Layering (garden beds, other, tiler groups) ----------------
 
-    function reorderModuleChildrenForLayering(model, moduleCell) {
-        if (!moduleCell || !isGardenModule(moduleCell)) return;
+    let __REORDERING = false;
 
-        // Only reorder direct children
+    function reorderModuleChildrenForLayering(model, moduleCell) {
+        if (!model || !moduleCell || !isGardenModule(moduleCell)) return;
+        if (__REORDERING) return; // re-entrancy guard
+    
         const n = model.getChildCount(moduleCell);
         if (!n || n <= 1) return;
-
+    
+        // Collect children in current order
+        const children = [];
+        for (let i = 0; i < n; i++) {
+            const ch = model.getChildAt(moduleCell, i);
+            if (ch) children.push(ch);
+        }
+        if (children.length <= 1) return;
+    
+        // Partition while preserving relative order within each bucket
         const beds = [];
         const groups = [];
         const others = [];
-
-        for (let i = 0; i < n; i++) {
-            const ch = model.getChildAt(moduleCell, i);
-            if (!ch) continue;
+    
+        for (const ch of children) {
             if (isGardenBed(ch)) beds.push(ch);
             else if (isTilerGroup(ch)) groups.push(ch);
             else others.push(ch);
         }
-
-        // Already valid?
-        // Condition: no bed appears after any group.
+    
+        // Fast check: already valid (no bed after any group)
         let seenGroup = false;
         let ok = true;
-        for (let i = 0; i < n; i++) {
-            const ch = model.getChildAt(moduleCell, i);
+        for (const ch of children) {
             if (isTilerGroup(ch)) seenGroup = true;
             else if (isGardenBed(ch) && seenGroup) { ok = false; break; }
         }
         if (ok) return;
-
-        // Desired order: beds ... others ... groups (groups highest child index)
+    
         const ordered = beds.concat(others, groups);
-
-        // Apply by moving each child to its new index.
-        // Using model.add(parent, child, index) produces undoable mxChildChange edits.
-        for (let i = 0; i < ordered.length; i++) {
-            model.add(moduleCell, ordered[i], i);
+    
+        // If it’s the same order, do nothing (prevents redundant undo edits)
+        let same = (ordered.length === children.length);
+        if (same) {
+            for (let i = 0; i < ordered.length; i++) {
+                if (ordered[i] !== children[i]) { same = false; break; }
+            }
         }
-    }
+        if (same) return;
+    
+        __REORDERING = true;
+        model.beginUpdate();
+        try {
+            // Move only the ones that are out of place (minimizes undo noise)
+            for (let i = 0; i < ordered.length; i++) {
+                const ch = ordered[i];
+                if (model.getChildAt(moduleCell, i) !== ch) {
+                    model.add(moduleCell, ch, i);
+                }
+            }
+        } finally {
+            model.endUpdate();
+            __REORDERING = false;
+        }
+    }    
 
 
     // ----------------- Tiler group helpers ----------------------
@@ -312,8 +336,8 @@ Draw.loadPlugin(function (ui) {
         model.beginUpdate();
         try {
             // Snapshot layout BEFORE removing children so expand can restore it. 
-            const snap = captureLodLayoutSnapshot(graph, groupCell); 
-            writeLodLayoutSnapshot(model, groupCell, snap); 
+            const snap = captureLodLayoutSnapshot(graph, groupCell);
+            writeLodLayoutSnapshot(model, groupCell, snap);
 
             clearChildren(graph, groupCell); // wipe current children under group
 
@@ -395,15 +419,15 @@ Draw.loadPlugin(function (ui) {
     }
 
     // ---------------- LOD layout snapshot ----------------
-    const ATTR_LOD_LAYOUT_SNAPSHOT = "lod_layout_snapshot_v1"; 
-    const ATTR_LOD_LAYOUT_SNAPSHOT_AT = "lod_layout_snapshot_at"; 
+    const ATTR_LOD_LAYOUT_SNAPSHOT = "lod_layout_snapshot_v1";
+    const ATTR_LOD_LAYOUT_SNAPSHOT_AT = "lod_layout_snapshot_at";
 
-    function nowIso() { 
+    function nowIso() {
         try { return new Date().toISOString(); } catch (_) { return ""; }
     }
 
     // Capture ONLY the tiles that need preserving (dirty or non-auto) keyed by r,c. 
-    function captureLodLayoutSnapshot(graph, groupCell) { 
+    function captureLodLayoutSnapshot(graph, groupCell) {
         if (!groupCell || !isTilerGroup(groupCell)) return null;
 
         const kids = graph.getChildVertices(groupCell) || [];
@@ -443,7 +467,7 @@ Draw.loadPlugin(function (ui) {
         };
     }
 
-    function writeLodLayoutSnapshot(model, groupCell, snapObj) { 
+    function writeLodLayoutSnapshot(model, groupCell, snapObj) {
         if (!model || !groupCell) return;
         const json = snapObj ? JSON.stringify(snapObj) : "";
         setCellAttrsNoTxn(model, groupCell, {
@@ -452,7 +476,7 @@ Draw.loadPlugin(function (ui) {
         });
     }
 
-    function readLodLayoutSnapshot(groupCell) { 
+    function readLodLayoutSnapshot(groupCell) {
         const raw = getXmlAttr(groupCell, ATTR_LOD_LAYOUT_SNAPSHOT, "");
         if (!raw) return null;
         const obj = safeJsonParse(raw, null);
@@ -461,7 +485,7 @@ Draw.loadPlugin(function (ui) {
     }
 
     // Map snapshot tiles by "r,c" for fast lookup. 
-    function snapshotTileMap(snapObj) { 
+    function snapshotTileMap(snapObj) {
         const map = new Map();
         if (!snapObj || !Array.isArray(snapObj.tiles)) return map;
         for (const t of snapObj.tiles) {
@@ -481,8 +505,8 @@ Draw.loadPlugin(function (ui) {
 
     function expandTiles(graph, groupCell, abbr, spacingXpx, spacingYpx, iconDiamPx) {
 
-        const { bandPx } = groupLabelMetrics(groupCell); 
-        const fontPx = tileFontPx(iconDiamPx); 
+        const { bandPx } = groupLabelMetrics(groupCell);
+        const fontPx = tileFontPx(iconDiamPx);
 
         const model = graph.getModel();
         model.beginUpdate();
@@ -503,11 +527,11 @@ Draw.loadPlugin(function (ui) {
             }
 
             // --- NEW: restore dirty/manual tiles from snapshot by slot (r,c) ---
-            const snapObj = readLodLayoutSnapshot(groupCell); 
-            const snapMap = snapshotTileMap(snapObj); 
+            const snapObj = readLodLayoutSnapshot(groupCell);
+            const snapMap = snapshotTileMap(snapObj);
 
             const x0Rel = GROUP_PADDING_PX + spacingXpx / 2;
-            const y0Rel = GROUP_PADDING_PX + (bandPx || groupLabelMetrics(groupCell).bandPx) + spacingYpx / 2; 
+            const y0Rel = GROUP_PADDING_PX + (bandPx || groupLabelMetrics(groupCell).bandPx) + spacingYpx / 2;
 
             const cells = [];
             for (let r = 0; r < rows; r++) {
@@ -516,28 +540,28 @@ Draw.loadPlugin(function (ui) {
                 for (let c = 0; c < cols; c++) {
                     if (disabledSet2.has(`${r},${c}`)) continue;
 
-                    const snap = snapMap.get(`${r},${c}`); 
-                    let geo; 
-                    let autoAttr = "1"; 
-                    let dirtyAttr = "0"; 
+                    const snap = snapMap.get(`${r},${c}`);
+                    let geo;
+                    let autoAttr = "1";
+                    let dirtyAttr = "0";
 
-                    if (snap) { 
+                    if (snap) {
                         // Use saved geometry, but normalize size to current iconDiam for coherence. 
                         const sx = Number(snap.x), sy = Number(snap.y);
                         const okXY = Number.isFinite(sx) && Number.isFinite(sy);
 
-                        const w = iconDiamPx; 
-                        const h = iconDiamPx; 
+                        const w = iconDiamPx;
+                        const h = iconDiamPx;
 
                         if (okXY) {
-                            geo = new mxGeometry(sx, sy, w, h); 
-                            autoAttr = String(snap.auto || "0"); 
-                            dirtyAttr = String(snap.dirty || "1"); 
+                            geo = new mxGeometry(sx, sy, w, h);
+                            autoAttr = String(snap.auto || "0");
+                            dirtyAttr = String(snap.dirty || "1");
                         }
                     }
 
                     // Default grid placement for non-snap tiles 
-                    if (!geo) { 
+                    if (!geo) {
                         const cxRel = x0Rel + c * spacingXpx;
                         geo = new mxGeometry(
                             cxRel - iconDiamPx / 2,
@@ -549,15 +573,15 @@ Draw.loadPlugin(function (ui) {
 
                     const vVal = createXmlValue("PlantTile", {
                         plant_tiler: "1",
-                        auto: autoAttr,           
+                        auto: autoAttr,
                         abbr: abbr,
                         label: abbr,
                         tile_r: String(r),
                         tile_c: String(c),
-                        dirty: dirtyAttr,         
+                        dirty: dirtyAttr,
                     });
 
-                    const v = new mxCell(vVal, geo, plantCircleStyle(fontPx || tileFontPx(iconDiamPx))); 
+                    const v = new mxCell(vVal, geo, plantCircleStyle(fontPx || tileFontPx(iconDiamPx)));
                     v.setVertex(true);
                     v.setConnectable(false);
                     cells.push(v);
@@ -827,7 +851,7 @@ Draw.loadPlugin(function (ui) {
         return !!cell && cell.getAttribute && cell.getAttribute("garden_bed") === "1";
     }
 
-    function findGardenModuleAncestor(graph, cell) { 
+    function findGardenModuleAncestor(graph, cell) {
         const m = graph.getModel();
         let cur = cell;
         while (cur) {
@@ -837,102 +861,102 @@ Draw.loadPlugin(function (ui) {
         return null;
     }
 
-    function bedAtGraphPoint(graph, moduleCell, gx, gy) { 
+    function bedAtGraphPoint(graph, moduleCell, gx, gy) {
         // Use mxGraph hit-testing so "actual shape" is used, not rectangular bounds. 
         // Ignore everything except garden beds. 
-        const ignoreFn = (c) => !isGardenBed(c); 
-        return graph.getCellAt(gx, gy, moduleCell, true, false, ignoreFn); 
+        const ignoreFn = (c) => !isGardenBed(c);
+        return graph.getCellAt(gx, gy, moduleCell, true, false, ignoreFn);
     }
 
-    function plantCenterInGraphCoords(graph, groupCell, plantCell) { 
+    function plantCenterInGraphCoords(graph, groupCell, plantCell) {
         // Assumption: group is a direct child of the garden module (as your system intends). 
-        const model = graph.getModel(); 
-        const moduleCell = findGardenModuleAncestor(graph, groupCell); 
-        if (!moduleCell) return null; 
+        const model = graph.getModel();
+        const moduleCell = findGardenModuleAncestor(graph, groupCell);
+        if (!moduleCell) return null;
 
-        const mg = moduleCell.getGeometry && moduleCell.getGeometry(); 
-        const gg = groupCell.getGeometry && groupCell.getGeometry(); 
-        const cg = plantCell.getGeometry && plantCell.getGeometry(); 
-        if (!mg || !gg || !cg) return null; 
+        const mg = moduleCell.getGeometry && moduleCell.getGeometry();
+        const gg = groupCell.getGeometry && groupCell.getGeometry();
+        const cg = plantCell.getGeometry && plantCell.getGeometry();
+        if (!mg || !gg || !cg) return null;
 
-        return { 
-            moduleCell, 
-            x: (mg.x + gg.x + cg.x + (cg.width / 2)), 
-            y: (mg.y + gg.y + cg.y + (cg.height / 2)), 
+        return {
+            moduleCell,
+            x: (mg.x + gg.x + cg.x + (cg.width / 2)),
+            y: (mg.y + gg.y + cg.y + (cg.height / 2)),
         };
     }
 
-    function trimGroupToSingleGardenBed(graph, groupCell) { 
-        if (!groupCell || !isTilerGroup(groupCell)) return { removed: 0, skipped: true }; 
-        if (isCollapsedLOD(groupCell)) return { removed: 0, skipped: true, reason: "lod_collapsed" }; 
+    function trimGroupToSingleGardenBed(graph, groupCell) {
+        if (!groupCell || !isTilerGroup(groupCell)) return { removed: 0, skipped: true };
+        if (isCollapsedLOD(groupCell)) return { removed: 0, skipped: true, reason: "lod_collapsed" };
 
-        const model = graph.getModel(); 
-        const kids = graph.getChildVertices(groupCell) || []; 
-        const circles = kids.filter(k => isPlantCircle(k)); 
-        if (!circles.length) return { removed: 0, skipped: true, reason: "no_circles" }; 
+        const model = graph.getModel();
+        const kids = graph.getChildVertices(groupCell) || [];
+        const circles = kids.filter(k => isPlantCircle(k));
+        if (!circles.length) return { removed: 0, skipped: true, reason: "no_circles" };
 
         // Map each circle -> bed (shape hit-test) 
-        const bedIds = new Set(); 
-        const circleBed = new Map(); 
+        const bedIds = new Set();
+        const circleBed = new Map();
 
-        for (const c of circles) { 
-            const pt = plantCenterInGraphCoords(graph, groupCell, c); 
-            if (!pt) { circleBed.set(c, null); continue; } 
+        for (const c of circles) {
+            const pt = plantCenterInGraphCoords(graph, groupCell, c);
+            if (!pt) { circleBed.set(c, null); continue; }
 
-            const bed = bedAtGraphPoint(graph, pt.moduleCell, pt.x, pt.y); 
-            circleBed.set(c, bed || null); 
-            if (bed && bed.id) bedIds.add(bed.id); 
-        } 
-
-        // Ignore tiler groups that are over multiple beds (or no bed). 
-        if (bedIds.size !== 1) { 
-            return { removed: 0, skipped: true, reason: bedIds.size === 0 ? "no_bed" : "multiple_beds" }; 
-        } 
-
-        const bedId = Array.from(bedIds)[0]; 
-
-        // Remove circles not in the single bed (including null). 
-        const toRemove = []; 
-        const disabledSet = readDisabledSet(groupCell); 
-        let disabledAdded = 0; 
-
-        for (const c of circles) { 
-            const bed = circleBed.get(c); 
-            if (!bed || bed.id !== bedId) { 
-                toRemove.push(c); 
-                if (hasTileRC(c)) { 
-                    const r = Number(c.getAttribute("tile_r")); 
-                    const cc = Number(c.getAttribute("tile_c")); 
-                    if (Number.isFinite(r) && Number.isFinite(cc)) { 
-                        const key = `${r},${cc}`; 
-                        if (!disabledSet.has(key)) { disabledSet.add(key); disabledAdded++; } 
-                    } 
-                } 
-            } 
-        } 
-
-        if (!toRemove.length) return { removed: 0, skipped: false }; 
-
-        model.beginUpdate(); 
-        try {
-            if (disabledAdded) writeDisabledSet(model, groupCell, disabledSet); 
-            graph.removeCells(toRemove); 
-
-            // Recompute counts/yield to keep ATTR_PLANT_COUNT* consistent. 
-            const abbr = groupCell.getAttribute("plant_abbr") || "?"; 
-            const sx = toPx(Number(groupCell.getAttribute("spacing_x_cm") || groupCell.getAttribute("spacing_cm") || "30")); 
-            const sy = toPx(Number(groupCell.getAttribute("spacing_y_cm") || groupCell.getAttribute("spacing_cm") || "30")); 
-            const { rows, cols, count } = computeGridStatsXY(groupCell, sx, sy); 
-            pruneDisabledToGrid(model, groupCell, rows, cols); 
-            const disabledSet2 = readDisabledSet(groupCell); 
-            const { actual } = applyCounts(model, groupCell, count, disabledSet2); 
-            updateGroupYield(model, groupCell, { abbr, countOverride: actual }); 
-        } finally {
-            model.endUpdate(); 
+            const bed = bedAtGraphPoint(graph, pt.moduleCell, pt.x, pt.y);
+            circleBed.set(c, bed || null);
+            if (bed && bed.id) bedIds.add(bed.id);
         }
 
-        graph.refresh(groupCell); 
-        return { removed: toRemove.length, skipped: false, bedId }; 
+        // Ignore tiler groups that are over multiple beds (or no bed). 
+        if (bedIds.size !== 1) {
+            return { removed: 0, skipped: true, reason: bedIds.size === 0 ? "no_bed" : "multiple_beds" };
+        }
+
+        const bedId = Array.from(bedIds)[0];
+
+        // Remove circles not in the single bed (including null). 
+        const toRemove = [];
+        const disabledSet = readDisabledSet(groupCell);
+        let disabledAdded = 0;
+
+        for (const c of circles) {
+            const bed = circleBed.get(c);
+            if (!bed || bed.id !== bedId) {
+                toRemove.push(c);
+                if (hasTileRC(c)) {
+                    const r = Number(c.getAttribute("tile_r"));
+                    const cc = Number(c.getAttribute("tile_c"));
+                    if (Number.isFinite(r) && Number.isFinite(cc)) {
+                        const key = `${r},${cc}`;
+                        if (!disabledSet.has(key)) { disabledSet.add(key); disabledAdded++; }
+                    }
+                }
+            }
+        }
+
+        if (!toRemove.length) return { removed: 0, skipped: false };
+
+        model.beginUpdate();
+        try {
+            if (disabledAdded) writeDisabledSet(model, groupCell, disabledSet);
+            graph.removeCells(toRemove);
+
+            // Recompute counts/yield to keep ATTR_PLANT_COUNT* consistent. 
+            const abbr = groupCell.getAttribute("plant_abbr") || "?";
+            const sx = toPx(Number(groupCell.getAttribute("spacing_x_cm") || groupCell.getAttribute("spacing_cm") || "30"));
+            const sy = toPx(Number(groupCell.getAttribute("spacing_y_cm") || groupCell.getAttribute("spacing_cm") || "30"));
+            const { rows, cols, count } = computeGridStatsXY(groupCell, sx, sy);
+            pruneDisabledToGrid(model, groupCell, rows, cols);
+            const disabledSet2 = readDisabledSet(groupCell);
+            const { actual } = applyCounts(model, groupCell, count, disabledSet2);
+            updateGroupYield(model, groupCell, { abbr, countOverride: actual });
+        } finally {
+            model.endUpdate();
+        }
+
+        graph.refresh(groupCell);
+        return { removed: toRemove.length, skipped: false, bedId };
     }
 
 
@@ -1376,7 +1400,7 @@ Draw.loadPlugin(function (ui) {
         const spacingYpx = toPx(spacingYcm);
 
         if (isCollapsedLOD(groupCell)) {
-            updateCollapsedSummaryInPlace(graph, groupCell, abbr, spacingXpx, spacingYpx);
+            collapseToSummary(graph, groupCell, abbr, spacingXpx, spacingYpx);
             graph.refresh(groupCell);
             return;
         }
@@ -1615,44 +1639,44 @@ Draw.loadPlugin(function (ui) {
 
 
             // ----- Trim to Garden Bed (selection-aware) --------------------------------------- 
-            try { 
-                const candidates = []; 
-                for (const g of selectedGroups) { 
-                    const mod = findGardenModuleAncestor(graph, g); 
-                    if (!mod) continue; 
-                    const mg = mod.getGeometry && mod.getGeometry(); 
-                    const gg = g.getGeometry && g.getGeometry(); 
-                    if (!mg || !gg) continue; 
+            try {
+                const candidates = [];
+                for (const g of selectedGroups) {
+                    const mod = findGardenModuleAncestor(graph, g);
+                    if (!mod) continue;
+                    const mg = mod.getGeometry && mod.getGeometry();
+                    const gg = g.getGeometry && g.getGeometry();
+                    if (!mg || !gg) continue;
 
                     // Quick eligibility check: bed under group center (shape hit-test). 
-                    const cx = mg.x + gg.x + gg.width / 2; 
-                    const cy = mg.y + gg.y + gg.height / 2; 
-                    const bed = bedAtGraphPoint(graph, mod, cx, cy); 
-                    if (bed && isGardenBed(bed)) candidates.push(g); 
-                } 
+                    const cx = mg.x + gg.x + gg.width / 2;
+                    const cy = mg.y + gg.y + gg.height / 2;
+                    const bed = bedAtGraphPoint(graph, mod, cx, cy);
+                    if (bed && isGardenBed(bed)) candidates.push(g);
+                }
 
-                if (candidates.length) { 
-                    menu.addItem(`Trim to Garden Bed (${candidates.length})`, null, function () { 
-                        const model = graph.getModel(); 
-                        let totalRemoved = 0; 
-                        let trimmedGroups = 0; 
+                if (candidates.length) {
+                    menu.addItem(`Trim to Garden Bed (${candidates.length})`, null, function () {
+                        const model = graph.getModel();
+                        let totalRemoved = 0;
+                        let trimmedGroups = 0;
 
-                        model.beginUpdate(); 
+                        model.beginUpdate();
                         try {
-                            for (const g of candidates) { 
-                                const r = trimGroupToSingleGardenBed(graph, g); 
-                                if (!r.skipped) trimmedGroups++; 
-                                totalRemoved += (r.removed || 0); 
-                            } 
+                            for (const g of candidates) {
+                                const r = trimGroupToSingleGardenBed(graph, g);
+                                if (!r.skipped) trimmedGroups++;
+                                totalRemoved += (r.removed || 0);
+                            }
                         } finally {
-                            model.endUpdate(); 
+                            model.endUpdate();
                         }
 
                         // Keep selection stable; refresh is already done per group. 
-                        try { mxLog.debug(`[PlantTiler][trim] groups=${trimmedGroups}/${candidates.length} removed=${totalRemoved}`); } catch (_) { } 
-                    }); 
-                } 
-            } catch (_) { } 
+                        try { mxLog.debug(`[PlantTiler][trim] groups=${trimmedGroups}/${candidates.length} removed=${totalRemoved}`); } catch (_) { }
+                    });
+                }
+            } catch (_) { }
 
             if (selectedGroups.length) {
                 const st = selectionGroupState(selectedGroups);
@@ -1877,7 +1901,7 @@ Draw.loadPlugin(function (ui) {
 
             const local = cg.clone();
             local.x = cg.x - groupX;
-            local.y = (cg.y - groupY) + bandPx; 
+            local.y = (cg.y - groupY) + bandPx;
 
             c.setGeometry(local);
             graph.addCell(c, group);
@@ -1896,9 +1920,9 @@ Draw.loadPlugin(function (ui) {
 
     function computeGridStatsXY(groupCell, spacingXpx, spacingYpx) {
         const g = groupCell.getGeometry();
-        const { bandPx } = groupLabelMetrics(groupCell); 
+        const { bandPx } = groupLabelMetrics(groupCell);
         const usableW = Math.max(0, g.width - GROUP_PADDING_PX * 2);
-        const usableH = Math.max(0, g.height - GROUP_PADDING_PX * 2 - bandPx); 
+        const usableH = Math.max(0, g.height - GROUP_PADDING_PX * 2 - bandPx);
         if (usableW <= 0 || usableH <= 0) return { rows: 0, cols: 0, count: 0 };
         const cols = Math.max(1, Math.floor(usableW / spacingXpx));
         const rows = Math.max(1, Math.floor(usableH / spacingYpx));
@@ -1918,7 +1942,6 @@ Draw.loadPlugin(function (ui) {
         // auto=1 is your signal for generated tiles; keep RC as fallback                     
         return cell.getAttribute("auto") === "1";
     }
-
 
     graph.addListener(mxEvent.CELLS_ADDED, function (sender, evt) {
         const cells = evt.getProperty("cells") || [];
@@ -2225,10 +2248,10 @@ Draw.loadPlugin(function (ui) {
         });
     })();
 
-    function minGroupSizePx(spacingXpx, spacingYpx, bandPx) { 
-        const b = Number.isFinite(Number(bandPx)) ? Number(bandPx) : GROUP_LABEL_BAND_PX; 
+    function minGroupSizePx(spacingXpx, spacingYpx, bandPx) {
+        const b = Number.isFinite(Number(bandPx)) ? Number(bandPx) : GROUP_LABEL_BAND_PX;
         const minW = (GROUP_PADDING_PX * 2) + spacingXpx;
-        const minH = (GROUP_PADDING_PX * 2) + b + spacingYpx; 
+        const minH = (GROUP_PADDING_PX * 2) + b + spacingYpx;
         return { minW, minH };
     }
 
@@ -2261,7 +2284,7 @@ Draw.loadPlugin(function (ui) {
             const snap = gId ? snapshots.get(gId) : null;
             if (!snap) continue;
 
-            const { minW, minH } = minGroupSizePx(snap.spacingXpx, snap.spacingYpx, snap.bandPx); 
+            const { minW, minH } = minGroupSizePx(snap.spacingXpx, snap.spacingYpx, snap.bandPx);
             const nextW = Math.max(minW, b.width);
             const nextH = Math.max(minH, b.height);
 
@@ -2319,8 +2342,8 @@ Draw.loadPlugin(function (ui) {
                         spacingYpx,
                         iconDiamPx,
                         disabledSet,
-                        bandPx,   
-                        fontPx    
+                        bandPx,
+                        fontPx
                     );
 
                     if (v) {
@@ -2333,17 +2356,16 @@ Draw.loadPlugin(function (ui) {
             model.endUpdate();
         }
 
-        if (added) graph.refresh(groupCell);
         return added;
     }
 
 
 
-    function addTileAtSlot(graph, groupCell, abbr, r, c, spacingXpx, spacingYpx, iconDiamPx, disabledSet, bandPx, fontPx) { 
+    function addTileAtSlot(graph, groupCell, abbr, r, c, spacingXpx, spacingYpx, iconDiamPx, disabledSet, bandPx, fontPx) {
         if (disabledSet && disabledSet.has(`${r},${c}`)) return null;
 
         const x0Rel = GROUP_PADDING_PX + spacingXpx / 2;
-        const y0Rel = GROUP_PADDING_PX + (bandPx || GROUP_LABEL_BAND_PX) + spacingYpx / 2; 
+        const y0Rel = GROUP_PADDING_PX + (bandPx || GROUP_LABEL_BAND_PX) + spacingYpx / 2;
 
         const cxRel = x0Rel + c * spacingXpx;
         const cyRel = y0Rel + r * spacingYpx;
@@ -2365,7 +2387,7 @@ Draw.loadPlugin(function (ui) {
             dirty: "0",
         });
 
-        const v = new mxCell(vVal, geo, plantCircleStyle(fontPx)); 
+        const v = new mxCell(vVal, geo, plantCircleStyle(fontPx));
         v.setVertex(true);
         v.setConnectable(false);
 
@@ -2382,8 +2404,8 @@ Draw.loadPlugin(function (ui) {
         // If LOD collapsed, don’t maintain tiles. Keep your existing collapse/summary behavior.
         if (isCollapsedLOD(groupCell)) return;
 
-        const { bandPx } = groupLabelMetrics(groupCell); 
-        const fontPx = tileFontPx(iconDiamPx); 
+        const { bandPx } = groupLabelMetrics(groupCell);
+        const fontPx = tileFontPx(iconDiamPx);
 
         const slotMap = buildSlotMap(graph, groupCell);
 
@@ -2395,7 +2417,7 @@ Draw.loadPlugin(function (ui) {
                     for (let c = 0; c < next.cols; c++) {
                         const key = `${r},${c}`;
                         if (slotMap.has(key)) continue;
-                        const v = addTileAtSlot(graph, groupCell, abbr, r, c, spacingXpx, spacingYpx, iconDiamPx, disabledSet, bandPx, fontPx); 
+                        const v = addTileAtSlot(graph, groupCell, abbr, r, c, spacingXpx, spacingYpx, iconDiamPx, disabledSet, bandPx, fontPx);
                         if (v) slotMap.set(key, v);
                     }
                 }
@@ -2408,7 +2430,7 @@ Draw.loadPlugin(function (ui) {
                     for (let c = prev.cols; c < next.cols; c++) {
                         const key = `${r},${c}`;
                         if (slotMap.has(key)) continue;
-                        const v = addTileAtSlot(graph, groupCell, abbr, r, c, spacingXpx, spacingYpx, iconDiamPx, disabledSet, bandPx, fontPx); 
+                        const v = addTileAtSlot(graph, groupCell, abbr, r, c, spacingXpx, spacingYpx, iconDiamPx, disabledSet, bandPx, fontPx);
                         slotMap.set(key, v);
                     }
                 }
@@ -2442,27 +2464,25 @@ Draw.loadPlugin(function (ui) {
         } finally {
             model.endUpdate();
         }
-
-        graph.refresh(groupCell);
     }
 
     function shiftGroupChildrenByDeltaBand(graph, groupCell, deltaY) {                 // NEW
         if (!deltaY || !Number.isFinite(deltaY)) return;                               // NEW
         if (!groupCell || isCollapsedLOD(groupCell)) return;                           // NEW
-    
+
         const model = graph.getModel();                                                // NEW
         const kids = graph.getChildVertices(groupCell) || [];                          // NEW
-    
+
         model.beginUpdate();                                                           // NEW
         try {
             for (const k of kids) {
                 if (!k) continue;
                 if (!isPlantCircle(k)) continue;                                       // NEW (only plant circles)
                 if (k.getAttribute && k.getAttribute("lod_summary") === "1") continue; // NEW (paranoia)
-    
+
                 const g = k.getGeometry && k.getGeometry();
                 if (!g) continue;
-    
+
                 const ng = g.clone();
                 ng.y = (Number(ng.y) || 0) + deltaY;                                   // NEW
                 model.setGeometry(k, ng);                                              // NEW
@@ -2470,7 +2490,7 @@ Draw.loadPlugin(function (ui) {
         } finally {
             model.endUpdate();                                                         // NEW
         }
-    }    
+    }
 
     function buildSlotMap(graph, groupCell) {
         const kids = graph.getChildVertices(groupCell) || [];
@@ -2547,149 +2567,142 @@ Draw.loadPlugin(function (ui) {
     }
 
 
-    // -------------------- Resize → Retile in SAME undo step --------------------  
+    // -------------------- Resize → Retile in SAME undo step --------------------
     (function installResizeCellsWrapper() {
         if (graph.__plantTilerResizeCellsWrapped) return;
         graph.__plantTilerResizeCellsWrapped = true;
-
+    
         const oldResizeCells = graph.resizeCells;
+    
         graph.resizeCells = function (cells, bounds, recurse) {
             const model = graph.getModel();
-
+    
             // Collect affected tiler groups and snapshot BEFORE resize
             const groups = new Map();
             for (const c of (cells || [])) {
                 const g = isTilerGroup(c) ? c : findTilerGroupAncestor(graph, c);
                 if (g && g.id) groups.set(g.id, g);
             }
-
-            const snapshots = new Map(); // groupId -> { prev, spacingXpx, spacingYpx, iconDiamPx, bandPx } 
+    
+            const hasTiler = groups.size > 0;
+    
+            const snapshots = new Map(); // groupId -> { prev, spacingXpx, spacingYpx, iconDiamPx, bandPx }
             for (const g of groups.values()) {
                 const sx = toPx(Number(g.getAttribute("spacing_x_cm") || g.getAttribute("spacing_cm") || "30"));
                 const sy = toPx(Number(g.getAttribute("spacing_y_cm") || g.getAttribute("spacing_cm") || "30"));
-
+    
                 const vegDiamCm = Number(g.getAttribute("veg_diameter_cm") || 0);
                 let iconDiam = vegDiamCm > 0
                     ? toPx(vegDiamCm)
                     : clamp(DEFAULT_ICON_DIAM_RATIO * Math.min(sx, sy), MIN_ICON_DIAM_PX, MAX_ICON_DIAM_PX);
                 iconDiam = Math.max(iconDiam, 6);
-
-                const { bandPx } = groupLabelMetrics(g); 
-
+    
+                const { bandPx } = groupLabelMetrics(g);
+    
                 snapshots.set(g.id, {
                     prev: gridSnapshot(g, sx, sy),
                     spacingXpx: sx,
                     spacingYpx: sy,
                     iconDiamPx: iconDiam,
-                    bandPx, 
+                    bandPx,
                 });
             }
-
-            // Do the actual resize (geometry edit) — prevent child stretching for tiler groups
-            const hasTiler = groups.size > 0;
-
-            // --- NEW: clamp tiler group bounds to minimum 1×1 capacity --------------------- 
+    
+            // Clamp tiler group bounds to minimum 1×1 capacity
             if (hasTiler) {
                 bounds = clampTilerBounds(cells, bounds, snapshots);
             }
-
-            const res = oldResizeCells.call(this, cells, bounds, hasTiler ? false : recurse);
-
-            // While dragging, keep it light: no delta operations
+    
             const duringResize = !!graph.isMouseDown;
-            if (duringResize) {
-                return res;
+    
+            // During drag: do ONLY the geometry resize (lightweight)                         // CHANGED
+            if (duringResize || !hasTiler) {                                                 // CHANGED
+                return oldResizeCells.call(this, cells, bounds, hasTiler ? false : recurse); // CHANGED
             }
-
-            // After mouse-up: apply delta / expand / collapse as needed
-            for (const g of groups.values()) {
-                const snap = snapshots.get(g.id);
-                if (!snap) continue;
-
-                const next = gridSnapshot(g, snap.spacingXpx, snap.spacingYpx);
-
-                model.beginUpdate();               
-                try {                              
-                    applyGroupLabelFont(model, g); 
-                } finally {                        
-                    model.endUpdate();             
-                }
-
-                const nextBandPx = groupLabelMetrics(g).bandPx;                             // NEW
-                const deltaBandY = (Number(nextBandPx) || 0) - (Number(snap.bandPx) || 0);  // NEW
-                if (deltaBandY) {                                                          // NEW
-                    shiftGroupChildrenByDeltaBand(graph, g, deltaBandY);                    // NEW
-                    snap.bandPx = nextBandPx;                                               // NEW (keep snapshot consistent)
-                }              
-
-                // Prune disabled entries that are now outside the new grid                      
-                model.beginUpdate();
-                try {
+    
+            // Mouse-up: make geometry resize + all follow-up edits ONE undoable change       // CHANGED
+            let res;                                                                         // CHANGED
+            const groupsNeedingRefresh = [];                                                 // CHANGED
+    
+            model.beginUpdate();                                                             // CHANGED
+            try {
+                // Geometry resize happens inside the SAME outer transaction                  // CHANGED
+                res = oldResizeCells.call(this, cells, bounds, false);                        // CHANGED
+    
+                for (const g of groups.values()) {
+                    const snap = snapshots.get(g.id);
+                    if (!snap) continue;
+    
+                    const next = gridSnapshot(g, snap.spacingXpx, snap.spacingYpx);
+    
+                    // Label font update
+                    applyGroupLabelFont(model, g);
+    
+                    // Band height change: shift children
+                    const nextBandPx = groupLabelMetrics(g).bandPx;
+                    const deltaBandY = (Number(nextBandPx) || 0) - (Number(snap.bandPx) || 0);
+                    if (deltaBandY) {
+                        shiftGroupChildrenByDeltaBand(graph, g, deltaBandY);
+                        snap.bandPx = nextBandPx;
+                    }
+    
+                    // Prune disabled entries now outside grid
                     pruneDisabledToGrid(model, g, next.rows, next.cols);
-                } finally {
-                    model.endUpdate();
-                }
-
-                // Update group count/yield to match new capacity
-                model.beginUpdate();
-                try {
-                    const disabledSet = readDisabledSet(g);
-                    const { actual } = applyCounts(model, g, next.count, disabledSet);
-                    updateGroupYield(model, g, {
-                        abbr: g.getAttribute("plant_abbr") || "?",
-                        countOverride: actual
-                    });
-                } finally {
-                    model.endUpdate();
-                }
-
-                // Respect LOD thresholds (optional: collapse if needed)
-                if (next.count > MAX_TILES || next.count > LOD_TILE_THRESHOLD) {
-                    collapseToSummary(
+    
+                    // Update group count/yield to match new capacity
+                    {
+                        const disabledSet = readDisabledSet(g);
+                        const { actual } = applyCounts(model, g, next.count, disabledSet);
+                        updateGroupYield(model, g, {
+                            abbr: g.getAttribute("plant_abbr") || "?",
+                            countOverride: actual
+                        });
+                    }
+    
+                    const abbr = g.getAttribute("plant_abbr") || "?";
+    
+                    // LOD thresholds
+                    if (next.count > MAX_TILES || next.count > LOD_TILE_THRESHOLD) {
+                        collapseToSummary(graph, g, abbr, snap.spacingXpx, snap.spacingYpx);
+                        groupsNeedingRefresh.push(g);
+                        continue;
+                    }
+    
+                    // If currently collapsed but now under thresholds, expand
+                    if (isCollapsedLOD(g)) {
+                        expandTiles(graph, g, abbr, snap.spacingXpx, snap.spacingYpx, snap.iconDiamPx);
+                        groupsNeedingRefresh.push(g);
+                        continue;
+                    }
+    
+                    // Delta slot maintenance (add/remove)
+                    applyResizeDelta(graph, g, snap.prev, next, snap.spacingXpx, snap.spacingYpx, snap.iconDiamPx);
+    
+                    ensureLineSlotsPresent(
                         graph,
                         g,
-                        g.getAttribute("plant_abbr") || "?",
-                        snap.spacingXpx,
-                        snap.spacingYpx
-                    );
-                    continue;
-                }
-
-                // --- if currently LOD-collapsed but now under thresholds, expand --- 
-                if (isCollapsedLOD(g)) {
-                    expandTiles(
-                        graph,
-                        g,
-                        g.getAttribute("plant_abbr") || "?",
+                        abbr,
+                        next.rows,
+                        next.cols,
                         snap.spacingXpx,
                         snap.spacingYpx,
                         snap.iconDiamPx
                     );
-                    graph.refresh(g);
-                    continue;
+    
+                    groupsNeedingRefresh.push(g);
                 }
-
-                applyResizeDelta(graph, g, snap.prev, next, snap.spacingXpx, snap.spacingYpx, snap.iconDiamPx);
-
-                ensureLineSlotsPresent(
-                    graph,
-                    g,
-                    g.getAttribute("plant_abbr") || "?",
-                    next.rows,
-                    next.cols,
-                    snap.spacingXpx,
-                    snap.spacingYpx,
-                    snap.iconDiamPx
-                );
-
+            } finally {
+                model.endUpdate();                                                           // CHANGED
             }
-
+    
+            for (const g of groupsNeedingRefresh) graph.refresh(g);
             return res;
         };
     })();
+    
 
 
-    // ---- Public API export (for other USL plugins) ---------------------------------
+    // ---- Public API export (for other plugins) ---------------------------------
     window.USL = window.USL || {};
     window.USL.tiler = Object.assign({}, window.USL.tiler, {
         retileGroup

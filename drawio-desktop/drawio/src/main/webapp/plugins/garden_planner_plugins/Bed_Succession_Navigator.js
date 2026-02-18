@@ -13,6 +13,35 @@ Draw.loadPlugin(function (ui) {
     if (graph.__tilerOverlapNavClustersInstalled) return;
     graph.__tilerOverlapNavClustersInstalled = true;
 
+    (function installUndoSuppressor() {
+        if (graph.__undoSuppressorInstalled) return;
+        graph.__undoSuppressorInstalled = true;
+
+        const um = ui?.editor?.undoManager;
+        if (!um || typeof um.undoableEditHappened !== "function") return;
+
+        const old = um.undoableEditHappened.bind(um);
+
+        // Re-entrant counter (supports nested suppression safely)
+        graph.__undoSuppressDepth = 0;
+
+        um.undoableEditHappened = function (edit) {
+            if (graph.__undoSuppressDepth > 0) return; // ignore these edits
+            return old(edit);
+        };
+
+        graph.__withUndoSuppressed = function (fn) {
+            graph.__undoSuppressDepth++;
+            try { return fn(); }
+            finally { graph.__undoSuppressDepth--; }
+        };
+    })();
+
+    function withUndoSuppressed(fn) {
+        const w = graph.__withUndoSuppressed;
+        return w ? w(fn) : fn();
+    }
+
     // -------------------- Config --------------------
     const BTN_SIZE = 22;
     const BTN_INSET = 6;
@@ -110,42 +139,45 @@ Draw.loadPlugin(function (ui) {
 
     function snapCanopyOrderInParent(parent) {
         if (!parent) return;
-        const childCount = model.getChildCount(parent);
-        if (childCount <= 1) return;
 
-        // Gather current child list (includes non-vertices too)                        
-        const children = [];
-        for (let i = 0; i < childCount; i++) children.push(model.getChildAt(parent, i));
+        withUndoSuppressed(() => {
+            const childCount = model.getChildCount(parent);
+            if (childCount <= 1) return;
 
-        // Identify planting children and their current slot indices                    
-        const plantingSlots = [];
-        const plantings = [];
-        for (let i = 0; i < children.length; i++) {
-            const c = children[i];
-            if (model.isVertex(c) && isPlantingCell(c)) {
-                plantingSlots.push(i);
-                plantings.push(c);
+            // Gather current child list (includes non-vertices too)                        
+            const children = [];
+            for (let i = 0; i < childCount; i++) children.push(model.getChildAt(parent, i));
+
+            // Identify planting children and their current slot indices                    
+            const plantingSlots = [];
+            const plantings = [];
+            for (let i = 0; i < children.length; i++) {
+                const c = children[i];
+                if (model.isVertex(c) && isPlantingCell(c)) {
+                    plantingSlots.push(i);
+                    plantings.push(c);
+                }
             }
-        }
 
-        if (plantings.length <= 1) return;
+            if (plantings.length <= 1) return;
 
-        // Sort: shorter first, taller last (front)                                     
-        const sorted = plantings.slice().sort(canopyCompare);
+            // Sort: shorter first, taller last (front)                                     
+            const sorted = plantings.slice().sort(canopyCompare);
 
-        // Reinsert ONLY plantings into their existing slots (preserve non-plantings)   
-        model.beginUpdate();
-        try {
-            for (let k = 0; k < plantingSlots.length; k++) {
-                const idx = plantingSlots[k];
-                const cell = sorted[k];
-                // model.add moves within same parent; index is the z-order position   
-                model.add(parent, cell, idx);
+            // Reinsert ONLY plantings into their existing slots (preserve non-plantings)   
+            model.beginUpdate();
+            try {
+                for (let k = 0; k < plantingSlots.length; k++) {
+                    const idx = plantingSlots[k];
+                    const cell = sorted[k];
+                    // model.add moves within same parent; index is the z-order position   
+                    model.add(parent, cell, idx);
+                }
+            } finally {
+                model.endUpdate();
             }
-        } finally {
-            model.endUpdate();
-        }
-        graph.refresh();
+            graph.refresh();
+        });
     }
 
     let canopySnapRaf = null;
@@ -245,48 +277,48 @@ Draw.loadPlugin(function (ui) {
         return (!r) ? null : { x: r.x + r.w / 2, y: r.y + r.h / 2 };
     }
 
-    function bedsForCluster(key) {                                                                     
-        const st = clusterStates.get(key);                                                             
-        if (!st || !st.order || !st.order.length) return [];                                           
-    
-        const parent = model.getParent(st.order[0]);                                                    
-        if (!parent) return [];                                                                         
-    
-        const sibVerts = graph.getChildVertices(parent) || [];                                          
-        const beds = sibVerts.filter(isGardenBed);                                                      
-        if (!beds.length) return [];                                                                    
-    
-        const bedBounds = beds.map(getAbsBounds);                                                       
-        const chosenIds = new Set();                                                                    
-    
-        for (const tg of st.order) {                                                                    
-            const b = getAbsBounds(tg);                                                                 
-            const c = rectCenter(b);                                                                    
-            if (!c) continue;                                                                           
-    
-            let chosen = null;                                                                          
-            let chosenArea = Infinity;                                                                  
-            for (let k = 0; k < beds.length; k++) {                                                     
-                const bb = bedBounds[k];                                                                
-                if (!bb) continue;                                                                      
-                if (rectContainsPoint(bb, c.x, c.y)) {                                                   
-                    const a = rectArea(bb);                                                             
-                    if (a > 0 && a < chosenArea) {                                                      
-                        chosenArea = a;                                                                 
-                        chosen = beds[k];                                                               
-                    }                                                                                   
-                }                                                                                       
-            }                                                                                           
-            if (chosen && chosen.id) chosenIds.add(chosen.id);                                          
-        }                                                                                               
-    
-        const out = [];                                                                                 
-        chosenIds.forEach(id => {                                                                       
-            const cell = model.getCell(id);                                                             
-            if (cell && model.isVertex(cell) && isGardenBed(cell)) out.push(cell);                      
-        });                                                                                             
-        return out;                                                                                     
-    }                                                                                                       
+    function bedsForCluster(key) {
+        const st = clusterStates.get(key);
+        if (!st || !st.order || !st.order.length) return [];
+
+        const parent = model.getParent(st.order[0]);
+        if (!parent) return [];
+
+        const sibVerts = graph.getChildVertices(parent) || [];
+        const beds = sibVerts.filter(isGardenBed);
+        if (!beds.length) return [];
+
+        const bedBounds = beds.map(getAbsBounds);
+        const chosenIds = new Set();
+
+        for (const tg of st.order) {
+            const b = getAbsBounds(tg);
+            const c = rectCenter(b);
+            if (!c) continue;
+
+            let chosen = null;
+            let chosenArea = Infinity;
+            for (let k = 0; k < beds.length; k++) {
+                const bb = bedBounds[k];
+                if (!bb) continue;
+                if (rectContainsPoint(bb, c.x, c.y)) {
+                    const a = rectArea(bb);
+                    if (a > 0 && a < chosenArea) {
+                        chosenArea = a;
+                        chosen = beds[k];
+                    }
+                }
+            }
+            if (chosen && chosen.id) chosenIds.add(chosen.id);
+        }
+
+        const out = [];
+        chosenIds.forEach(id => {
+            const cell = model.getCell(id);
+            if (cell && model.isVertex(cell) && isGardenBed(cell)) out.push(cell);
+        });
+        return out;
+    }
 
     function significantOverlap(a, b) {
         if (!a || !b) return false;
@@ -314,89 +346,85 @@ Draw.loadPlugin(function (ui) {
     // -------------------- prevent beds from being dropped into tiler groups --------------------
 
     // Returns true if `cell` is a tiler group OR is inside a tiler group (any ancestor)          
-    function isInTilerGroup(cell) {                                                               
-        let p = cell;                                                                             
-        while (p) {                                                                               
-            if (isTilerGroup(p)) return true;                                                     
-            p = model.getParent(p);                                                               
-        }                                                                                         
-        return false;                                                                             
-    }                                                                                             
+    function isInTilerGroup(cell) {
+        let p = cell;
+        while (p) {
+            if (isTilerGroup(p)) return true;
+            p = model.getParent(p);
+        }
+        return false;
+    }
 
     // Find the nearest ancestor (including self) that is a tiler group, else null                
-    function findTilerGroupAncestor(cell) {                                                       
-        let p = cell;                                                                             
-        while (p) {                                                                               
-            if (isTilerGroup(p)) return p;                                                        
-            p = model.getParent(p);                                                               
-        }                                                                                         
-        return null;                                                                              
-    }                                                                                             
+    function findTilerGroupAncestor(cell) {
+        let p = cell;
+        while (p) {
+            if (isTilerGroup(p)) return p;
+            p = model.getParent(p);
+        }
+        return null;
+    }
 
     // 1) Primary: block drop target at drag-time                                                  
-    (function installBedDropBlock() {                                                             
-        if (graph.__bedDropBlockInstalled) return;                                                
-        graph.__bedDropBlockInstalled = true;                                                     
+    (function installBedDropBlock() {
+        if (graph.__bedDropBlockInstalled) return;
+        graph.__bedDropBlockInstalled = true;
 
-        const origIsValidDropTarget = graph.isValidDropTarget;                                    
-        graph.isValidDropTarget = function (target, cells, evt) {                                 
+        const origIsValidDropTarget = graph.isValidDropTarget;
+        graph.isValidDropTarget = function (target, cells, evt) {
             // If any dragged cell is a garden bed, forbid dropping into tiler groups              
-            const dragged = (cells || []).filter(Boolean);                                        
-            const anyBed = dragged.some(c => model.isVertex(c) && isGardenBed(c));                
-            if (anyBed) {                                                                         
-                const tg = target ? findTilerGroupAncestor(target) : null;                        
-                if (tg) return false;                                                             
-            }                                                                                     
-            return origIsValidDropTarget ? origIsValidDropTarget.apply(this, arguments) : true;   
-        };                                                                                        
-    })();                                                                                         
+            const dragged = (cells || []).filter(Boolean);
+            const anyBed = dragged.some(c => model.isVertex(c) && isGardenBed(c));
+            if (anyBed) {
+                const tg = target ? findTilerGroupAncestor(target) : null;
+                if (tg) return false;
+            }
+            return origIsValidDropTarget ? origIsValidDropTarget.apply(this, arguments) : true;
+        };
+    })();
 
     // 2) Secondary: safety net after moves (undo/redo/programmatic moves/outline drag)            
-    function enforceBedsNotInTilerGroups(cells) {                                                  
-        const moved = (cells || []).filter(Boolean);                                               
-        if (!moved.length) return;                                                                 
+    function enforceBedsNotInTilerGroups(cells) {
+        const moved = (cells || []).filter(Boolean);
+        if (!moved.length) return;
+    
+        const safeParent = graph.getDefaultParent();
+    
+        withUndoSuppressed(() => {
+            model.beginUpdate();
+            try {
+                for (const c of moved) {
+                    if (!model.isVertex(c) || !isGardenBed(c)) continue;
+                    const parent = model.getParent(c);
+                    if (!parent) continue;
+    
+                    if (isInTilerGroup(parent)) {
+                        const geo = model.getGeometry(c);
+                        if (!geo) {
+                            model.add(safeParent, c, model.getChildCount(safeParent));
+                            continue;
+                        }
+    
+                        const abs = geo.clone();
+                        const parentGeo = model.getGeometry(parent);
+                        if (parentGeo) { abs.x += parentGeo.x; abs.y += parentGeo.y; }
+    
+                        model.add(safeParent, c, model.getChildCount(safeParent));
+                        model.setGeometry(c, abs);
+                    }
+                }
+            } finally {
+                model.endUpdate();
+            }
+            graph.refresh();
+        });
+    }
+    
 
-        // Choose a safe parent. Default parent is usually correct.                                 
-        const safeParent = graph.getDefaultParent();                                               
-
-        model.beginUpdate();                                                                       
-        try {                                                                                      
-            for (const c of moved) {                                                               
-                if (!model.isVertex(c) || !isGardenBed(c)) continue;                               
-                const parent = model.getParent(c);                                                 
-                if (!parent) continue;                                                             
-
-                if (isInTilerGroup(parent)) {                                                      
-                    // Move bed out to safe parent, preserving absolute geometry                     
-                    const geo = model.getGeometry(c);                                              
-                    if (!geo) {                                                                    
-                        model.add(safeParent, c, model.getChildCount(safeParent));                 
-                        continue;                                                                  
-                    }                                                                              
-
-                    // Convert current geometry to absolute, then re-add under safe parent          
-                    const abs = geo.clone();                                                       
-                    const parentGeo = model.getGeometry(parent);                                   
-                    if (parentGeo) {                                                               
-                        abs.x += parentGeo.x;                                                      
-                        abs.y += parentGeo.y;                                                      
-                    }                                                                              
-
-                    model.add(safeParent, c, model.getChildCount(safeParent));                     
-                    model.setGeometry(c, abs);                                                     
-                }                                                                                  
-            }                                                                                      
-        } finally {                                                                                
-            model.endUpdate();                                                                     
-        }                                                                                          
-
-        graph.refresh();                                                                           
-    }                                                                                              
-
-    graph.addListener(mxEvent.CELLS_MOVED, function (sender, evt) {                                
-        const cells = evt.getProperty('cells');                                                    
-        enforceBedsNotInTilerGroups(cells);                                                        
-    });                                                                                            
+    graph.addListener(mxEvent.CELLS_MOVED, function (sender, evt) {
+        const cells = evt.getProperty('cells');
+        enforceBedsNotInTilerGroups(cells);
+    });
 
 
     // -------------------- Time ordering --------------------
@@ -450,32 +478,36 @@ Draw.loadPlugin(function (ui) {
         const cells = [];
         (roots || []).forEach(r => cells.push(...collectVertexTreeCached(r)));
         if (!cells.length) return;
+    
         const fillV = String(visible ? 100 : 0);
         const textV = String(visible ? 100 : 0);
-        const imgV = String(visible ? 100 : 0);
+        const imgV  = String(visible ? 100 : 0);
         const stroke = '100';
-        model.beginUpdate();
-        try {
-            graph.setCellStyles('fillOpacity', fillV, cells);
-            graph.setCellStyles('textOpacity', textV, cells);
-            graph.setCellStyles('imageOpacity', imgV, cells);
-            graph.setCellStyles('strokeOpacity', stroke, cells);
-        } finally {
-            model.endUpdate();
-        }
+    
+        withUndoSuppressed(() => {                                     // NEW
+            model.beginUpdate();
+            try {
+                graph.setCellStyles('fillOpacity', fillV, cells);
+                graph.setCellStyles('textOpacity', textV, cells);
+                graph.setCellStyles('imageOpacity', imgV, cells);
+                graph.setCellStyles('strokeOpacity', stroke, cells);
+            } finally {
+                model.endUpdate();
+            }
+        });                                                            // NEW
     }
+    
 
     // deep opacity setter (root + descendants)
     function setOpacityDeep(roots, opacityPct) {
         const cells = [];
         (roots || []).forEach(r => cells.push(...collectVertexTreeCached(r)));
         if (!cells.length) return;
-        model.beginUpdate();
-        try {
-            graph.setCellStyles('opacity', String(opacityPct), cells);
-        } finally {
-            model.endUpdate();
-        }
+        withUndoSuppressed(() => {
+            model.beginUpdate();
+            try { graph.setCellStyles('opacity', String(opacityPct), cells); }
+            finally { model.endUpdate(); }
+        });
     }
 
     // restore to baseline visuals for a tiler group (deep)
@@ -844,20 +876,20 @@ Draw.loadPlugin(function (ui) {
                 consumeEvt(evt);
                 const st2 = clusterStates.get(key);
                 if (!st2 || !st2.order || !st2.order.length) return;
-            
+
                 const parent = model.getParent(st2.order[0]);
                 if (!parent) return;
-            
-                const beds = bedsForCluster(key);                                                               
-                if (!beds.length) return;                                                                       
-            
+
+                const beds = bedsForCluster(key);
+                if (!beds.length) return;
+
                 bringCellsToFrontTemporarilyInParent(parent, beds);
                 clearVisibilityFor(key);
-                graph.setSelectionCells(beds);                                                                  
+                graph.setSelectionCells(beds);
                 graph.refresh(parent);
                 hideUIFor(key);
             });
-            
+
 
             host.appendChild(b);
             st.btnSelectBeds = b;
@@ -1013,15 +1045,20 @@ Draw.loadPlugin(function (ui) {
         if (!cell) return;
         const p = model.getParent(cell);
         if (!p) return;
-        model.beginUpdate();
-        try {
-            const topIdx = model.getChildCount(p);
-            model.add(p, cell, topIdx);
-        } finally {
-            model.endUpdate();
-        }
-        graph.refresh(cell);
+
+        const umWrap = graph.__withUndoSuppressed || ((fn) => fn());
+
+        umWrap(() => {
+            model.beginUpdate();
+            try {
+                model.add(p, cell, model.getChildCount(p));
+            } finally {
+                model.endUpdate();
+            }
+            graph.refresh(cell);
+        });
     }
+
 
     // -------------------- NEW: temporary bed front-ordering --------------------
     const parentOrderSnapshots = new Map(); // parentId -> [childId,...]               
@@ -1044,22 +1081,23 @@ Draw.loadPlugin(function (ui) {
         const snap = parentOrderSnapshots.get(parent.id);
         if (!snap) return;
 
-        // Re-add children in the snap order (ignoring missing/null ids)
-        model.beginUpdate();
-        try {
-            let idx = 0;
-            for (const id of snap) {
-                if (!id) continue;
-                const cell = model.getCell(id);
-                if (!cell) continue;
-                if (model.getParent(cell) !== parent) continue;
-                model.add(parent, cell, idx++);
+        withUndoSuppressed(() => {
+            model.beginUpdate();
+            try {
+                let idx = 0;
+                for (const id of snap) {
+                    if (!id) continue;
+                    const cell = model.getCell(id);
+                    if (!cell) continue;
+                    if (model.getParent(cell) !== parent) continue;
+                    model.add(parent, cell, idx++);
+                }
+            } finally {
+                model.endUpdate();
             }
-        } finally {
-            model.endUpdate();
-        }
-        parentOrderSnapshots.delete(parent.id);
-        graph.refresh(parent);
+            parentOrderSnapshots.delete(parent.id);
+            graph.refresh(parent);
+        });
     }
 
     function bringCellsToFrontTemporarilyInParent(parent, cells) {
@@ -1077,26 +1115,24 @@ Draw.loadPlugin(function (ui) {
             if (c && set.has(c.id)) order.push(c);
         }
         if (!order.length) return;
-
-        model.beginUpdate();
-        try {
-            for (const c of order) {
-                model.add(parent, c, model.getChildCount(parent)); // always append
+        withUndoSuppressed(() => {
+            model.beginUpdate();
+            try {
+                for (const c of order) model.add(parent, c, model.getChildCount(parent));
+            } finally {
+                model.endUpdate();
             }
-        } finally {
-            model.endUpdate();
-        }
-
-        lastSelectedBedParent = parent;
-        graph.refresh(parent);
+            lastSelectedBedParent = parent;
+            graph.refresh(parent);
+        });
     }
 
 
     function bringToFrontAndSelect(cell) {
         bringCellToFrontInParent(cell);
         graph.setSelectionCell(cell);
-        lastSelectedPlantingId = cell ? cell.id : null;                                     
-        lastSelectedPlantingParent = cell ? model.getParent(cell) : null;                  
+        lastSelectedPlantingId = cell ? cell.id : null;
+        lastSelectedPlantingParent = cell ? model.getParent(cell) : null;
     }
 
     function onCycleCluster(key, dir) {
@@ -1253,7 +1289,6 @@ Draw.loadPlugin(function (ui) {
     }
 
 
-
     function repositionAllUI() {
         for (const [key, st] of clusterStates.entries()) {
             // Only reposition visible UI (selected cluster only)                      
@@ -1261,7 +1296,6 @@ Draw.loadPlugin(function (ui) {
             positionUIFor(key);
         }
     }
-
 
 
     // -------------------- Events --------------------
@@ -1289,7 +1323,9 @@ Draw.loadPlugin(function (ui) {
 
         // If selecting a planting, bring it to front (temporary) and remember it
         if (selIsPlanting) {
-            graph.orderCells(false, [sel]); // to front                                
+            (graph.__withUndoSuppressed || ((fn) => fn()))(() => {
+                graph.orderCells(false, [sel]);
+            });
             lastSelectedPlantingId = sel.id;
             lastSelectedPlantingParent = model.getParent(sel);
         }
@@ -1310,6 +1346,7 @@ Draw.loadPlugin(function (ui) {
     graph.getView().addListener(mxEvent.REPAINT, function () {
         repositionAllUI();
     });
+
 
     // Init
     setTimeout(refreshAllForSelectionOrAnchor, 0);
