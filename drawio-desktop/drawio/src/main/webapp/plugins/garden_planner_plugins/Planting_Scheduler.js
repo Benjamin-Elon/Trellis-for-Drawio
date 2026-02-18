@@ -2,10 +2,10 @@
 //
 // - Right-click tiler group -> "Set schedule…"
 // - Fetches plant/city from SQLite via window.dbBridge
-// - Computes schedule (single or succession), plants, timelines, and writes attrs
+// - Computes schedule, plants, timelines, and writes attrs
 //
 // Key changes in this version:
-//  * Class-based encapsulation: PlantModel, CityClimate, SuccessionConfig, PolicyFlags, ScheduleInputs
+//  * Class-based encapsulation: PlantModel, CityClimate, PolicyFlags, ScheduleInputs
 //  * Overwinter-aware feasibility & scanning
 //  * Yield multipliers computed over HARVEST window
 //  * UI keeps the same behavior (manual/auto dates, min fi filter, preview)
@@ -56,9 +56,9 @@ Draw.loadPlugin(function (ui) {
         return 105;
     }
 
-    let __dbPathCached = null; // NEW
+    let __dbPathCached = null;
 
-    async function getDbPath() { // NEW
+    async function getDbPath() {
         if (__dbPathCached) return __dbPathCached;
 
         if (!window.dbBridge || typeof window.dbBridge.resolvePath !== "function") {
@@ -81,8 +81,8 @@ Draw.loadPlugin(function (ui) {
         if (!window.dbBridge || typeof window.dbBridge.open !== 'function') {
             throw new Error('dbBridge not available; check preload/main wiring');
         }
-        const dbPath = await getDbPath();                            // NEW
-        const opened = await window.dbBridge.open(dbPath, { readOnly: true }); // CHANGE
+        const dbPath = await getDbPath();
+        const opened = await window.dbBridge.open(dbPath, { readOnly: true });
         try {
             const res = await window.dbBridge.query(opened.dbId, sql, params);
             return Array.isArray(res?.rows) ? res.rows : [];
@@ -96,8 +96,8 @@ Draw.loadPlugin(function (ui) {
             throw new Error('dbBridge not available; check preload/main wiring');
         }
 
-        const dbPath = await getDbPath(); // NEW
-        const opened = await window.dbBridge.open(dbPath, { readOnly: false }); // CHANGE
+        const dbPath = await getDbPath();
+        const opened = await window.dbBridge.open(dbPath, { readOnly: false });
 
         try {
             if (typeof window.dbBridge.exec === 'function') {
@@ -142,7 +142,6 @@ Draw.loadPlugin(function (ui) {
           SELECT *,
                  COALESCE(direct_sow,0) AS direct_sow,
                  COALESCE(transplant,0) AS transplant,
-                 COALESCE(succession,1) AS succession,
                  COALESCE(overwinter_ok,0) AS overwinter_ok
           FROM Plants
           WHERE plant_name = ?
@@ -156,7 +155,6 @@ Draw.loadPlugin(function (ui) {
           SELECT *,
                  COALESCE(direct_sow,0) AS direct_sow,
                  COALESCE(transplant,0) AS transplant,
-                 COALESCE(succession,1) AS succession,
                  COALESCE(overwinter_ok,0) AS overwinter_ok
           FROM Plants
           WHERE plant_id = ?;`;
@@ -169,7 +167,7 @@ Draw.loadPlugin(function (ui) {
           SELECT plant_id, plant_name, abbr, yield_per_plant_kg, gdd_to_maturity,
                  tmin_c, topt_low_c, topt_high_c, tmax_c, tbase_c,
                  harvest_window_days, days_maturity, days_transplant, days_germ,
-                 direct_sow, transplant, succession, overwinter_ok, start_cooling_threshold_c,
+                 direct_sow, transplant, overwinter_ok, start_cooling_threshold_c,
                  soil_temp_min_plant_c, annual, biennial, perennial, lifespan_years, veg_diameter_cm, spacing_cm                                                                  
           FROM Plants
           WHERE abbr IS NOT NULL
@@ -243,82 +241,82 @@ Draw.loadPlugin(function (ui) {
             throw new Error(`Plant "${this.plant_name}": needs gdd_to_maturity or days_maturity.`);
         }
 
-        static async create(patch) {                                                          // NEW
-            const cols = [];                                                                  // NEW
-            const qs = [];                                                                    // NEW
-            const vals = [];                                                                  // NEW
-            for (const [k, v] of Object.entries(patch || {})) {                               // NEW
-                cols.push(k);                                                                 // NEW
-                qs.push('?');                                                                 // NEW
-                vals.push(v);                                                                 // NEW
-            }                                                                                 // NEW
-            if (!cols.length) throw new Error('No fields to create plant.');                  // NEW
+        static async create(patch) {
+            const cols = [];
+            const qs = [];
+            const vals = [];
+            for (const [k, v] of Object.entries(patch || {})) {
+                cols.push(k);
+                qs.push('?');
+                vals.push(v);
+            }
+            if (!cols.length) throw new Error('No fields to create plant.');
 
-            const sql = `INSERT INTO Plants (${cols.join(', ')}) VALUES (${qs.join(', ')});`; // NEW
-            await execAll(sql, vals);                                                         // NEW
+            const sql = `INSERT INTO Plants (${cols.join(', ')}) VALUES (${qs.join(', ')});`;
+            await execAll(sql, vals);
 
-            // Return the created row (SQLite: last_insert_rowid)                              // NEW
-            const rows = await queryAll(`SELECT * FROM Plants WHERE plant_id = last_insert_rowid();`, []); // NEW
-            return rows[0] ? new PlantModel(rows[0]) : null;                                  // NEW
-        }                                                                                     // NEW
+            // Return the created row (SQLite: last_insert_rowid)                              
+            const rows = await queryAll(`SELECT * FROM Plants WHERE plant_id = last_insert_rowid();`, []);
+            return rows[0] ? new PlantModel(rows[0]) : null;
+        }
 
-        static async update(plantId, patch) {                                                  // NEW
-            const id = Number(plantId);                                                       // NEW
-            if (!Number.isFinite(id)) throw new Error('Invalid plantId');                     // NEW
+        static async update(plantId, patch) {
+            const id = Number(plantId);
+            if (!Number.isFinite(id)) throw new Error('Invalid plantId');
 
-            const sets = [];                                                                  // NEW
-            const vals = [];                                                                  // NEW
-            for (const [k, v] of Object.entries(patch || {})) {                               // NEW
-                sets.push(`${k} = ?`);                                                        // NEW
-                vals.push(v);                                                                 // NEW
-            }                                                                                 // NEW
-            if (!sets.length) return await PlantModel.loadById(id);                           // NEW
+            const sets = [];
+            const vals = [];
+            for (const [k, v] of Object.entries(patch || {})) {
+                sets.push(`${k} = ?`);
+                vals.push(v);
+            }
+            if (!sets.length) return await PlantModel.loadById(id);
 
-            vals.push(id);                                                                    // NEW
-            const sql = `UPDATE Plants SET ${sets.join(', ')} WHERE plant_id = ?;`;           // NEW
-            await execAll(sql, vals);                                                         // NEW
+            vals.push(id);
+            const sql = `UPDATE Plants SET ${sets.join(', ')} WHERE plant_id = ?;`;
+            await execAll(sql, vals);
 
-            return await PlantModel.loadById(id);                                             // NEW
-        }                                                                                     // NEW
+            return await PlantModel.loadById(id);
+        }
     }
 
 
     class TaskTemplateModel {
-        static async ensureTables() {                                              // <-- CHANGED
+        static async ensureTables() {
             const sql1 = `
                 CREATE TABLE IF NOT EXISTS PlantTaskTemplates (
-                  plant_id      INTEGER NOT NULL,                                  -- CHANGED
-                  method        TEXT    NOT NULL,                                  -- CHANGED
-                  template_json TEXT    NOT NULL,                                  -- CHANGED
-                  updated_at    TEXT    NOT NULL,                                  -- CHANGED
+                  plant_id      INTEGER NOT NULL,                                  
+                  method        TEXT    NOT NULL,                                  
+                  template_json TEXT    NOT NULL,                                  
+                  updated_at    TEXT    NOT NULL,                                  
                   PRIMARY KEY (plant_id, method)
-                );`;                                                               // <-- CHANGED
+                );`;
             const sql2 = `
                 CREATE TABLE IF NOT EXISTS VarietyTaskTemplates (
-                  variety_id    INTEGER NOT NULL,                                  -- CHANGED
-                  method        TEXT    NOT NULL,                                  -- CHANGED
-                  template_json TEXT    NOT NULL,                                  -- CHANGED
-                  updated_at    TEXT    NOT NULL,                                  -- CHANGED
+                  variety_id    INTEGER NOT NULL,                                  
+                  method        TEXT    NOT NULL,                                  
+                  template_json TEXT    NOT NULL,                                  
+                  updated_at    TEXT    NOT NULL,                                  
                   PRIMARY KEY (variety_id, method)
-                );`;                                                               // <-- CHANGED
-            await execAll(sql1, []);                                               // <-- CHANGED
-            await execAll(sql2, []);                                               // <-- CHANGED
+                );`;
+            await execAll(sql1, []);
+            await execAll(sql2, []);
         }
 
-        static _safeParseTemplateRow(row) {                                        // <-- CHANGED
+        static _safeParseTemplateRow(row) {
             if (!row) return null;
             try {
-                const tpl = JSON.parse(row.template_json);                         // <-- CHANGED
+                const tpl = JSON.parse(row.template_json);
                 return tpl && typeof tpl === 'object' ? tpl : null;
             } catch (_) {
                 return null;
             }
         }
 
-        static async loadPlantTemplate(plantId, method) {                          // <-- CHANGED
+        static async loadPlantTemplate(plantId, method) {
             await this.ensureTables();
             const sql = `
-                SELECT template_json                                                -- CHANGED
+                SELECT template_json                                                
                 FROM PlantTaskTemplates
                 WHERE plant_id = ? AND method = ?
                 LIMIT 1;`;
@@ -326,10 +324,10 @@ Draw.loadPlugin(function (ui) {
             return this._safeParseTemplateRow(rows[0] || null);
         }
 
-        static async loadVarietyTemplate(varietyId, method) {                      // <-- CHANGED
+        static async loadVarietyTemplate(varietyId, method) {
             await this.ensureTables();
             const sql = `
-                SELECT template_json                                                -- CHANGED
+                SELECT template_json                                                
                 FROM VarietyTaskTemplates
                 WHERE variety_id = ? AND method = ?
                 LIMIT 1;`;
@@ -337,30 +335,30 @@ Draw.loadPlugin(function (ui) {
             return this._safeParseTemplateRow(rows[0] || null);
         }
 
-        static async savePlantTemplate(plantId, method, template) {                // <-- CHANGED
+        static async savePlantTemplate(plantId, method, template) {
             await this.ensureTables();
-            const json = JSON.stringify(template ?? {});                           // <-- CHANGED
+            const json = JSON.stringify(template ?? {});
             const now = new Date().toISOString();
             const sql = `
-                INSERT INTO PlantTaskTemplates (plant_id, method, template_json, updated_at)  -- CHANGED
+                INSERT INTO PlantTaskTemplates (plant_id, method, template_json, updated_at)  
                 VALUES (?, ?, ?, ?)
                 ON CONFLICT(plant_id, method) DO UPDATE SET
-                  template_json = excluded.template_json,                           -- CHANGED
+                  template_json = excluded.template_json,                           
                   updated_at = excluded.updated_at;`;
-            await execAll(sql, [Number(plantId), String(method), json, now]);      // <-- CHANGED
+            await execAll(sql, [Number(plantId), String(method), json, now]);
         }
 
-        static async saveVarietyTemplate(varietyId, method, template) {            // <-- CHANGED
+        static async saveVarietyTemplate(varietyId, method, template) {
             await this.ensureTables();
-            const json = JSON.stringify(template ?? {});                           // <-- CHANGED
+            const json = JSON.stringify(template ?? {});
             const now = new Date().toISOString();
             const sql = `
-                INSERT INTO VarietyTaskTemplates (variety_id, method, template_json, updated_at) -- CHANGED
+                INSERT INTO VarietyTaskTemplates (variety_id, method, template_json, updated_at) 
                 VALUES (?, ?, ?, ?)
                 ON CONFLICT(variety_id, method) DO UPDATE SET
-                  template_json = excluded.template_json,                          -- CHANGED
+                  template_json = excluded.template_json,                          
                   updated_at = excluded.updated_at;`;
-            await execAll(sql, [Number(varietyId), String(method), json, now]);    // <-- CHANGED
+            await execAll(sql, [Number(varietyId), String(method), json, now]);
         }
 
         static async resolveFor({ plantId, varietyId, method }) {
@@ -599,66 +597,6 @@ Draw.loadPlugin(function (ui) {
         }
     }
 
-    class SuccessionConfig {
-        constructor({
-            enabled = true,
-            max = 5,
-            overlapDays = 2,
-            harvestWindowDays = null, // null => use plant default
-            minYieldMultiplier = 0.5
-        } = {}) {
-            this.enabled = !!enabled;
-            this.max = Math.max(1, Number(max ?? 1));
-            this.overlapDays = Math.max(0, Number(overlapDays ?? 0));
-            this.harvestWindowDays = (harvestWindowDays == null ? null : Math.max(0, Number(harvestWindowDays)));
-            this.minYieldMultiplier = Math.max(0, Number(minYieldMultiplier ?? 0));
-            Object.freeze(this);
-        }
-
-        static fromUI(plant, { useSucc, maxSucc, overlapDays, harvestWindowDays, minYieldMultiplier }) {
-            const hw = (harvestWindowDays == null || Number.isNaN(harvestWindowDays)) ? null : Number(harvestWindowDays);
-            return new SuccessionConfig({
-                enabled: (Number(plant?.succession ?? 1) === 1) && !!useSucc,
-                max: Math.max(1, Number(maxSucc ?? 1)),
-                overlapDays: Math.max(0, Number(overlapDays ?? 0)),
-                harvestWindowDays: hw,
-                minYieldMultiplier: Number(minYieldMultiplier ?? 0.5)
-            });
-        }
-
-        withPlantDefaults(plant) {
-            const hw = (this.harvestWindowDays == null) ? plant.defaultHW() : this.harvestWindowDays;
-            return new SuccessionConfig({
-                enabled: this.enabled,
-                max: this.max,
-                overlapDays: this.overlapDays,
-                harvestWindowDays: hw,
-                minYieldMultiplier: this.minYieldMultiplier
-            });
-        }
-
-        toAttrs() {
-            return {
-                use_succession: this.enabled ? '1' : '0',
-                max_successions: String(this.max),
-                overlap_days: String(this.overlapDays),
-                harvest_window_days: String(this.harvestWindowDays),
-                min_yield_multiplier: String(this.minYieldMultiplier)
-            };
-        }
-
-        static fromAttrs(cell) {
-            const get = (k, d = null) => cell && cell.getAttribute ? cell.getAttribute(k) : d;
-            const hwRaw = get('harvest_window_days', null);
-            return new SuccessionConfig({
-                enabled: get('use_succession', '1') === '1',
-                max: Number(get('max_successions', '5')),
-                overlapDays: Number(get('overlap_days', '2')),
-                harvestWindowDays: (hwRaw == null || hwRaw === '') ? null : Number(hwRaw),
-                minYieldMultiplier: Number(get('min_yield_multiplier', '0.5'))
-            });
-        }
-    }
 
     class PolicyFlags {
         constructor({
@@ -708,13 +646,14 @@ Draw.loadPlugin(function (ui) {
 
 
     class ScheduleInputs {
-        constructor({ plant, city, method, startISO, seasonEndISO, succession, policy, seasonStartYear, varietyId = null, varietyName = '' }) { // <-- CHANGED
+        constructor({ plant, city, method, startISO, seasonEndISO, policy, seasonStartYear, harvestWindowDays, varietyId = null, varietyName = '' }) {
             Object.assign(this, {
-                plant, city, method, startISO, seasonEndISO, succession, policy,
+                plant, city, method, startISO, seasonEndISO, policy,
                 seasonStartYear: Number(seasonStartYear),
-                varietyId: (varietyId != null ? Number(varietyId) : null), // <-- NEW
-                varietyName: String(varietyName || '')                     // <-- NEW
-            }); // <-- CHANGED
+                harvestWindowDays: (harvestWindowDays == null ? null : Number(harvestWindowDays)),
+                varietyId: (varietyId != null ? Number(varietyId) : null),
+                varietyName: String(varietyName || '')
+            });
             Object.freeze(this);
         }
 
@@ -758,10 +697,13 @@ Draw.loadPlugin(function (ui) {
     class Planner {
         constructor(inputs) {
             // Build the full, read-only context once
-            const { plant, city, method, succession, policy, varietyId, varietyName } = inputs; // NEW
+            const { plant, city, method, policy, varietyId, varietyName } = inputs;
             const { startDate, seasonEnd, env, dailyRates, monthlyAvg, scanStart, scanEndHard } = inputs.derived();
             const budget = plant.firstHarvestBudget();  // {mode, amount}
 
+            const HW_DAYS = Number.isFinite(Number(inputs.harvestWindowDays))
+                ? Number(inputs.harvestWindowDays)
+                : (Number.isFinite(Number(plant.harvest_window_days)) ? Number(plant.harvest_window_days) : 7);
 
             // --- cooling gate (based on plant.start_cooling_threshold_c) ---
             const coolingThreshold = asCoolingThresholdC(plant.start_cooling_threshold_c);
@@ -793,10 +735,10 @@ Draw.loadPlugin(function (ui) {
                 springFrostRisk: policy.springFrostRisk,
                 lastSpringFrostDOY: pickFrostByRisk(city, policy.springFrostRisk),
                 plant,
+                HW_DAYS,
 
                 // crop & climate
                 BUDGET: budget,                            // <-- add this
-                HW_DAYS: succession.harvestWindowDays,
                 env,                // {Tmin,ToptLow,ToptHigh,Tmax,Tbase}
                 dailyRates,         // {1..12: gdd/day}
                 monthlyAvg,         // {1..12: mean air temp}
@@ -865,7 +807,7 @@ Draw.loadPlugin(function (ui) {
         }
 
 
-        isSowFeasible(sowDate, debug = false) {
+        isSowFeasible(sowDate) {
             const C = this.ctx;
 
             if (!this.withinWindow(sowDate)) return { ok: false, reason: 'outside_scan_window' };
@@ -959,25 +901,6 @@ Draw.loadPlugin(function (ui) {
             }
             return { date: null, info: null };
         }
-
-
-        nextPlantingDate(prevSow, overlapDays, minHarvestDays = 3) {
-            const C = this.ctx;
-            const m_n = maturityDateFromBudget(prevSow, C.BUDGET, C.dailyRates, C.scanEndHard);
-            const end_n = this.addDays(m_n, C.HW_DAYS);
-
-            const hardEnd = (C.seasonEnd && C.seasonEnd <= C.scanEndHard) ? C.seasonEnd : C.scanEndHard;
-            if (end_n > hardEnd) return null;
-            if (!C.overwinterAllowed && prevSow.getUTCFullYear() !== end_n.getUTCFullYear()) return null;
-
-            const targetMatNext = this.addDays(m_n, Math.max(0, overlapDays));
-            if (targetMatNext > hardEnd) return null;
-
-            const sow_next = sowDateBackFromTargetMaturity(targetMatNext, C.BUDGET, C.dailyRates, C.scanStart);
-            const earlyEnd = this.addDays(targetMatNext, Math.max(0, minHarvestDays));
-            if (earlyEnd > hardEnd) return null;
-            return sow_next;
-        }
     }
 
     // dialog helpers
@@ -999,123 +922,81 @@ Draw.loadPlugin(function (ui) {
     }
 
 
-    // -------------------- Centralized builder for schedule results (pure) ----------- 
-    async function computeScheduleResult(inputs, seasonYieldTargetKg) {
-        const { plant, method, succession } = inputs;
-        const { startDate, seasonEnd, env, dailyRates, monthlyAvg } = inputs.derived();
+    // -------------------- Centralized builder for schedule results (pure) -----------
+    async function computeScheduleResult(inputs) {
+        const { plant, method } = inputs;
+        const { seasonEnd, env, dailyRates, monthlyAvg } = inputs.derived();
 
+        const HW_DAYS = Number.isFinite(Number(inputs.harvestWindowDays)) ? Number(inputs.harvestWindowDays) : 0;
         const budget = plant.firstHarvestBudget();
-        const HW_DAYS = succession.harvestWindowDays;
-        if (!Number.isFinite(HW_DAYS)) {
-            return { rows: [], lastScheduledHarvestEndISO: null };
-        }
 
-        const schedule = buildSuccessionSchedule(inputs);
-        if (!schedule.length) {
+        const schedule = buildPlantingSchedule(inputs); // CHANGE: canonical single planting
+        const sow0 = schedule[0];
+
+        if (!(sow0 instanceof Date) || Number.isNaN(sow0.getTime())) {
             return { rows: [], lastScheduledHarvestEndISO: null };
         }
 
         const stageDays = {
-            maturityDays: (budget.mode === 'days')
-                ? budget.amount
-                : (Number(plant.days_maturity) || 0),
-            transplantDays: Number.isFinite(Number(plant.days_transplant))
-                ? Number(plant.days_transplant)
-                : 0,
-            germinationDays: Number.isFinite(Number(plant.days_germ))
-                ? Number(plant.days_germ)
-                : 0,
+            maturityDays: (budget.mode === 'days') ? budget.amount : (Number(plant.days_maturity) || 0),
+            transplantDays: Number.isFinite(Number(plant.days_transplant)) ? Number(plant.days_transplant) : 0,
+            germinationDays: Number.isFinite(Number(plant.days_germ)) ? Number(plant.days_germ) : 0,
             harvest_window_days: HW_DAYS
         };
 
-        const timelines = computeStageTimelinesForSchedule({
-            schedule, budget, stageDays,
-            dailyRatesMap: dailyRates, seasonEnd
+        const timelines = computeStageTimelineForSchedule({
+            schedule, budget, stageDays, dailyRatesMap: dailyRates, seasonEnd
         });
 
         const multipliers = deriveYieldMultipliersFromTemp({
-            schedule, budget,
-            dailyRatesMap: dailyRates,
-            cropTemp: env,
-            monthlyAvgTemp: monthlyAvg,
-            seasonEnd,
-            Tbase: env.Tbase,
-            window: 'harvest',
-            HW_DAYS: HW_DAYS
+            schedule, budget, dailyRatesMap: dailyRates,
+            cropTemp: env, monthlyAvgTemp: monthlyAvg,
+            seasonEnd, Tbase: env.Tbase, window: 'harvest', HW_DAYS
         });
-
-        // Filter by min field index                                                    
-        const keep = [];
-        for (let i = 0; i < schedule.length; i++) {
-            const fi = Number.isFinite(multipliers[i]) ? multipliers[i] : 0;
-            if (fi >= succession.minYieldMultiplier) keep.push(i);
-        }
-        if (!keep.length) {
-            return { rows: [], lastScheduledHarvestEndISO: null };
-        }
-
-        const scheduleF = keep.map(i => schedule[i]);
-        const timelinesF = keep.map(i => timelines[i]);
-        const multipliersF = keep.map(i => multipliers[i]);
 
         const { plants: plantsAlloc } = distributePlantsToMeetTarget({
-            N: scheduleF.length,
-            seasonYieldTarget: Number(seasonYieldTargetKg ?? 0),
+            N: 1, // CHANGE: explicitly 1
             yieldPerPlant: plant.yieldPerPlant(),
-            multipliers: multipliersF
+            multipliers: [Number.isFinite(multipliers[0]) ? multipliers[0] : 0]
         });
 
-        const plantName = plant.plant_name || (plant.abbr || '?');
-        const rows = scheduleF.map((sow, k) => {
-            const tl = timelinesF[k];
-            return {
-                idx: k + 1,
-                plant: plantName,
-                method,
-                sow: fmtISO(sow),
-                germ: fmtISO(tl.germ),
-                trans: fmtISO(tl.transplant),
-                harvStart: fmtISO(tl.harvestStart),
-                harvEnd: fmtISO(tl.harvestEnd),
-                mult: (Number.isFinite(multipliersF[k])
-                    ? multipliersF[k].toFixed(3)
-                    : ''),
-                plantsReq: (Array.isArray(plantsAlloc) ? plantsAlloc[k] : '')
-            };
-        });
+        const tl = timelines[0];
+        if (!tl || !(tl.harvestEnd instanceof Date)) return { rows: [], lastScheduledHarvestEndISO: null };
 
-        const lastRow = rows[rows.length - 1] || null;
-        const lastScheduledHarvestEndISO = lastRow ? lastRow.harvEnd : null;
+        const row = {
+            idx: 1,
+            plant: plant.plant_name || (plant.abbr || '?'),
+            method,
+            sow: fmtISO(sow0),                         // CHANGE: sow0
+            germ: fmtISO(tl.germ),
+            trans: fmtISO(tl.transplant),
+            harvStart: fmtISO(tl.harvestStart),
+            harvEnd: fmtISO(tl.harvestEnd),
+            mult: (Number.isFinite(multipliers[0]) ? multipliers[0].toFixed(3) : ''),
+            plantsReq: (Array.isArray(plantsAlloc) ? plantsAlloc[0] : '')
+        };
 
-        console.log('[computeScheduleResult] summary', {
-            N_schedule: schedule.length,
-            N_kept: rows.length,
-            firstRow: rows[0] || null,
-            lastRow,
-            lastScheduledHarvestEndISO
-        });
-
-        return { rows, lastScheduledHarvestEndISO };
+        return { rows: [row], lastScheduledHarvestEndISO: row.harvEnd };
     }
 
 
-    async function resolveVarietyName(varietyId, varietyList) {                            // NEW
-        if (!varietyId) return '';                                                          // NEW
 
-        // Prefer UI-provided list (no DB round-trip)                                        // NEW
-        const list = Array.isArray(varietyList) ? varietyList : [];                          // NEW
-        const hit = list.find(v => Number(v.variety_id) === Number(varietyId));              // NEW
-        if (hit && hit.variety_name != null) return String(hit.variety_name);                // NEW
+    async function resolveVarietyName(varietyId, varietyList) {
+        if (!varietyId) return '';
 
-        // Fallback: query DB by id                                                          // NEW
-        const v = await PlantVarietyModel.loadById(Number(varietyId));                       // NEW
-        return v && v.variety_name != null ? String(v.variety_name) : '';                    // NEW
-    }                                                                                      // NEW
+        // Prefer UI-provided list (no DB round-trip)                                        
+        const list = Array.isArray(varietyList) ? varietyList : [];
+        const hit = list.find(v => Number(v.variety_id) === Number(varietyId));
+        if (hit && hit.variety_name != null) return String(hit.variety_name);
+
+        // Fallback: query DB by id                                                          
+        const v = await PlantVarietyModel.loadById(Number(varietyId));
+        return v && v.variety_name != null ? String(v.variety_name) : '';
+    }
 
 
     // -------------------- Centralized builder for schedule context -------------------- 
     async function buildScheduleContextFromForm(formState, selPlant, options = {}) {
-        const { enforcePlantSuccessionPolicy = false } = options;
 
         // Prefer current selected plant instance if provided                              
         const plant = await resolveEffectivePlant(formState.plantId, formState.varietyId);
@@ -1126,32 +1007,13 @@ Draw.loadPlugin(function (ui) {
 
         const method = formState.method;
 
-        let succession = SuccessionConfig.fromUI(plant, {
-            useSucc: formState.useSuccession,
-            maxSucc: formState.maxSucc,
-            overlapDays: formState.overlapDays,
-            harvestWindowDays: formState.harvestWindowDays,
-            minYieldMultiplier: formState.minYieldMultiplier
-        }).withPlantDefaults(plant);
-
-        // Optionally enforce plant-level succession policy (used by OK handler)          
-        if (enforcePlantSuccessionPolicy && Number(plant.succession ?? 1) !== 1) {
-            succession = new SuccessionConfig({
-                enabled: false,
-                max: 1,
-                overlapDays: 0,
-                harvestWindowDays: succession.harvestWindowDays,
-                minYieldMultiplier: succession.minYieldMultiplier
-            });
-        }
-
         const policy = PolicyFlags.fromPlant(plant, method);
 
         // --- NEW: define varietyId/varietyName in this scope ---
-        const varietyId = formState.varietyId != null ? Number(formState.varietyId) : null;    // (keep)
-        const varietyName = varietyId                                                          // NEW
-            ? await resolveVarietyName(varietyId, options.currentVarieties)                       // NEW
-            : '';                                                                                 // NEW        
+        const varietyId = formState.varietyId != null ? Number(formState.varietyId) : null;
+        const varietyName = varietyId
+            ? await resolveVarietyName(varietyId, options.currentVarieties)
+            : '';
 
         const inputs = new ScheduleInputs({
             plant,
@@ -1159,16 +1021,340 @@ Draw.loadPlugin(function (ui) {
             method,
             startISO: formState.startISO,
             seasonEndISO: formState.seasonEndISO,
-            succession,
             policy,
             seasonStartYear: formState.seasonStartYear,
-            varietyId,                    // now defined
-            varietyName                   // now defined
+            harvestWindowDays: formState.harvestWindowDays,
+            varietyId,
+            varietyName
         });
 
 
-        return { plant, city, method, succession, policy, inputs };
+        return { plant, city, method, policy, inputs };
     }
+
+    async function computeFeasibilityWindow({
+        plant,          // effectivePlant (base+variety resolved)
+        cityName,
+        seasonStartYear,
+        method,
+        harvestWindowDays,
+    }) {
+        const city = await CityClimate.loadByName(cityName);
+        if (!city) return null;
+
+        const env = plant.cropTempEnvelope();
+        const dailyRates = city.dailyRates(env.Tbase, seasonStartYear);
+        const monthlyAvgTemp = city.monthlyMeans();
+        const budget = plant.firstHarvestBudget();
+
+        const overwinterAllowed = plant.isPerennial() || Number(plant.overwinter_ok ?? 0) === 1;
+        const scanStart = asUTCDate(seasonStartYear, 1, 1);
+        const scanEndYear = overwinterAllowed ? (seasonStartYear + 1) : seasonStartYear;
+        const scanEndHard = asUTCDate(scanEndYear, 12, 31);
+
+        const soilGateThresholdC = Number.isFinite(Number(plant.soil_temp_min_plant_c))
+            ? Number(plant.soil_temp_min_plant_c)
+            : null;
+
+        const daysTransplant = Number.isFinite(Number(plant.days_transplant)) ? Number(plant.days_transplant) : 0;
+        const lastSpringFrostDOY = pickFrostByRisk(city, "p50");
+
+        const r = computeAutoStartEndWindowForward({
+            method,
+            budget,
+            HW_DAYS: harvestWindowDays,
+            dailyRatesMap: dailyRates,
+            monthlyAvgTemp,
+            Tbase: env.Tbase,
+            cropTemp: env,
+            scanStart,
+            scanEndHard,
+            soilGateThresholdC,
+            soilGateConsecutiveDays: 3,
+            startCoolingThresholdC: asCoolingThresholdC(plant.start_cooling_threshold_c),
+            useSpringFrostGate: !overwinterAllowed,
+            lastSpringFrostDOY,
+            daysTransplant,
+            overwinterAllowed
+        });
+
+        return {
+            autoEarliestISO: r.earliestFeasibleSowDate?.toISOString().slice(0, 10) ?? null,
+            lastFeasibleSowISO: r.lastFeasibleSowDate ? r.lastFeasibleSowDate.toISOString().slice(0, 10) : null,
+            climateEndISO: (r.climateEndDate instanceof Date) ? r.climateEndDate.toISOString().slice(0, 10) : null
+        };
+    }
+
+    function accumulateGDDUntil(startDate, targetGDD, dailyRatesMap, seasonEnd) {
+        let acc = 0;
+        let cur = new Date(Date.UTC(startDate.getUTCFullYear(),
+            startDate.getUTCMonth(),
+            startDate.getUTCDate()));
+        while (acc < targetGDD) {
+            if (seasonEnd && !dateLTE(cur, seasonEnd)) break;
+            const rate = Math.max(0, dailyRatesMap[cur.getUTCMonth() + 1] ?? 0);
+            acc += rate;
+            if (acc >= targetGDD) break;
+            cur = addDaysUTC(cur, 1);
+        }
+        const reached = acc >= targetGDD;
+        return { date: cur, gdd: acc, reached };
+    }
+
+    function accumulateGDDBackward(targetDate, targetGDD, dailyRatesMap, seasonStart = null) {
+        let acc = 0;
+        let cur = addDaysUTC(targetDate, -1);
+        while (acc < targetGDD) {
+            if (seasonStart && dateLTE(cur, addDaysUTC(seasonStart, -1))) break;
+            const rate = Math.max(0, dailyRatesMap[cur.getUTCMonth() + 1] ?? 0);
+            acc += rate;
+            cur = addDaysUTC(cur, -1);
+        }
+        return { date: addDaysUTC(cur, 1), gdd: acc };
+    }
+
+    function maturityDateFromBudget(startDate, budget, dailyRatesMap, seasonEnd) {
+        if (budget.mode === 'days') {
+            return addDaysUTC(startDate, Math.max(0, Math.round(budget.amount)));
+        }
+        return accumulateGDDUntil(startDate, budget.amount, dailyRatesMap, seasonEnd).date;
+    }
+
+    function sowDateBackFromTargetMaturity(targetMaturityDate, budget, dailyRatesMap, seasonStart) {
+        if (budget.mode === 'days') {
+            return addDaysUTC(targetMaturityDate, -Math.max(0, Math.round(budget.amount)));
+        }
+        // 'gdd'
+        return accumulateGDDBackward(targetMaturityDate, budget.amount, dailyRatesMap, seasonStart).date;
+    }
+
+
+
+    // -------------------- Thermal / yield helpers -----------------------------------------
+
+    function thermalYieldFactor(T, cropTemp) {
+        const { Tmin, ToptLow, ToptHigh, Tmax } = cropTemp;
+        if (T <= Tmin || T >= Tmax) return 0;
+        if (T < ToptLow) return (T - Tmin) / Math.max(1e-9, (ToptLow - Tmin));
+        if (T <= ToptHigh) return 1;
+        return (Tmax - T) / Math.max(1e-9, (Tmax - ToptHigh));
+    }
+    function weightedMeanTempOverRange(startDate, endDate, monthlyAvgTemp, dailyRatesMap, Tbase = 10) {
+        let cur = new Date(Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth(), startDate.getUTCDate()));
+        let sum = 0, n = 0;
+        while (cur < endDate) {
+            const m = cur.getUTCMonth() + 1;
+            let T = monthlyAvgTemp?.[m];
+            if (T == null) {
+                const gdd = Math.max(0, dailyRatesMap[cur.getUTCMonth() + 1] ?? 0);
+                T = gdd > 0 ? (Tbase + gdd) : (Tbase - 2);
+            }
+            sum += T; n += 1; cur = addDaysUTC(cur, 1);
+        }
+        return n > 0 ? (sum / n) : Tbase;
+    }
+
+    function deriveYieldMultipliersFromTemp({ schedule, budget, dailyRatesMap, cropTemp, monthlyAvgTemp, seasonEnd, Tbase, window = 'harvest', HW_DAYS = 0 }) {
+        const raw = schedule.map(sow => {
+            const mat = maturityDateFromBudget(sow, budget, dailyRatesMap, seasonEnd);
+            const wStart = (window === 'harvest') ? mat : sow;
+            const wEnd = (window === 'harvest') ? addDaysUTC(mat, Math.max(0, HW_DAYS))
+                : mat;
+            const Tmean = weightedMeanTempOverRange(wStart, wEnd, monthlyAvgTemp, dailyRatesMap, Tbase);
+            return thermalYieldFactor(Tmean, cropTemp);
+        });
+        const maxF = Math.max(...raw, 0);
+        return raw.map(f => Math.max(0.05, Math.min(1, maxF > 0 ? f / maxF : 0)));
+    }
+
+
+    // -------------------- Soil-temperature gate --------------------------------------------
+
+    // Convert model instance to plain {column: value} dict (primitives only)           
+    function toPlainDict(obj) {
+        const out = {};
+        if (!obj) return out;
+        for (const k of Object.keys(obj)) {
+            const v = obj[k];
+            if (v == null) continue;
+            const t = typeof v;
+            if (t === 'function') continue;
+            if (t === 'object') continue;
+            out[k] = v;
+        }
+        return out;
+    }
+
+    function asCoolingThresholdC(v) {
+        if (v === null || v === undefined || v === '') return null;
+        const n = Number(v);
+        return Number.isFinite(n) ? n : null;
+    }
+
+
+
+    function monthMeanAt(date, monthlyAvgTemp) {
+        return monthlyAvgTemp?.[date.getUTCMonth() + 1] ?? null;
+    }
+
+    function firstCoolingCrossingDate({ thresholdC, monthlyAvgTemp, scanStart, scanEndHard }) {
+        // Walk month by month within [scanStart, scanEndHard]
+        let cursor = asUTCDate(scanStart.getUTCFullYear(), scanStart.getUTCMonth() + 1, 1);
+        const end = asUTCDate(scanEndHard.getUTCFullYear(), scanEndHard.getUTCMonth() + 1, 1);
+
+        // previous month reference
+        let prevMonth = addDaysUTC(cursor, -1);
+        let Tprev = monthMeanAt(prevMonth, monthlyAvgTemp);
+
+        while (dateLTE(cursor, end)) {
+            const Tcur = monthMeanAt(cursor, monthlyAvgTemp);
+            if (Tcur != null && Tprev != null) {
+                if (Tprev > thresholdC && Tcur <= thresholdC) {
+                    // Linear day-of-month estimate
+                    const dim = daysInMonth(cursor.getUTCFullYear(), cursor.getUTCMonth() + 1);
+                    const frac = Math.min(1, Math.max(0, (Tprev - thresholdC) / Math.max(1e-6, (Tprev - Tcur))));
+                    const day = Math.max(1, Math.min(dim, Math.round(frac * dim)));
+                    return asUTCDate(cursor.getUTCFullYear(), cursor.getUTCMonth() + 1, day);
+                }
+            }
+            Tprev = Tcur;
+            // next month 1st
+            cursor = asUTCDate(cursor.getUTCFullYear(), cursor.getUTCMonth() + 2, 1);
+        }
+
+        // Edge cases:
+        // If scanStart month is already <= threshold, start at scanStart.
+        const Tstart = monthMeanAt(scanStart, monthlyAvgTemp);
+        if (Tstart != null && Tstart <= thresholdC) return new Date(scanStart);
+
+        return null;
+    }
+
+    function buildPlantingSchedule(inputs) {
+        const planner = new Planner(inputs);
+        const C = planner.ctx;
+
+        // 1) first sow baseline: scanStart or cooling trigger
+        let first = new Date(Math.max(C.startDate, C.scanStart));
+        if (C.coolingCrossDate) {
+            first = new Date(Math.max(first, C.coolingCrossDate));
+        }
+
+        // 2) slide forward by soil gate & overall feasibility
+        let feas = planner.isSowFeasible(first);
+        if (!feas.ok) {
+            const nxt = planner.findNextFeasible(first);
+            if (!nxt.date) return [];
+            first = nxt.date;
+        }
+
+        // single planting date only
+        return [first];
+    }
+
+
+    function computeStageDatesForPlanting({ sowDate, budget, stageDays, dailyRatesMap, seasonEnd }) {
+        const maturity = maturityDateFromBudget(sowDate, budget, dailyRatesMap, seasonEnd);
+        const harvestDays = Math.max(0, stageDays.harvest_window_days || 0);
+        const harvestStart = maturity;                          // first harvest
+        const harvestEnd = addDaysUTC(maturity, harvestDays); // window after first harvest
+
+        // Simple fractions: interpret against the *same unit* as budget
+        const total = budget.amount;
+        const byFrac = (frac) => {
+            if (!(frac > 0 && frac < 1)) return null;
+            if (budget.mode === 'days') return addDaysUTC(sowDate, Math.round(total * frac));
+            return accumulateGDDUntil(sowDate, Math.round(total * frac), dailyRatesMap, seasonEnd).date;
+        };
+
+        const mDays = Number(stageDays.maturityDays); // optional legacy
+        const f_germ = mDays ? (Number(stageDays.germinationDays || stageDays.days_germ) / mDays) : null;
+        const f_trans = mDays ? (Number(stageDays.transplantDays || stageDays.days_transplant) / mDays) : null;
+
+        return {
+            sow: sowDate,
+            germ: byFrac(f_germ),
+            transplant: byFrac(f_trans),
+            maturity,
+            harvestStart,
+            harvestEnd
+        };
+    }
+
+
+    function computeStageTimelineForSchedule({ schedule, budget, stageDays, dailyRatesMap, seasonEnd }) {
+
+        if (!budget || !Number.isFinite(budget.amount) || budget.amount <= 0) {
+            throw new Error('Invalid maturity budget');
+        }
+        return (schedule || []).map(sow =>
+            computeStageDatesForPlanting({ sowDate: sow, budget, stageDays, dailyRatesMap, seasonEnd })
+        );
+    }
+
+    function classifyIsThermal(reason) {
+        if (!reason) return false;
+        return reason.indexOf('harvest_too_cold') === 0 ||
+            reason.indexOf('harvest_too_hot') === 0 ||
+            reason === 'insufficient_gdd';
+    }
+
+    function firstNonSoilStart(planner, startD) {
+        const C = planner.ctx;
+        let d = new Date(Math.max(startD, C.scanStart));
+        for (; d <= C.scanEndHard; d = planner.addDays(d, 1)) {
+            if (!C.useSoilTempGate || planner.soilGateOK(d)) return d;
+        }
+        return null;
+    }
+
+    function impliedHarvestEndForDate(planner, sow, HW_DAYS) {
+        const C = planner.ctx;
+        const mat = maturityDateFromBudget(sow, C.BUDGET, C.dailyRates, C.scanEndHard);
+        return planner.addDays(mat, Math.max(0, HW_DAYS || 0));
+    }
+
+    // helper near your other date utils
+    function dateFromDOY(year, doy) {
+        const d0 = Date.UTC(year, 0, 1);
+        return new Date(d0 + (Math.max(1, Math.floor(doy)) - 1) * 86400000);
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -1290,312 +1476,6 @@ Draw.loadPlugin(function (ui) {
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    // -------------------- Thermal / yield helpers -----------------------------------------
-
-    function accumulateGDDUntil(startDate, targetGDD, dailyRatesMap, seasonEnd) {
-        let acc = 0;
-        let cur = new Date(Date.UTC(startDate.getUTCFullYear(),
-            startDate.getUTCMonth(),
-            startDate.getUTCDate()));
-        while (acc < targetGDD) {
-            if (seasonEnd && !dateLTE(cur, seasonEnd)) break;
-            const rate = Math.max(0, dailyRatesMap[cur.getUTCMonth() + 1] ?? 0);
-            acc += rate;
-            if (acc >= targetGDD) break;
-            cur = addDaysUTC(cur, 1);
-        }
-        const reached = acc >= targetGDD;
-        return { date: cur, gdd: acc, reached };
-    }
-
-    function accumulateGDDBackward(targetDate, targetGDD, dailyRatesMap, seasonStart = null) {
-        let acc = 0;
-        let cur = addDaysUTC(targetDate, -1);
-        while (acc < targetGDD) {
-            if (seasonStart && dateLTE(cur, addDaysUTC(seasonStart, -1))) break;
-            const rate = Math.max(0, dailyRatesMap[cur.getUTCMonth() + 1] ?? 0);
-            acc += rate;
-            cur = addDaysUTC(cur, -1);
-        }
-        return { date: addDaysUTC(cur, 1), gdd: acc };
-    }
-
-    function thermalYieldFactor(T, cropTemp) {
-        const { Tmin, ToptLow, ToptHigh, Tmax } = cropTemp;
-        if (T <= Tmin || T >= Tmax) return 0;
-        if (T < ToptLow) return (T - Tmin) / Math.max(1e-9, (ToptLow - Tmin));
-        if (T <= ToptHigh) return 1;
-        return (Tmax - T) / Math.max(1e-9, (Tmax - ToptHigh));
-    }
-    function weightedMeanTempOverRange(startDate, endDate, monthlyAvgTemp, dailyRatesMap, Tbase = 10) {
-        let cur = new Date(Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth(), startDate.getUTCDate()));
-        let sum = 0, n = 0;
-        while (cur < endDate) {
-            const m = cur.getUTCMonth() + 1;
-            let T = monthlyAvgTemp?.[m];
-            if (T == null) {
-                const gdd = Math.max(0, dailyRatesMap[cur.getUTCMonth() + 1] ?? 0);
-                T = gdd > 0 ? (Tbase + gdd) : (Tbase - 2);
-            }
-            sum += T; n += 1; cur = addDaysUTC(cur, 1);
-        }
-        return n > 0 ? (sum / n) : Tbase;
-    }
-
-    function deriveYieldMultipliersFromTemp({ schedule, budget, dailyRatesMap, cropTemp, monthlyAvgTemp, seasonEnd, Tbase, window = 'harvest', HW_DAYS = 0 }) {
-        const raw = schedule.map(sow => {
-            const mat = maturityDateFromBudget(sow, budget, dailyRatesMap, seasonEnd);
-            const wStart = (window === 'harvest') ? mat : sow;
-            const wEnd = (window === 'harvest') ? addDaysUTC(mat, Math.max(0, HW_DAYS))
-                : mat;
-            const Tmean = weightedMeanTempOverRange(wStart, wEnd, monthlyAvgTemp, dailyRatesMap, Tbase);
-            return thermalYieldFactor(Tmean, cropTemp);
-        });
-        const maxF = Math.max(...raw, 0);
-        return raw.map(f => Math.max(0.05, Math.min(1, maxF > 0 ? f / maxF : 0)));
-    }
-
-    function maturityDateFromBudget(startDate, budget, dailyRatesMap, seasonEnd) {
-        if (budget.mode === 'days') {
-            return addDaysUTC(startDate, Math.max(0, Math.round(budget.amount)));
-        }
-        return accumulateGDDUntil(startDate, budget.amount, dailyRatesMap, seasonEnd).date;
-    }
-
-    function sowDateBackFromTargetMaturity(targetMaturityDate, budget, dailyRatesMap, seasonStart) {
-        if (budget.mode === 'days') {
-            return addDaysUTC(targetMaturityDate, -Math.max(0, Math.round(budget.amount)));
-        }
-        // 'gdd'
-        return accumulateGDDBackward(targetMaturityDate, budget.amount, dailyRatesMap, seasonStart).date;
-    }
-
-
-    // -------------------- Soil-temperature gate --------------------------------------------
-
-    // Convert model instance to plain {column: value} dict (primitives only)           
-    function toPlainDict(obj) {
-        const out = {};
-        if (!obj) return out;
-        for (const k of Object.keys(obj)) {
-            const v = obj[k];
-            if (v == null) continue;
-            const t = typeof v;
-            if (t === 'function') continue;
-            if (t === 'object') continue;
-            out[k] = v;
-        }
-        return out;
-    }
-
-    function asCoolingThresholdC(v) {
-        if (v === null || v === undefined || v === '') return null;
-        const n = Number(v);
-        return Number.isFinite(n) ? n : null;
-    }
-
-
-
-    function monthMeanAt(date, monthlyAvgTemp) {
-        return monthlyAvgTemp?.[date.getUTCMonth() + 1] ?? null;
-    }
-
-    function firstCoolingCrossingDate({ thresholdC, monthlyAvgTemp, scanStart, scanEndHard }) {
-        // Walk month by month within [scanStart, scanEndHard]
-        let cursor = asUTCDate(scanStart.getUTCFullYear(), scanStart.getUTCMonth() + 1, 1);
-        const end = asUTCDate(scanEndHard.getUTCFullYear(), scanEndHard.getUTCMonth() + 1, 1);
-
-        // previous month reference
-        let prevMonth = addDaysUTC(cursor, -1);
-        let Tprev = monthMeanAt(prevMonth, monthlyAvgTemp);
-
-        while (dateLTE(cursor, end)) {
-            const Tcur = monthMeanAt(cursor, monthlyAvgTemp);
-            if (Tcur != null && Tprev != null) {
-                if (Tprev > thresholdC && Tcur <= thresholdC) {
-                    // Linear day-of-month estimate
-                    const dim = daysInMonth(cursor.getUTCFullYear(), cursor.getUTCMonth() + 1);
-                    const frac = Math.min(1, Math.max(0, (Tprev - thresholdC) / Math.max(1e-6, (Tprev - Tcur))));
-                    const day = Math.max(1, Math.min(dim, Math.round(frac * dim)));
-                    return asUTCDate(cursor.getUTCFullYear(), cursor.getUTCMonth() + 1, day);
-                }
-            }
-            Tprev = Tcur;
-            // next month 1st
-            cursor = asUTCDate(cursor.getUTCFullYear(), cursor.getUTCMonth() + 2, 1);
-        }
-
-        // Edge cases:
-        // If scanStart month is already <= threshold, start at scanStart.
-        const Tstart = monthMeanAt(scanStart, monthlyAvgTemp);
-        if (Tstart != null && Tstart <= thresholdC) return new Date(scanStart);
-
-        return null;
-    }
-
-    function buildSuccessionSchedule(inputs) {
-        const planner = new Planner(inputs);
-        const C = planner.ctx;
-
-        // 1) first sow baseline: scanStart or cooling trigger
-        let first = new Date(Math.max(C.startDate, C.scanStart));
-        if (C.coolingCrossDate) {
-            first = new Date(Math.max(first, C.coolingCrossDate));                         // (optional)
-        }
-
-
-        // 2) slide forward by soil gate & overall feasibility
-        let feas = planner.isSowFeasible(first);
-        if (!feas.ok) {
-            const nxt = planner.findNextFeasible(first);
-            if (!nxt.date) return [];
-            first = nxt.date;
-        }
-
-        const dates = [first];
-        const total = Math.max(1, inputs.succession.enabled ? inputs.succession.max : 1);
-
-        // 3) successive plantings
-        for (let i = 1; i < total; i++) {
-            const next = planner.nextPlantingDate(dates[dates.length - 1], inputs.succession.overlapDays, 3);
-            if (!next || next > C.scanEndHard) break;
-            dates.push(next);
-        }
-        return dates;
-    }
-
-
-    function computeStageDatesForPlanting({ sowDate, budget, stageDays, dailyRatesMap, seasonEnd }) {
-        const maturity = maturityDateFromBudget(sowDate, budget, dailyRatesMap, seasonEnd);
-        const harvestDays = Math.max(0, stageDays.harvest_window_days || 0);
-        const harvestStart = maturity;                          // first harvest
-        const harvestEnd = addDaysUTC(maturity, harvestDays); // window after first harvest
-
-        // Simple fractions: interpret against the *same unit* as budget
-        const total = budget.amount;
-        const byFrac = (frac) => {
-            if (!(frac > 0 && frac < 1)) return null;
-            if (budget.mode === 'days') return addDaysUTC(sowDate, Math.round(total * frac));
-            return accumulateGDDUntil(sowDate, Math.round(total * frac), dailyRatesMap, seasonEnd).date;
-        };
-
-        const mDays = Number(stageDays.maturityDays); // optional legacy
-        const f_germ = mDays ? (Number(stageDays.germinationDays || stageDays.days_germ) / mDays) : null;
-        const f_trans = mDays ? (Number(stageDays.transplantDays || stageDays.days_transplant) / mDays) : null;
-
-        return {
-            sow: sowDate,
-            germ: byFrac(f_germ),
-            transplant: byFrac(f_trans),
-            maturity,
-            harvestStart,
-            harvestEnd
-        };
-    }
-
-
-    function computeStageTimelinesForSchedule({ schedule, budget, stageDays, dailyRatesMap, seasonEnd }) {
-
-        if (!budget || !Number.isFinite(budget.amount) || budget.amount <= 0) {
-            throw new Error('Invalid maturity budget');
-        }
-        return (schedule || []).map(sow =>
-            computeStageDatesForPlanting({ sowDate: sow, budget, stageDays, dailyRatesMap, seasonEnd })
-        );
-    }
-
-    function distributePlantsToMeetTarget({ N, seasonYieldTarget, yieldPerPlant, multipliers }) {
-        const f = (multipliers && multipliers.length === N) ? multipliers.slice() : Array.from({ length: N }, () => 1);
-        const eps = 1e-6;
-        if (yieldPerPlant <= 0 || N <= 0 || seasonYieldTarget <= 0)
-            return { plants: Array.from({ length: N }, () => 0), expectedTotalYield: 0 };
-
-        const perSuccessionYield = seasonYieldTarget / N;
-        const ideal = f.map(fi => perSuccessionYield / (yieldPerPlant * Math.max(eps, fi)));
-        const plants = ideal.map(x => Math.ceil(x));
-        const expected = (arr) => arr.reduce((acc, p, i) => acc + p * yieldPerPlant * f[i], 0);
-        let expYield = expected(plants);
-        let idx = 0;
-        while (expYield < seasonYieldTarget) {
-            plants[idx % N] += 1;
-            expYield = expected(plants);
-            if (++idx > 100000) break;
-        }
-        return { plants, expectedTotalYield: expYield };
-    }
-
-    function classifyIsThermal(reason) {
-        if (!reason) return false;
-        return reason.indexOf('harvest_too_cold') === 0 ||
-            reason.indexOf('harvest_too_hot') === 0 ||
-            reason === 'insufficient_gdd';
-    }
-
-    function firstNonSoilStart(planner, startD) {
-        const C = planner.ctx;
-        let d = new Date(Math.max(startD, C.scanStart));
-        for (; d <= C.scanEndHard; d = planner.addDays(d, 1)) {
-            if (!C.useSoilTempGate || planner.soilGateOK(d)) return d;
-        }
-        return null;
-    }
-
-    function impliedHarvestEndForDate(planner, sow, HW_DAYS) {
-        const C = planner.ctx;
-        const mat = maturityDateFromBudget(sow, C.BUDGET, C.dailyRates, C.scanEndHard);
-        return planner.addDays(mat, Math.max(0, HW_DAYS || 0));
-    }
-
-    // helper near your other date utils
-    function dateFromDOY(year, doy) {
-        const d0 = Date.UTC(year, 0, 1);
-        return new Date(d0 + (Math.max(1, Math.floor(doy)) - 1) * 86400000);
-    }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     function buildAutoWindowPlanner(params) {
         const {
             method, budget, HW_DAYS,
@@ -1639,10 +1519,6 @@ Draw.loadPlugin(function (ui) {
             method,
             startISO: scanStart.toISOString().slice(0, 10),
             seasonEndISO: scanEndHard.toISOString().slice(0, 10),
-            succession: new SuccessionConfig({
-                enabled: false, max: 1, overlapDays: 0,
-                harvestWindowDays: HW_DAYS, minYieldMultiplier: 0
-            }),
             policy,
             seasonStartYear: scanStart.getUTCFullYear()
         });
@@ -1667,7 +1543,6 @@ Draw.loadPlugin(function (ui) {
             daysTransplant = 0,
             // behavior                                                                      
             overwinterAllowed = false,
-            successionEnabled = false
         } = params;
 
         // Build planner using fake plant/city with the given environment                    
@@ -1767,7 +1642,6 @@ Draw.loadPlugin(function (ui) {
                 scanStart: C.scanStart.toISOString().slice(0, 10),
                 scanEndHard: C.scanEndHard.toISOString().slice(0, 10),
                 method,
-                successionEnabled,
                 firstNonSoil: firstNonSoil ? firstNonSoil.toISOString().slice(0, 10) : null,
                 lastThermalHarvestEnd: lastThermalHarvestEnd
                     ? lastThermalHarvestEnd.toISOString().slice(0, 10)
@@ -1798,14 +1672,9 @@ Draw.loadPlugin(function (ui) {
             new Date(C.scanEndHard);
 
         // Decide which harvest-end to expose as lastHarvestDate                             
-        let lastHarvestDate;
-        if (successionEnabled) {
-            lastHarvestDate = lastFeasibleHarvestEnd || firstFeasibleHarvestEnd;
-        } else {
-            lastHarvestDate = firstFeasibleHarvestEnd || earliestFeasibleSow;
-        }
+        const lastHarvestDate = firstFeasibleHarvestEnd || earliestFeasibleSow;
 
-        // climate-level end of window (independent of successions)
+        // climate-level end of window
         let climateEndDate;
         if (overwinterAllowed) {
             // For overwinter crops, tie climate end to the last (schedule) harvest      
@@ -1824,7 +1693,6 @@ Draw.loadPlugin(function (ui) {
 
 
         console.log('[autoWindow] RESULT', {
-            successionEnabled,
             earliestFeasibleSowDate: fmtISO(earliestFeasibleSow),
             lastHarvestDate: fmtISO(lastHarvestDate),
             lastFeasibleSowDate: lastFeasibleSow ? fmtISO(lastFeasibleSow) : null,
@@ -1954,8 +1822,9 @@ Draw.loadPlugin(function (ui) {
         el.value = (initial == null || initial === '') ? '' : String(initial);
         if (min != null) el.min = String(min);
         if (step != null) el.step = String(step);
+        el.style.width = '100%'; el.style.padding = '6px';                    // NEW
         return el;
-    }
+    }    
 
     function readNullableNumber(inputEl) {
         const s = String(inputEl?.value ?? '').trim();
@@ -1996,14 +1865,6 @@ Draw.loadPlugin(function (ui) {
             if (fr && fr.row) container.appendChild(fr.row);
         });
     }
-
-
-    function setRowVisible(fieldRows, key, visible) {
-        const fr = fieldRows[key];
-        if (fr && fr.row) fr.row.style.display = visible ? '' : 'none';
-    }
-
-
 
     // Scans season feasibility day-by-day.
     async function explainFeasibilityOverSeason(inputs, maxDays = 400, stopAtFirstOk = false) {
@@ -2083,50 +1944,6 @@ Draw.loadPlugin(function (ui) {
         });
     }
 
-    function askText(ui, { title = 'Enter text', label = 'Value:', initial = '' } = {}) {
-        const wrap = document.createElement('div');
-        wrap.style.padding = '12px';
-        wrap.style.width = '420px';
-
-        const t = document.createElement('div');
-        t.textContent = title;
-        t.style.fontWeight = '600';
-        t.style.marginBottom = '10px';
-        wrap.appendChild(t);
-
-        const input = document.createElement('input');
-        input.type = 'text';
-        input.value = String(initial || '');
-        input.style.width = '100%';
-        input.style.boxSizing = 'border-box';
-        input.style.padding = '8px';
-
-        const r = row(label, input);
-        wrap.appendChild(r.row);
-
-        const btns = document.createElement('div');
-        btns.style.marginTop = '12px';
-        btns.style.display = 'flex';
-        btns.style.justifyContent = 'flex-end';
-        btns.style.gap = '8px';
-
-        const cancelBtn = mxUtils.button('Cancel', () => wrap.__cancel());
-
-        const okBtn = mxUtils.button('OK', () => {
-            const val = String(input.value || '').trim();
-            wrap.__commit(val || null);
-        });
-
-        btns.appendChild(cancelBtn);
-        btns.appendChild(okBtn);
-        wrap.appendChild(btns);
-
-        setTimeout(() => { try { input.focus(); input.select(); } catch (_) { } }, 0);
-
-        return showCommitDialog(ui, { container: wrap, width: 440, height: 180, modal: true, closable: true });
-    }
-
-
     function renderPreviewTable(ui, rows) {
         const div = document.createElement('div');
         div.style.padding = '12px';
@@ -2145,7 +1962,7 @@ Draw.loadPlugin(function (ui) {
         table.style.width = '100%';
 
         const headers = [
-            'Succession', 'Plant', 'Method',
+            'Plant', 'Method',
             'Sow', 'Germ', 'Transplant', 'Harvest Start', 'Harvest End',
             'Yield Multiplier', 'Plants Required'
         ];
@@ -2168,7 +1985,7 @@ Draw.loadPlugin(function (ui) {
         rows.forEach(r => {
             const tr = document.createElement('tr');
             [
-                r.idx, r.plant, r.method,
+                r.plant, r.method,
                 r.sow, r.germ, r.trans, r.harvStart, r.harvEnd,
                 r.mult, r.plantsReq
             ].forEach(val => {
@@ -2253,11 +2070,9 @@ Draw.loadPlugin(function (ui) {
         // --- Methods ---
         const directSowChk = makeCheckbox((existing?.direct_sow ?? 0) === 1);
         const transplantChk = makeCheckbox((existing?.transplant ?? 0) === 1);
-        const successionChk = makeCheckbox((existing?.succession ?? 1) === 1);
 
         div.appendChild(row('Direct sow:', directSowChk).row);
         div.appendChild(row('Transplant:', transplantChk).row);
-        div.appendChild(row('Allow successions:', successionChk).row);
 
         // --- Maturity budget ---
         const hasGdd = Number(existing?.gdd_to_maturity ?? 0) > 0;
@@ -2343,7 +2158,6 @@ Draw.loadPlugin(function (ui) {
                 const transplant = transplantChk.checked ? 1 : 0;
                 if (!direct_sow && !transplant) throw new Error('Enable direct_sow and/or transplant');
 
-                const succession = successionChk.checked ? 1 : 0;
                 const overwinter_ok = overwinterChk.checked ? 1 : 0;
 
                 const budgetMode = budgetModeSel.value;
@@ -2363,7 +2177,7 @@ Draw.loadPlugin(function (ui) {
                     annual, biennial, perennial,
                     lifespan_years,
                     overwinter_ok,
-                    direct_sow, transplant, succession,
+                    direct_sow, transplant,
                     gdd_to_maturity, days_maturity,
                     days_germ: readIntGE0(daysGermInput),
                     days_transplant: readIntGE0(daysTransInput),
@@ -2400,34 +2214,34 @@ Draw.loadPlugin(function (ui) {
     }
 
 
-    (function installVarietyEditorBridge() {                                         // NEW
-        const graph = ui && ui.editor ? ui.editor.graph : null;                        // NEW
-        if (!graph) return;                                                            // NEW
+    (function installVarietyEditorBridge() {
+        const graph = ui && ui.editor ? ui.editor.graph : null;
+        if (!graph) return;
 
-        if (graph.__uslVarietyEditorBridgeInstalled) return;                           // NEW
-        graph.__uslVarietyEditorBridgeInstalled = true;                                // NEW
+        if (graph.__uslVarietyEditorBridgeInstalled) return;
+        graph.__uslVarietyEditorBridgeInstalled = true;
 
-        graph.addListener("usl:openVarietyEditor", async function (sender, evt) {      // NEW
-            const cropId = String(evt.getProperty("cropId") || "").trim();             // NEW
-            const plantId = Number(evt.getProperty("plantId"));                        // NEW
-            const varietyIdRaw = evt.getProperty("varietyId");                         // NEW
-            const varietyId = (varietyIdRaw == null || varietyIdRaw === "") ? null : Number(varietyIdRaw); // NEW
+        graph.addListener("usl:openVarietyEditor", async function (sender, evt) {
+            const cropId = String(evt.getProperty("cropId") || "").trim();
+            const plantId = Number(evt.getProperty("plantId"));
+            const varietyIdRaw = evt.getProperty("varietyId");
+            const varietyId = (varietyIdRaw == null || varietyIdRaw === "") ? null : Number(varietyIdRaw);
 
-            console.log("[Scheduler] received usl:openVarietyEditor", { cropId, plantId, varietyId }); // NEW
+            console.log("[Scheduler] received usl:openVarietyEditor", { cropId, plantId, varietyId });
 
-            if (!Number.isFinite(plantId)) return;                                     // NEW
+            if (!Number.isFinite(plantId)) return;
 
-            const mode = (varietyId != null && Number.isFinite(varietyId)) ? "edit" : "add"; // NEW
+            const mode = (varietyId != null && Number.isFinite(varietyId)) ? "edit" : "add";
 
             try {
-                const saved = await openVarietyEditorDialog(ui, {                      // NEW
+                const saved = await openVarietyEditorDialog(ui, {
                     mode,
                     plantId,
                     varietyId
                 });
 
                 // Emit close event (include cropId so Year Planner updates right row)
-                graph.fireEvent(new mxEventObject(                                     // NEW
+                graph.fireEvent(new mxEventObject(
                     "usl:varietyEditorClosed",
                     "cropId", cropId,
                     "plantId", plantId,
@@ -2436,9 +2250,9 @@ Draw.loadPlugin(function (ui) {
                     "varietyName", saved && saved.variety_name ? String(saved.variety_name) : ""
                 ));
             } catch (e) {
-                console.error("[Scheduler] openVarietyEditorDialog failed", e);        // NEW
+                console.error("[Scheduler] openVarietyEditorDialog failed", e);
                 try {
-                    graph.fireEvent(new mxEventObject(                                 // NEW
+                    graph.fireEvent(new mxEventObject(
                         "usl:varietyEditorClosed",
                         "cropId", cropId,
                         "plantId", plantId,
@@ -2827,7 +2641,6 @@ Draw.loadPlugin(function (ui) {
                 syncStateFromControls();
                 await refreshEffectivePlant();
                 resetMethodOptions(effectivePlant);
-                refreshSuccessionUI();
                 await recomputeAll('varietyChanged');
                 await refreshTaskTemplateFromSelection();
             } catch (e) {
@@ -2860,7 +2673,6 @@ Draw.loadPlugin(function (ui) {
                 syncStateFromControls();
                 await refreshEffectivePlant();
                 resetMethodOptions(effectivePlant);
-                refreshSuccessionUI();
                 await recomputeAll('varietyChanged');
                 await refreshTaskTemplateFromSelection();
             } catch (e) {
@@ -2897,7 +2709,7 @@ Draw.loadPlugin(function (ui) {
                     value: String(v.variety_id),
                     label: String(v.variety_name)
                 })));
-            const sel = Number.isFinite(Number(selectedVarietyId)) ? String(selectedVarietyId) : ''; // NEW
+            const sel = Number.isFinite(Number(selectedVarietyId)) ? String(selectedVarietyId) : '';
             setSelectOptions(varietySel, opts, sel);
         }
 
@@ -2931,10 +2743,10 @@ Draw.loadPlugin(function (ui) {
 
         // Read-only auto-computed bounds                                         
         const autoEarliestInput = makeDate(initialStartISO, true);
-        const autoLastSowInput = makeDate(initialStartISO, true);                         // (placeholder, updated by recomputeAnchors)
+        const autoLastSowInput = makeDate(initialStartISO, true);
 
         // User-controlled first sow date (used for schedule startISO)                   
-        const startInput = makeDate(initialStartISO, false);                             // (editable)
+        const startInput = makeDate(initialStartISO, false);
 
         // Auto-computed season end constraint (read-only for annuals, editable for perennials)
         const seasonEndInput = makeDate(initialEndISO, true);
@@ -2948,15 +2760,10 @@ Draw.loadPlugin(function (ui) {
         startNoteSpan.style.marginLeft = '8px'; startNoteSpan.style.fontSize = '12px'; startNoteSpan.style.color = '#92400e';
         startNoteSpan.textContent = startNote || '';
 
-        // Succession inputs
-        const allowsSucc = Number(effectivePlant?.succession ?? 1) === 1;
-        const succCheck = makeCheckbox(allowsSucc, !allowsSucc);
-        const maxSuccInput = makeNumber(allowsSucc ? 5 : 1, { min: 1 });
-        const overlapInput = makeNumber(2, { min: 0 });
-        const hwDefault = effectivePlant.defaultHW();               // may be null
-        const hwInput = makeNumber(hwDefault ?? '', { min: 0 });
-        const yieldTargetInput = makeNumber(1000, { min: 0 });
-        const minYieldMultInput = makeNumber(0.50, { min: 0 }); minYieldMultInput.step = '0.01';
+        // --- Harvest window
+        const hwDefault = effectivePlant.defaultHW();                              // existing
+        const harvestWindowInput = makeNullableNumber(hwDefault ?? null, { min: 0, step: 1 });
+        const minYieldMultInput = makeNumber(0.50, { min: 0 }); minYieldMultInput.step = '0.01'; // unchanged (even if unused)
 
         // --- Season control (single field) ---
         const seasonStartYear0 = Number(cell.getAttribute?.('season_start_year') ?? (new Date()).getUTCFullYear());
@@ -2965,37 +2772,50 @@ Draw.loadPlugin(function (ui) {
 
         let taskTemplate = null;
         let taskRules = Array.isArray(taskTemplate?.rules) ? [...taskTemplate.rules] : [];
+        // --- task reset helpers ----------------------------------------------------   
+        let taskDirty = false;
+
+        function clearCellTaskTemplateUndoable(graph, cell) {
+            const model = graph.getModel();
+            model.execute(new mxCellAttributeChange(cell, "task_template_json", ""));
+            graph.refresh(cell);
+        }
+
+        async function loadDefaultsForCurrentSelection() {
+            // Factory defaults = code default, not DB “saved defaults”                       
+            taskTemplate = getDefaultTaskTemplateForMethod(formState.method);
+            taskRules = Array.isArray(taskTemplate?.rules) ? [...taskTemplate.rules] : [];
+            taskEditorDiv.innerHTML = "";
+            taskDirty = false;
+            renderTasksList();
+        }
+
         const saveDefaultChk = makeCheckbox(false);
 
-        // Prefill plant/variety from existing cell attrs                             // NEW
-        const cellVarietyId0 = (() => {                                               // NEW
-            const raw = cell?.getAttribute?.('variety_id');                             // NEW
-            const n = Number(raw);                                                      // NEW
-            return Number.isFinite(n) && n > 0 ? n : null;                              // NEW
+        // Prefill plant/variety from existing cell attrs                             
+        const cellVarietyId0 = (() => {
+            const raw = cell?.getAttribute?.('variety_id');
+            const n = Number(raw);
+            return Number.isFinite(n) && n > 0 ? n : null;
         })();
 
         // --- Central form state ---------------------------------------------------- 
         const formState = {
             plantId: initId,
-            varietyId: cellVarietyId0,                                                  // CHANGED
+            varietyId: cellVarietyId0,
             cityName: citySel.value,
             method: methodSel.value,
             startISO: startInput.value,
             seasonEndISO: seasonEndInput.value,
             seasonStartYear: Number(seasonYearInput.value || (new Date()).getUTCFullYear()),
-            useSuccession: succCheck.checked,
-            maxSucc: Number(maxSuccInput.value || 1),
-            overlapDays: Number(overlapInput.value || 0),
-            harvestWindowDays: (hwInput.value === '' ? null : Number(hwInput.value)),
-            yieldTargetKg: Number(yieldTargetInput.value || 0),
-            minYieldMultiplier: Number(minYieldMultInput.value || 0.5),
+            harvestWindowDays: (harvestWindowInput.value === '' ? null : Number(harvestWindowInput.value)),
             autoEarliestISO: initialStartISO,                        // auto earliest sow
             lastFeasibleSowISO: null,
             lastHarvestISO: initialEndISO,                           // schedule-derived last harvest
             lastHarvestSource: 'auto'                                // track where it came from
         };
 
-        // NEW
+
 
 
         function syncStateFromControls() {
@@ -3006,12 +2826,7 @@ Draw.loadPlugin(function (ui) {
             formState.startISO = startInput.value;
             formState.seasonEndISO = seasonEndInput.value;
             formState.seasonStartYear = Number(seasonYearInput.value || (new Date()).getUTCFullYear());
-            formState.useSuccession = succCheck.checked;
-            formState.maxSucc = Number(maxSuccInput.value || 1);
-            formState.overlapDays = Number(overlapInput.value || 0);
-            formState.harvestWindowDays = (hwInput.value === '' ? null : Number(hwInput.value));
-            formState.yieldTargetKg = Number(yieldTargetInput.value || 0);
-            formState.minYieldMultiplier = Number(minYieldMultInput.value || 0.5);
+            formState.harvestWindowDays = (harvestWindowInput.value === '' ? null : Number(harvestWindowInput.value));
         }
 
         function syncControlsFromState({ start = false, end = false, lastHarvest = false } = {}) {
@@ -3034,46 +2849,24 @@ Draw.loadPlugin(function (ui) {
             { key: 'seasonStartYear', label: 'Season start year:', control: seasonYearInput },
             { key: 'cityName', label: 'City:', control: citySel },
             { key: 'method', label: 'Method:', control: methodSel },
-            { key: 'useSuccession', label: 'Use successions', control: succCheck },
-            { key: 'maxSucc', label: 'Max successions:', control: maxSuccInput },
-            { key: 'overlapDays', label: 'Overlap days:', control: overlapInput },
-            { key: 'harvestWindowDays', label: 'Harvest window days:', control: hwInput },
-            { key: 'yieldTargetKg', label: 'Yield target (kg):', control: yieldTargetInput },
-            { key: 'minYieldMultiplier', label: 'Min yield multiplier:', control: minYieldMultInput }
+            { key: 'harvestWindowDays', label: 'Harvest window days:', control: harvestWindowInput },
         ];
 
         const { fieldRows } = buildFieldRows(FIELD_SCHEMA);
         // ----------------------------------------------------------
 
-        // Prefill succession config from current cell attrs
-        const existingCfg = SuccessionConfig.fromAttrs(cell);
-        succCheck.checked = allowsSucc && (existingCfg.enabled ?? allowsSucc);
-        maxSuccInput.value = String(existingCfg.max ?? (allowsSucc ? 5 : 1));
-        overlapInput.value = String(existingCfg.overlapDays ?? 2);
-        hwInput.value = (effectivePlant.defaultHW() ?? '').toString();
-        minYieldMultInput.value = String(
-            (Number.isFinite(existingCfg.minYieldMultiplier) ? existingCfg.minYieldMultiplier : 0.50)
-        );
-
-        // Load varieties and preselect from cell                                     // CHANGED
-        await reloadVarietyOptionsForPlant(formState.plantId, formState.varietyId);   // CHANGED
+        // Load varieties and preselect from cell                                     
+        await reloadVarietyOptionsForPlant(formState.plantId, formState.varietyId);
         syncVarietyButtons();                                                        // same
 
-        // Ensure the selected value actually exists; if not, fall back to base plant // NEW
-        if (formState.varietyId != null && !String(varietySel.value)) {              // NEW
-            formState.varietyId = null;                                                // NEW
-        }                                                                            // NEW
+        // Ensure the selected value actually exists; if not, fall back to base plant 
+        if (formState.varietyId != null && !String(varietySel.value)) {
+            formState.varietyId = null;
+        }
 
-        syncStateFromControls();                                                     // MOVED (after setting varietySel) // CHANGED
+        syncStateFromControls();                                                     // MOVED (after setting varietySel) 
         await refreshEffectivePlant();                                                // same
         resetMethodOptions(effectivePlant);                                           // same
-
-
-
-        // Layout rows
-        const useSuccRow = fieldRows.useSuccession;
-        const maxSuccRow = fieldRows.maxSucc;
-        const overlapRow = fieldRows.overlapDays;
 
         const autoEarliestRowObj = row('Earliest feasible sow:', autoEarliestInput);
 
@@ -3087,29 +2880,18 @@ Draw.loadPlugin(function (ui) {
         const lastHarvestRowObj = row('Last harvest date:', lastHarvestInput);
 
         appendFieldRows(div, fieldRows, ['seasonStartYear']);
-        appendFieldRows(div, fieldRows, ['cityName', 'method']);
+        appendFieldRows(div, fieldRows, ['cityName', 'method', 'harvestWindowDays']); // NEW
         div.appendChild(autoEarliestRowObj.row);
         div.appendChild(autoLastSowRowObj.row);
         div.appendChild(firstSowRowObj.row);
         div.appendChild(endRow.row);
         div.appendChild(lastHarvestRowObj.row);
 
-        appendFieldRows(div, fieldRows, [
-            'useSuccession',
-            'maxSucc',
-            'overlapDays',
-            'harvestWindowDays',
-            'yieldTargetKg',
-            'minYieldMultiplier'
-        ]);
-
 
         const baseStartNote = startNote || '';
 
         function applyModeToUI() {
             const perennial = mode.perennial;
-            const canSucc = Number(effectivePlant?.succession ?? 1) === 1;
-            const useSucc = canSucc && succCheck.checked && !perennial;
 
             // Labels                                                                   
             if (perennial) {
@@ -3124,15 +2906,6 @@ Draw.loadPlugin(function (ui) {
             // Auto-window visibility                                                   
             autoEarliestRowObj.row.style.display = perennial ? 'none' : '';
             autoLastSowRowObj.row.style.display = perennial ? 'none' : '';
-
-            // Succession controls                                                      
-            succCheck.disabled = !canSucc || perennial;
-            if (perennial) succCheck.checked = false;
-
-            const showSuccRows = !perennial && canSucc && succCheck.checked;
-            setRowVisible(fieldRows, 'useSuccession', !perennial && canSucc);
-            setRowVisible(fieldRows, 'maxSucc', showSuccRows);
-            setRowVisible(fieldRows, 'overlapDays', showSuccRows);
 
             // End date editability                                                     
             seasonEndInput.disabled = !perennial;
@@ -3158,7 +2931,7 @@ Draw.loadPlugin(function (ui) {
                 } else if (lastSowD && userD > lastSowD) {
                     status = 'Selected first sow is later than the last feasible sow.';
                 } else {
-                    status = '';                                                             // (inside feasible window → no extra warning)
+                    status = '';
                 }
             }
 
@@ -3171,34 +2944,6 @@ Draw.loadPlugin(function (ui) {
             startNoteSpan.textContent = parts.join(' ');
         }
 
-
-        function updateAnnualLabelsForSuccession() {
-            if (mode.perennial) {
-                return; // perennial labels are managed by setPerennialMode       
-            }
-
-            const canSucc = Number(effectivePlant?.succession ?? 1) === 1;
-            const useSucc = canSucc && succCheck.checked;
-
-            if (useSucc) {
-                firstSowRowObj.label.textContent = 'First sow date:';
-                lastHarvestRowObj.label.textContent = 'Last harvest date:';
-            } else {
-                firstSowRowObj.label.textContent = 'Sow date:';
-                lastHarvestRowObj.label.textContent = 'Harvest date:';
-            }
-        }
-
-
-        function refreshSuccessionUI() {
-            const canSucc = Number(effectivePlant?.succession ?? 1) === 1;
-            if (!canSucc) {
-                succCheck.checked = false;
-                maxSuccInput.value = '1';
-                overlapInput.value = '0';
-            }
-            applyModeToUI();
-        }
 
         // recomputeAnchors:
         //  - concern: climate feasibility window (earliest sow, last feasible sow, climate last harvest)
@@ -3258,7 +3003,6 @@ Draw.loadPlugin(function (ui) {
                     lastSpringFrostDOY: lsf,
                     daysTransplant,
                     overwinterAllowed,
-                    successionEnabled: formState.useSuccession && Number(p.succession ?? 1) === 1
                 });
 
                 console.log('[recomputeAnchors] result', {
@@ -3342,7 +3086,7 @@ Draw.loadPlugin(function (ui) {
                 firstSowDirty = false;
             } else {
                 // Non-perennial: reset HW default and clear dirty flag               
-                hwInput.value = (plant?.defaultHW() ?? '').toString();
+                harvestWindowInput.value = (plant?.defaultHW() ?? '').toString();
                 firstSowDirty = false;
                 syncStateFromControls();
             }
@@ -3357,7 +3101,6 @@ Draw.loadPlugin(function (ui) {
             syncStateFromControls();
 
             const isPerennial = mode.perennial;
-            const useSucc = formState.useSuccession;
 
             if (isPerennial) {
                 const endISO = computePerennialEndISO(
@@ -3385,7 +3128,6 @@ Draw.loadPlugin(function (ui) {
                 case 'varietyChanged': {
                     await recomputeAnchors(true, true);
                     await recomputeLastHarvestFromSchedule();
-                    formState.lastHarvestSource = useSucc ? 'schedule' : 'auto';
                     break;
                 }
 
@@ -3394,7 +3136,6 @@ Draw.loadPlugin(function (ui) {
                     await recomputeAnchors(true, true);
 
                     await recomputeLastHarvestFromSchedule();
-                    formState.lastHarvestSource = useSucc ? 'schedule' : 'auto';
                     break;
                 }
 
@@ -3403,7 +3144,6 @@ Draw.loadPlugin(function (ui) {
                     await recomputeAnchors(true, true);
 
                     await recomputeLastHarvestFromSchedule();
-                    formState.lastHarvestSource = useSucc ? 'schedule' : 'auto';
                     break;
                 }
 
@@ -3414,7 +3154,6 @@ Draw.loadPlugin(function (ui) {
                     await recomputeAnchors(false, false);
 
                     await recomputeLastHarvestFromSchedule();
-                    formState.lastHarvestSource = useSucc ? 'schedule' : 'auto';
                     break;
                 }
 
@@ -3422,26 +3161,13 @@ Draw.loadPlugin(function (ui) {
                     // User explicitly changed first sow; keep it, but recompute schedule 
                     await recomputeAnchors(false, false);
                     await recomputeLastHarvestFromSchedule();
-                    formState.lastHarvestSource = useSucc ? 'schedule' : 'auto';
                     break;
 
-                case 'successionParamsChanged': {
-                    // Recheck because useSucc may have changed                                
-                    const useSuccNow = formState.useSuccession;
-
-                    if (useSuccNow) {
-                        // Successions ON: allow auto refit of end date                        
-                        await recomputeAnchors(false, false);
-                    } else {
-                        // Successions OFF: keep seasonEndISO as a hard constraint             
-                        await recomputeAnchors(false, false);
-                    }
-
+                case 'hwChanged': {
+                    await recomputeAnchors(false, false);
                     await recomputeLastHarvestFromSchedule();
-                    formState.lastHarvestSource = useSuccNow ? 'schedule' : 'auto';
                     break;
                 }
-
 
             }
 
@@ -3473,13 +3199,9 @@ Draw.loadPlugin(function (ui) {
             resetMethodOptions(effectivePlant);
             formState.method = methodSel.value;
 
-            hwInput.value = (effectivePlant.defaultHW() ?? '').toString();
-            formState.harvestWindowDays = (hwInput.value === '' ? null : Number(hwInput.value));
+            harvestWindowInput.value = (effectivePlant.defaultHW() ?? '');
+            formState.harvestWindowDays = (harvestWindowInput.value === '' ? null : Number(harvestWindowInput.value));
 
-            const canSucc = Number(effectivePlant?.succession ?? 1) === 1;
-            succCheck.disabled = !canSucc; succCheck.checked = canSucc;
-            maxSuccInput.value = canSucc ? '5' : '1';
-            overlapInput.value = canSucc ? '2' : '0';
 
             syncStateFromControls();
 
@@ -3489,7 +3211,6 @@ Draw.loadPlugin(function (ui) {
                 setPerennialMode(false, effectivePlant);
             }
 
-            refreshSuccessionUI();
 
             // Let the orchestrator recompute feasibility + schedule                      
             await recomputeAll('plantChanged');
@@ -3501,8 +3222,8 @@ Draw.loadPlugin(function (ui) {
             syncStateFromControls();
             await refreshEffectivePlant();
             resetMethodOptions(effectivePlant);
-            hwInput.value = (effectivePlant.defaultHW() ?? '').toString();
-            refreshSuccessionUI();
+            harvestWindowInput.value = (effectivePlant.defaultHW() ?? '');
+            formState.harvestWindowDays = (harvestWindowInput.value === '' ? null : Number(harvestWindowInput.value));
             await recomputeAll('varietyChanged');
             await refreshTaskTemplateFromSelection();
 
@@ -3546,32 +3267,6 @@ Draw.loadPlugin(function (ui) {
             syncStateFromControls();
             await refreshTaskTemplateFromSelection();
         });
-        succCheck.addEventListener('change', () => {
-            refreshSuccessionUI();
-            recomputeAll('successionParamsChanged');
-        });
-
-
-        maxSuccInput.addEventListener('input', () => {
-            recomputeAll('successionParamsChanged');
-        });
-
-        overlapInput.addEventListener('input', () => {
-            recomputeAll('successionParamsChanged');
-        });
-
-        hwInput.addEventListener('input', () => {
-            recomputeAll('successionParamsChanged');
-        });
-
-        yieldTargetInput.addEventListener('input', () => {
-            recomputeAll('successionParamsChanged');
-        });
-
-        minYieldMultInput.addEventListener('input', () => {
-            recomputeAll('successionParamsChanged');
-        });
-
 
         // recomputeLastHarvestFromSchedule:
         //  - concern: full schedule under current constraint
@@ -3581,22 +3276,18 @@ Draw.loadPlugin(function (ui) {
                 syncStateFromControls();
 
                 const { inputs } = await buildScheduleContextFromForm(formState, selPlant, {
-                    enforcePlantSuccessionPolicy: false,
-                    currentVarieties                       // NEW
+                    currentVarieties
                 });
 
 
                 const { rows, lastScheduledHarvestEndISO } =
-                    await computeScheduleResult(inputs, formState.yieldTargetKg);
+                    await computeScheduleResult(inputs);
 
                 if (!rows.length || !lastScheduledHarvestEndISO) {
                     console.log('[recomputeLastHarvestFromSchedule] no rows', {
                         startISO: formState.startISO,
                         seasonEndISO: formState.seasonEndISO,
-                        useSuccession: formState.useSuccession,
                         harvestWindowDays: formState.harvestWindowDays,
-                        minYieldMultiplier: formState.minYieldMultiplier,
-                        yieldTargetKg: formState.yieldTargetKg
                     });
                     formState.lastScheduleEndISO = null;
                     if (lastHarvestInput) lastHarvestInput.value = '';
@@ -3640,7 +3331,7 @@ Draw.loadPlugin(function (ui) {
                 const { plant, city, inputs } = await buildScheduleContextFromForm(
                     formState,
                     selPlant,
-                    { enforcePlantSuccessionPolicy: false, currentVarieties }
+                    { currentVarieties }
                 );
 
                 const rows = await explainFeasibilityOverSeason(inputs, 400, false);
@@ -3678,10 +3369,10 @@ Draw.loadPlugin(function (ui) {
                 const { inputs } = await buildScheduleContextFromForm(
                     formState,
                     selPlant,
-                    { enforcePlantSuccessionPolicy: false, currentVarieties }
+                    { currentVarieties }
                 );
 
-                const rows = await computePreviewRows(inputs, formState.yieldTargetKg);
+                const rows = await computePreviewRows(inputs);
                 if (!rows.length) { mxUtils.alert('No feasible planting dates in the chosen season.'); return; }
                 renderPreviewTable(ui, rows);
             } catch (e) { mxUtils.alert('Preview error: ' + e.message); }
@@ -3695,7 +3386,7 @@ Draw.loadPlugin(function (ui) {
                 const { inputs } = await buildScheduleContextFromForm(
                     formState,
                     selPlant,
-                    { enforcePlantSuccessionPolicy: true, currentVarieties }
+                    { currentVarieties }
                 );
 
                 // Build taskTemplate object from current rules
@@ -3703,9 +3394,6 @@ Draw.loadPlugin(function (ui) {
                     version: 1,
                     rules: taskRules
                 };
-
-                // Save per-plan template onto cell
-                saveTaskTemplateToCell(cell, taskTemplate);
 
                 // Save template if requested
                 if (saveDefaultChk.checked) {
@@ -3722,21 +3410,15 @@ Draw.loadPlugin(function (ui) {
 
                 model.beginUpdate();
                 try {
+                    // save task template undoably (but execute inside this transaction)
+                    model.execute(new mxCellAttributeChange(cell, "task_template_json", JSON.stringify(taskTemplate)));
+
                     model.execute(new mxCellAttributeChange(cell, 'plant_id', String(formState.plantId)));
+                    const isBase = (formState.varietyId == null);
 
-                    const isBase = (formState.varietyId == null);                                            // NEW
-                    model.execute(new mxCellAttributeChange(                                                 // same
-                        cell,
-                        'variety_id',
-                        !isBase ? String(formState.varietyId) : ''
-                    ));
+                    model.execute(new mxCellAttributeChange(cell, 'variety_id', isBase ? '' : String(formState.varietyId)));
+                    model.execute(new mxCellAttributeChange(cell, 'variety_name', isBase ? '' : String(inputs.varietyName || '')));
 
-                    // Ensure base plant truly means "no variety" everywhere                                  // NEW
-                    model.execute(new mxCellAttributeChange(                                                 // NEW
-                        cell,
-                        'variety_name',
-                        !isBase ? String(cell.getAttribute?.('variety_name') || '') : ''                       // NEW (see note below)
-                    ));
                 } finally {
                     model.endUpdate();
                 }
@@ -3744,7 +3426,7 @@ Draw.loadPlugin(function (ui) {
 
 
 
-                await applyScheduleToGraph(ui, cell, inputs, formState.yieldTargetKg);
+                await applyScheduleToGraph(ui, cell, inputs);
                 ui.hideDialog();
             } catch (e) {
                 mxUtils.alert('Scheduling error: ' + e.message);
@@ -3755,7 +3437,6 @@ Draw.loadPlugin(function (ui) {
         [previewBtn, okBtn, cancelBtn].forEach(b => rightBtns.appendChild(b));
         btns.appendChild(rightBtns); div.appendChild(btns);
 
-        refreshSuccessionUI();
         await recomputeAll('cityChanged');        // or 'yearChanged' or 'methodChanged'       
 
         // ============================================================================
@@ -3816,6 +3497,7 @@ Draw.loadPlugin(function (ui) {
                 const editBtn = mxUtils.button("Edit", () => openTaskEditor(rule, idx));
                 const delBtn = mxUtils.button("Delete", () => {
                     taskRules.splice(idx, 1);
+                    taskDirty = true;
                     renderTasksList();
                 });
 
@@ -3836,8 +3518,9 @@ Draw.loadPlugin(function (ui) {
 
         async function refreshTaskTemplateFromSelection() {
             // Do not overwrite if the cell already has a per-plan template 
-            const hasCellTpl = !!cell?.getAttribute?.('task_template_json');
-            if (hasCellTpl) return;
+            const raw = String(cell?.getAttribute?.('task_template_json') || '').trim();
+            const hasCellTpl = raw.length > 0;
+            if (hasCellTpl || taskDirty) return;
 
             const resolved = await TaskTemplateModel.resolveFor({
                 plantId: formState.plantId,
@@ -3942,6 +3625,7 @@ Draw.loadPlugin(function (ui) {
 
                 if (editing) taskRules[index] = r;
                 else taskRules.push(r);
+                taskDirty = true;
 
                 taskEditorDiv.innerHTML = "";
                 renderTasksList();
@@ -3960,6 +3644,23 @@ Draw.loadPlugin(function (ui) {
         const addTaskBtn = mxUtils.button("Add Task", () => openTaskEditor(null, null));
         addTaskBtn.style.marginTop = "12px";
         tasksTab.appendChild(addTaskBtn);
+
+        // Reset to defaults button                                                    
+        const resetTasksBtn = mxUtils.button("Reset to defaults", async () => {
+            try {
+                syncStateFromControls();
+
+                const graph = ui.editor.graph;
+                clearCellTaskTemplateUndoable(graph, cell);   // remove per-plan override
+
+                await loadDefaultsForCurrentSelection();      // refresh UI list
+            } catch (e) {
+                mxUtils.alert("Reset tasks error: " + (e?.message || String(e)));
+            }
+        });
+        resetTasksBtn.style.marginTop = "8px";
+        tasksTab.appendChild(resetTasksBtn);
+
 
         // Save default checkbox
         tasksTab.appendChild(
@@ -4011,8 +3712,8 @@ Draw.loadPlugin(function (ui) {
 
 
         // inner helpers (closure over UI controls)
-        async function computePreviewRows(inputs, seasonYieldTargetKg) {
-            const { rows } = await computeScheduleResult(inputs, seasonYieldTargetKg);
+        async function computePreviewRows(inputs) {
+            const { rows } = await computeScheduleResult(inputs);
             return rows;
         }
     }
@@ -4257,11 +3958,6 @@ Draw.loadPlugin(function (ui) {
         return getDefaultTaskTemplateForMethod(method);
     }
 
-    // Save template to cell
-    function saveTaskTemplateToCell(cell, template) {
-        const json = JSON.stringify(template);
-        cell.setAttribute("task_template_json", json);
-    }
 
 
 
@@ -4326,14 +4022,13 @@ Draw.loadPlugin(function (ui) {
 
 
 
-    // -------------------- Apply schedule to graph ------------------------------------------
+
     function stampPlanSummary(cell, {
-        plant, city, method, Tbase, gddToMaturity,
-        scheduleDates, multipliers, plants,
-        timelines, expectedTotalYield, yieldTargetKg,
-        successionConfig,
-        varietyId = null,            // <-- NEW
-        varietyName = ''             // <-- NEW
+        plant, city, method, Tbase,
+        scheduleDates, plants, timelines,
+        expectedTotalYield,
+        varietyId = null,
+        varietyName = ''
     }) {
         const fmt = (d) => (d ? d.toISOString().slice(0, 10) : null);
 
@@ -4341,30 +4036,20 @@ Draw.loadPlugin(function (ui) {
             setAttr(cell, 'start_cooling_threshold_c', String(plant.start_cooling_threshold_c));
         }
 
-        // visible label
         setAttr(cell, 'label', plant.plant_name + ' group');
 
-        // Plan metadata
         setAttr(cell, 'plant_id', String(plant.plant_id));
         setAttr(cell, 'plant_name', plant.plant_name);
+        setAttr(cell, 'plant_abbr', String(plant.abbr || ''));
         setAttr(cell, 'city_name', city.city_name);
         setAttr(cell, 'method', method);
-        setAttr(cell, 'variety_id', String(varietyId ?? ''));                 // <-- NEW
-        setAttr(cell, 'variety_name', String(varietyName || ''));             // <-- NEW
+        setAttr(cell, 'variety_id', String(varietyId ?? ''));
+        setAttr(cell, 'variety_name', String(varietyName || ''));
 
-        // Thermal anchors
         setAttr(cell, 'tbase_c', String(Tbase));
-        setAttr(cell, 'gdd_to_maturity', String(gddToMaturity));
 
-        // Succession config persisted on the group
-        const cfgAttrs = successionConfig.toAttrs();
-        Object.keys(cfgAttrs).forEach(k => setAttr(cell, k, cfgAttrs[k]));
-
-        // scalar fields from FIRST succession
         const sow0 = scheduleDates && scheduleDates[0] ? scheduleDates[0] : null;
         const tl0 = timelines && timelines[0] ? timelines[0] : {};
-        const f0 = multipliers && multipliers[0] != null ? multipliers[0] : 1;
-        const p0 = plants && plants[0] != null ? plants[0] : 0;
 
         setAttr(cell, 'sow_date', fmt(sow0));
         setAttr(cell, 'germ_date', fmt(tl0.germ));
@@ -4372,105 +4057,89 @@ Draw.loadPlugin(function (ui) {
         setAttr(cell, 'maturity_date', fmt(tl0.maturity));
         setAttr(cell, 'harvest_start', fmt(tl0.harvestStart));
         setAttr(cell, 'harvest_end', fmt(tl0.harvestEnd));
-        setAttr(cell, 'yield_multiplier', String(Number.isFinite(f0) ? f0 : 1));
     }
 
-    function stampSuccessionGroup(cell, i, { abbr, unit, yieldPerPlant }, {
-        sow, timeline, fi, plantsRequired, perSuccessionTarget
-    }) {
-        setAttr(cell, 'succession_index', i + 1);
-        setAttr(cell, 'plant_abbr', abbr);
-        setAttr(cell, 'plant_yield', yieldPerPlant);
-        setAttr(cell, 'yield_multiplier', (Number.isFinite(fi) ? fi : 1));
 
-        const fmt = d => (d ? d.toISOString().slice(0, 10) : '');
-        setAttr(cell, 'sow_date', fmt(sow));
-        setAttr(cell, 'germ_date', fmt(timeline.germ));
-        setAttr(cell, 'transplant_date', fmt(timeline.transplant));
-        setAttr(cell, 'maturity_date', fmt(timeline.maturity));
-        setAttr(cell, 'harvest_start', fmt(timeline.harvestStart));
-        setAttr(cell, 'harvest_end', fmt(timeline.harvestEnd));
-
-    }
-
-    async function applyScheduleToGraph(ui, cell, inputs, seasonYieldTargetKg) {
-        const { plant, city, method, succession, policy } = inputs;
+    async function applyScheduleToGraph(ui, cell, inputs) {
+        const { plant, city, method } = inputs;
         const { startDate, seasonEnd, env, dailyRates, monthlyAvg } = inputs.derived();
 
         const budget = plant.firstHarvestBudget();
-        if (!budget || !Number.isFinite(budget.amount) || budget.amount <= 0)
-            throw new Error('Invalid maturity budget for ' + plant.plant_name);
-        const HW_DAYS = inputs.succession.harvestWindowDays;
-        if (!Number.isFinite(HW_DAYS))
-            throw new Error('Harvest window is required for scheduling.');
+        if (!budget || !Number.isFinite(budget.amount) || budget.amount <= 0) {
+            throw new Error("Invalid maturity budget for " + plant.plant_name);
+        }
 
-        const schedule = buildSuccessionSchedule(inputs);
-        if (!schedule.length) throw new Error('No feasible planting dates in the chosen season.');
-
-        const multipliers = deriveYieldMultipliersFromTemp({
-            schedule, budget,
-            dailyRatesMap: dailyRates, cropTemp: env, monthlyAvgTemp: monthlyAvg, seasonEnd, Tbase: env.Tbase,
-            window: 'harvest', HW_DAYS: HW_DAYS
-        });
+        // Single-planting model: schedule is exactly one start date. 
+        const schedule = [startDate];
+        if (!(schedule[0] instanceof Date)) {
+            throw new Error("Invalid start date for scheduling.");
+        }
 
         const stageDays = {
             maturityDays: Number.isFinite(Number(plant.days_maturity)) && Number(plant.days_maturity) > 0
                 ? Number(plant.days_maturity)
-                : (budget.mode === 'days' ? budget.amount : 0),            // <- avoid GDD fallback here
+                : (budget.mode === "days" ? budget.amount : 0),                               // same intent
             transplantDays: Number.isFinite(Number(plant.days_transplant)) ? Number(plant.days_transplant) : 0,
             germinationDays: Number.isFinite(Number(plant.days_germ)) ? Number(plant.days_germ) : 0,
-            harvest_window_days: HW_DAYS
         };
-        const timelines = computeStageTimelinesForSchedule({
-            schedule, budget, stageDays, dailyRatesMap: dailyRates, seasonEnd
+
+        const timelines = computeStageTimelineForSchedule({
+            schedule,
+            budget,
+            stageDays,
+            dailyRatesMap: dailyRates,
+            seasonEnd
         });
 
-        // filter by min fi
-        const keep = [];
-        for (let i = 0; i < schedule.length; i++) {
-            const fi = Number.isFinite(multipliers[i]) ? multipliers[i] : 0;
-            if (fi >= succession.minYieldMultiplier) keep.push(i);
-        }
-        if (!keep.length) throw new Error('No successions meet the minimum yield multiplier.');
+        // Plants allocation is single-group only.                                             
+        // Prefer an explicit per-group requirement if you already store it.                   
+        const plantsReqRaw =
+            cell?.getAttribute?.("plants_required") ??
+            cell?.getAttribute?.("plantsReq") ??
+            cell?.getAttribute?.("actualPlants") ??
+            "";
 
-        const scheduleF = keep.map(i => schedule[i]);
-        const timelinesF = keep.map(i => timelines[i]);
-        const multipliersF = keep.map(i => multipliers[i]);
+        const plantsReq = (() => {
+            const n = Number(String(plantsReqRaw).trim());
+            return Number.isFinite(n) && n >= 0 ? n : 0;
+        })();
 
-        const { plants: plantsAlloc, expectedTotalYield } = distributePlantsToMeetTarget({
-            N: scheduleF.length,
-            seasonYieldTarget: Number(seasonYieldTargetKg ?? 0),
-            yieldPerPlant: plant.yieldPerPlant(),
-            multipliers: multipliersF
-        });
+        const plantsAlloc = [plantsReq];
 
-        // Build tasks from schedule/timelines without emitting events                     
+        const ypp = (() => {
+            const v =
+                (typeof plant.yieldPerPlant === 'function'
+                    ? plant.yieldPerPlant()
+                    : plant.yield_per_plant_kg);
+
+            const n = Number(v);
+            return Number.isFinite(n) && n > 0 ? n : 0;
+        })();
+
+        // Build tasks from a single planting timeline
         function buildTasksForPlan({
             method,
             plant,
             schedule,
             timelines,
-            successionOffset = 0,
-            totalSuccessions = null,
             taskTemplate
         }) {
             const tasks = [];
-            const plantName = plant.plant_name || plant.abbr || 'Plant';
+            const plantName = plant?.plant_name || plant?.abbr || "Plant";
 
             const rules = (taskTemplate && Array.isArray(taskTemplate.rules))
                 ? taskTemplate.rules
                 : getDefaultTaskTemplateForMethod(method).rules;
 
-            const total = (Number.isFinite(totalSuccessions)
-                ? totalSuccessions
-                : (schedule.length + successionOffset));
+            // Force single planting: use the first schedule/timeline entry only          
+            const sowDate = Array.isArray(schedule) ? schedule[0] : schedule;
+            const tl = Array.isArray(timelines) ? timelines[0] : timelines;
+            if (!sowDate || !tl) return tasks;
 
-            const showSuccLabel = total > 1;
-
-            function substituteTitle(template, { plantName, succIdx }) {
-                let t = template || '';
+            function substituteTitle(template, { plantName }) {
+                let t = template || "";
                 t = t.replace(/\{plant\}/g, plantName);
-                t = t.replace(/\{succ\}/g, String(succIdx));
+                t = t.replace(/\{succ\}/g, ""); // remove any legacy {succ} token         
                 return t;
             }
 
@@ -4484,109 +4153,91 @@ Draw.loadPlugin(function (ui) {
                 };
             }
 
-            for (let i = 0; i < schedule.length; i++) {
-                const tl = timelines[i];
-                const sowDate = schedule[i];
-                const anchors = anchorDatesForTimeline(tl, sowDate);
+            const anchors = anchorDatesForTimeline(tl, sowDate);
 
-                const succIdx = successionOffset + i + 1;
-                const succSuffix = showSuccLabel ? ` (S${succIdx})` : '';
+            for (const rule of rules) {
+                const stage = rule.anchorStage || "SOW";
+                let anchorISO = anchors[stage];
 
-                for (const rule of rules) {
-                    const stage = rule.anchorStage || 'SOW';
-                    let anchorISO = anchors[stage];
+                // Optional fallback for missing GERM: use SOW
+                if (!anchorISO && stage === "GERM") {
+                    anchorISO = anchors.SOW || null;
+                }
 
-                    // Optional fallback for missing GERM: use SOW
-                    if (!anchorISO && stage === 'GERM') {
-                        anchorISO = anchors.SOW || null;
+                if (!anchorISO) continue;
+
+                const offsetDays = Number(rule.offsetDays || 0);
+                const dir = rule.offsetDirection === "before" ? -1 : 1;
+
+                const baseISO = shiftDays(anchorISO, dir * offsetDays);
+
+                // Determine endISO based on duration and/or HARVEST_END special case
+                let startISO = baseISO;
+                let endISO = baseISO;
+
+                const dur = Number(rule.durationDays || 0);
+
+                if (dur > 0) {
+                    endISO = shiftDays(baseISO, dur);
+                } else {
+                    // Special-case: harvest rule spans HARVEST_START → HARVEST_END if available
+                    if (stage === "HARVEST_START" && anchors.HARVEST_END) {
+                        startISO = baseISO;
+                        endISO = anchors.HARVEST_END;
                     }
+                }
 
-                    if (!anchorISO) continue; // cannot schedule this rule for this succession
+                // Handle repeat
+                const repeat = !!rule.repeat;
+                const every = Number(rule.repeatEveryDays || 0);
+                const untilMode = rule.repeatUntilMode || "x_times";
+                const untilVal = Number(rule.repeatUntilValue || 0);
 
-                    const offsetDays = Number(rule.offsetDays || 0);
-                    const dir = rule.offsetDirection === 'before' ? -1 : 1;
+                const occurrences = [];
 
-                    const baseISO = shiftDays(anchorISO, dir * offsetDays);
-
-                    // Determine endISO based on duration and/or HARVEST_END special case
-                    let startISO = baseISO;
-                    let endISO = baseISO;
-
-                    const dur = Number(rule.durationDays || 0);
-
-                    if (dur > 0) {
-                        endISO = shiftDays(baseISO, dur);
-                    } else {
-                        // Special-case: harvest rule spans HARVEST_START → HARVEST_END if available
-                        if (stage === 'HARVEST_START' && anchors.HARVEST_END) {
-                            startISO = baseISO;
-                            endISO = anchors.HARVEST_END;
-                        }
+                if (!repeat || every <= 0 || untilVal <= 0) {
+                    occurrences.push({ startISO, endISO });
+                } else if (untilMode === "x_times") {
+                    let curStart = startISO;
+                    let curEnd = endISO;
+                    for (let k = 0; k < untilVal; k++) {
+                        occurrences.push({ startISO: curStart, endISO: curEnd });
+                        curStart = shiftDays(curStart, every);
+                        curEnd = shiftDays(curEnd, every);
                     }
+                } else {
+                    occurrences.push({ startISO, endISO });
+                }
 
-                    // Handle repeat
-                    const repeat = !!rule.repeat;
-                    const every = Number(rule.repeatEveryDays || 0);
-                    const untilMode = rule.repeatUntilMode || 'x_times';
-                    const untilVal = Number(rule.repeatUntilValue || 0);
+                const baseTitle = substituteTitle(rule.title || "", { plantName });
+                const finalTitle = baseTitle || `Task for ${plantName}`;
 
-                    const occurrences = [];
+                for (const occ of occurrences) {
+                    if (!occ.startISO && !occ.endISO) continue;
+                    const s = occ.startISO || occ.endISO;
+                    const e = occ.endISO || occ.startISO;
 
-                    if (!repeat || every <= 0 || untilVal <= 0) {
-                        occurrences.push({ startISO, endISO });
-                    } else if (untilMode === 'x_times') {
-                        let curStart = startISO;
-                        let curEnd = endISO;
-                        for (let k = 0; k < untilVal; k++) {
-                            occurrences.push({ startISO: curStart, endISO: curEnd });
-                            curStart = shiftDays(curStart, every);
-                            curEnd = shiftDays(curEnd, every);
-                        }
-                    } else {
-                        occurrences.push({ startISO, endISO });
-                    }
-
-                    const baseTitle = substituteTitle(rule.title || '', {
-                        plantName,
-                        succIdx
+                    tasks.push({
+                        title: finalTitle,
+                        startISO: s,
+                        endISO: e,
+                        plant_name: plantName,
+                        rule_id: rule.id || null,
+                        anchorStage: stage
                     });
-
-                    const finalTitle = baseTitle || (`Task for ${plantName}${succSuffix}`);
-
-                    for (const occ of occurrences) {
-                        if (!occ.startISO && !occ.endISO) continue;
-                        const s = occ.startISO || occ.endISO;
-                        const e = occ.endISO || occ.startISO;
-
-                        tasks.push({
-                            title: finalTitle + succSuffix,
-                            startISO: s,
-                            endISO: e,
-                            plant_name: plantName,
-                            rule_id: rule.id || null,
-                            anchorStage: stage,
-                            successionIndex: succIdx
-                        });
-                    }
                 }
             }
 
             return tasks;
         }
 
-
-
         function emitTasksForPlan({
             method,
             plant,
             cell,
             schedule,
-            timelines,
-            plantsAlloc,
-            successionOffset = 0,
-            totalSuccessions = null
+            timelines
         }) {
-            // load template
             const taskTemplate = loadTaskTemplateFromCell(cell, method);
 
             const tasks = buildTasksForPlan({
@@ -4594,17 +4245,13 @@ Draw.loadPlugin(function (ui) {
                 plant,
                 schedule,
                 timelines,
-                successionOffset,
-                totalSuccessions,
                 taskTemplate
             });
 
             const detail = {
                 tasks,
                 plantName: plant.plant_name,
-                targetGroupId: cell.id,
-                successionIndex: successionOffset,
-                totalSuccessions: totalSuccessions
+                targetGroupId: cell.id
             };
 
             try {
@@ -4614,20 +4261,14 @@ Draw.loadPlugin(function (ui) {
             return tasks;
         }
 
-
         const graph = ui.editor.graph;
         const model = graph.getModel();
 
-        const abbr = plant.abbr || '?';
         const unit = 'kg';
         setAttr(cell, 'season_start_year', String(inputs.seasonStartYear));
 
-        let createdTasks = [];
-        let created = [];
-
         model.beginUpdate();
         try {
-            // Stamp maturity definition by unit
             if (budget.mode === 'gdd') {
                 setAttr(cell, 'gdd_to_maturity', String(budget.amount));
                 setAttr(cell, 'days_maturity', '');
@@ -4635,132 +4276,43 @@ Draw.loadPlugin(function (ui) {
                 setAttr(cell, 'days_maturity', String(budget.amount));
                 setAttr(cell, 'gdd_to_maturity', '');
             }
-            setAttr(cell, 'variety_id', String(inputs.varietyId ?? ''));         // NEW
-            setAttr(cell, 'variety_name', String(inputs.varietyName || ''));     // NEW
 
-            // stamp summary on anchor cell
+            setAttr(cell, 'variety_id', String(inputs.varietyId ?? ''));
+            setAttr(cell, 'variety_name', String(inputs.varietyName || ''));
+
             stampPlanSummary(cell, {
-                plant, city, method, Tbase: env.Tbase,
-                gddToMaturity: (budget.mode === 'gdd' ? budget.amount : ''),   // optional
-                scheduleDates: scheduleF,
-                multipliers: multipliersF,
+                plant,
+                city,
+                method,
+                Tbase: env.Tbase,
+                scheduleDates: schedule,
                 plants: plantsAlloc,
-                timelines: timelinesF,
-                expectedTotalYield,
-                yieldTargetKg: Number(seasonYieldTargetKg ?? 0),
-                successionConfig: succession,
-                varietyId: inputs.varietyId,                // <-- NEW
-                varietyName: inputs.varietyName             // <-- NEW
+                timelines: timelines,
+                varietyId: inputs.varietyId,
+                varietyName: inputs.varietyName
             });
 
-            setAttr(cell, 'plant_yield', plant.yieldPerPlant());
+            setAttr(cell, 'plant_yield', String(ypp));
             setAttr(cell, 'yield_unit', unit);
 
             applyPlantSpacingToGroup(cell, plant);
 
-            // stamp first succession in the same group
-            const perSuccessionTarget = (Number(seasonYieldTargetKg || 0) > 0)
-                ? (Number(seasonYieldTargetKg) / scheduleF.length)
-                : 0;
-
-            stampSuccessionGroup(cell, 0, { abbr, unit, yieldPerPlant: plant.yieldPerPlant() }, {
-                sow: scheduleF[0], timeline: timelinesF[0], fi: multipliersF[0],
-                plantsRequired: plantsAlloc[0], perSuccessionTarget
-            });
-
-            // retile/refresh
             const r = (window.USL && window.USL.tiler && window.USL.tiler.retileGroup) || null;
             if (typeof r === 'function') r(graph, cell);
             graph.refresh(cell);
-
-            // create sibling groups for remaining successions
-            const dx = 24 + (cell.getGeometry()?.width || 200);
-            const dy = 0;
-            created = [cell];
-
-            const taskTplJson = cell.getAttribute && cell.getAttribute('task_template_json');
-
-            for (let i = 1; i < scheduleF.length; i++) {
-                const sib = createSiblingTilerGroup(graph, cell, `${abbr} group`, i * dx, dy);
-                setAttr(sib, 'label', plant.plant_name + ' group');
-                setAttr(sib, 'plant_name', plant.plant_name);
-                setAttr(sib, 'plant_id', String(plant.plant_id));
-                setAttr(sib, 'plant_abbr', abbr);
-                setAttr(sib, 'variety_id', String(inputs.varietyId ?? ''));             // <-- NEW
-                setAttr(sib, 'variety_name', String(inputs.varietyName || ''));         // <-- NEW
-                setAttr(sib, 'plant_yield', plant.yieldPerPlant());
-                setAttr(sib, 'yield_unit', unit);
-                setAttr(sib, 'city_name', city.city_name);
-                setAttr(sib, 'method', method);
-                setAttr(sib, 'tbase_c', String(env.Tbase));
-                setAttr(sib, 'gdd_to_maturity', budget.mode === 'gdd' ? String(budget.amount) : '');
-                setAttr(sib, 'days_maturity', budget.mode === 'days' ? String(budget.amount) : '');
-                // also persist cfg on each sibling
-                const cfgAttrs = succession.toAttrs();
-                Object.keys(cfgAttrs).forEach(k => setAttr(sib, k, cfgAttrs[k]));
-
-                // copy task template to sibling
-                if (taskTplJson) {
-                    setAttr(sib, 'task_template_json', taskTplJson);
-                }
-
-                copySpacingAttrs(cell, sib);
-
-                stampSuccessionGroup(sib, i, { abbr, unit, yieldPerPlant: plant.yieldPerPlant() }, {
-                    sow: scheduleF[i], timeline: timelinesF[i], fi: multipliersF[i],
-                    plantsRequired: plantsAlloc[i], perSuccessionTarget
-                });
-
-                const r2 = (window.USL && window.USL.tiler && window.USL.tiler.retileGroup) || null;
-                if (typeof r2 === 'function') r2(graph, sib);
-                graph.refresh(sib);
-
-                created.push(sib);
-            }
-
-            const ids = created.map(g => g.id).join(',');
-            created.forEach(g => setAttr(g, 'linked_succession_ids', ids));
 
         } finally {
             model.endUpdate();
         }
 
-        // Build & send tasks now that the graph is committed:
-        createdTasks = [];
-
-        if (!created.length) {
-            // Fallback: attach all tasks to the anchor group if something went wrong
-            createdTasks = emitTasksForPlan({
-                method,
-                plant,
-                cell,
-                schedule: scheduleF,
-                timelines: timelinesF,
-                plantsAlloc,
-                successionOffset: 0,
-                totalSuccessions: scheduleF.length
-            });
-        } else {
-            const totalSucc = created.length;
-            for (let i = 0; i < created.length; i++) {
-                const group = created[i];
-                const tasksForGroup = emitTasksForPlan({
-                    method,
-                    plant,
-                    cell: group,
-                    schedule: [scheduleF[i]],
-                    timelines: [timelinesF[i]],
-                    plantsAlloc: Array.isArray(plantsAlloc)
-                        ? [plantsAlloc[i]]
-                        : undefined,
-                    successionOffset: i,
-                    totalSuccessions: totalSucc
-                });
-                createdTasks = createdTasks.concat(tasksForGroup);
-            }
-        }
+        emitTasksForPlan({
+            method,
+            plant,
+            cell,
+            schedule: schedule,
+            timelines: timelines
+        });
     }
-
 
 
 
@@ -4900,13 +4452,6 @@ Draw.loadPlugin(function (ui) {
                 method: methodPreview,
                 startISO: earliestFeasibleSowDate.toISOString().slice(0, 10),
                 seasonEndISO: lastHarvestDate.toISOString().slice(0, 10),
-                succession: new SuccessionConfig({
-                    enabled: Number(selectedPlant.succession ?? 1) === 1,
-                    max: 1,
-                    overlapDays: 0,
-                    harvestWindowDays: HW_DAYS,
-                    minYieldMultiplier: 0.5
-                }).withPlantDefaults(selectedPlant),
                 policy: PolicyFlags.fromPlant(selectedPlant, methodPreview),
                 seasonStartYear: year
             });
@@ -4928,8 +4473,6 @@ Draw.loadPlugin(function (ui) {
                         startNote = `No valid start date remains this season.`;
                     }
                 }
-            } else if (feasStart.ok) {
-                // (optional) handle 'barely'/'truncated' flags
             }
         }
 
@@ -5063,21 +4606,13 @@ Draw.loadPlugin(function (ui) {
                 let hw = Number(plant.harvest_window_days ?? (typeof plant.defaultHW === "function" ? plant.defaultHW() : NaN));
                 if (!Number.isFinite(hw) || hw <= 0) hw = 14; // planning fallback
 
-                const succession = new SuccessionConfig({
-                    enabled: false,
-                    max: 1,
-                    overlapDays: 0,
-                    harvestWindowDays: hw,
-                    minYieldMultiplier: 1.0
-                }).withPlantDefaults(plant);
-
                 const policy = PolicyFlags.fromPlant(plant, method);
 
                 const inputs = new ScheduleInputs({
                     plant, city, method,
                     startISO: `${year}-01-01`,
                     seasonEndISO: `${year}-12-31`,
-                    succession, policy,
+                    policy,
                     seasonStartYear: year,
                     varietyId, varietyName: ""
                 });

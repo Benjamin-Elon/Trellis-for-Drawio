@@ -2446,6 +2446,31 @@ Draw.loadPlugin(function (ui) {
         graph.refresh(groupCell);
     }
 
+    function shiftGroupChildrenByDeltaBand(graph, groupCell, deltaY) {                 // NEW
+        if (!deltaY || !Number.isFinite(deltaY)) return;                               // NEW
+        if (!groupCell || isCollapsedLOD(groupCell)) return;                           // NEW
+    
+        const model = graph.getModel();                                                // NEW
+        const kids = graph.getChildVertices(groupCell) || [];                          // NEW
+    
+        model.beginUpdate();                                                           // NEW
+        try {
+            for (const k of kids) {
+                if (!k) continue;
+                if (!isPlantCircle(k)) continue;                                       // NEW (only plant circles)
+                if (k.getAttribute && k.getAttribute("lod_summary") === "1") continue; // NEW (paranoia)
+    
+                const g = k.getGeometry && k.getGeometry();
+                if (!g) continue;
+    
+                const ng = g.clone();
+                ng.y = (Number(ng.y) || 0) + deltaY;                                   // NEW
+                model.setGeometry(k, ng);                                              // NEW
+            }
+        } finally {
+            model.endUpdate();                                                         // NEW
+        }
+    }    
 
     function buildSlotMap(graph, groupCell) {
         const kids = graph.getChildVertices(groupCell) || [];
@@ -2590,6 +2615,13 @@ Draw.loadPlugin(function (ui) {
                     model.endUpdate();             
                 }
 
+                const nextBandPx = groupLabelMetrics(g).bandPx;                             // NEW
+                const deltaBandY = (Number(nextBandPx) || 0) - (Number(snap.bandPx) || 0);  // NEW
+                if (deltaBandY) {                                                          // NEW
+                    shiftGroupChildrenByDeltaBand(graph, g, deltaBandY);                    // NEW
+                    snap.bandPx = nextBandPx;                                               // NEW (keep snapshot consistent)
+                }              
+
                 // Prune disabled entries that are now outside the new grid                      
                 model.beginUpdate();
                 try {
@@ -2623,7 +2655,7 @@ Draw.loadPlugin(function (ui) {
                     continue;
                 }
 
-                // --- FIX: if currently LOD-collapsed but now under thresholds, expand --- 
+                // --- if currently LOD-collapsed but now under thresholds, expand --- 
                 if (isCollapsedLOD(g)) {
                     expandTiles(
                         graph,

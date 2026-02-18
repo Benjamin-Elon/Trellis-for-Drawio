@@ -27,19 +27,28 @@ Draw.loadPlugin(function (ui) {
         '<polygon points="9,6 13,11 9,16" fill="black"/></svg>'
     );
 
-    const ICON_SELECT = 'data:image/svg+xml;utf8,' + encodeURIComponent(           // NEW
-        '<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">' + // NEW
-        '<circle cx="11" cy="11" r="10" fill="white" stroke="black" stroke-width="1"/>' +     // NEW
+    const ICON_SELECT = 'data:image/svg+xml;utf8,' + encodeURIComponent(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">' +
+        '<circle cx="11" cy="11" r="10" fill="white" stroke="black" stroke-width="1"/>' +
         // cursor/selection arrow
-        '<path d="M7 5 L7 15 L9.3 12.8 L10.8 16 L12.4 15.4 L10.9 12.2 L14 12 Z" fill="black"/>' + // NEW
-        '</svg>'                                                                          // NEW
-    );                                                                                 // NEW
+        '<path d="M7 5 L7 15 L9.3 12.8 L10.8 16 L12.4 15.4 L10.9 12.2 L14 12 Z" fill="black"/>' +
+        '</svg>'
+    );
+
+    const ICON_SELECT_BEDS = 'data:image/svg+xml;utf8,' + encodeURIComponent(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">' +
+        '<circle cx="11" cy="11" r="10" fill="white" stroke="black" stroke-width="1"/>' +
+        // simple "bed" glyph: a rounded rectangle with hatch lines
+        '<rect x="6" y="7" width="10" height="8" rx="1.5" ry="1.5" fill="none" stroke="black" stroke-width="1"/>' +
+        '<path d="M7 9 H15 M7 11 H15 M7 13 H15" stroke="black" stroke-width="1"/>' +
+        '</svg>'
+    );
 
     const TIME_ATTRS_ASC = ['transplant_date', 'sow_date'];
     const EPS = 0; // inclusive AABB; set >0 to treat near-miss as overlap
 
-    const OVERLAP_MIN_PCT = 0.40;                    // NEW: 10% threshold (tune) // NEW
-    const OVERLAP_PCT_MODE = 'smaller';              // NEW: 'smaller' | 'union'  // NEW
+    const OVERLAP_MIN_PCT = 0.40;
+    const OVERLAP_PCT_MODE = 'smaller';
 
     // overlap badges config                                                             
     const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -59,100 +68,100 @@ Draw.loadPlugin(function (ui) {
     const REORDER_DEBOUNCE_MS = 80;
 
     // -------------------- NEW: canopy ordering --------------------
-    function isPlantingCell(cell) {                                                    // NEW
-        if (!cell || !cell.getAttribute) return false;                                 // NEW
-        // Prefer explicit tag if you use it, otherwise tiler group == planting         // NEW
-        if (cell.getAttribute(PLANT_TAG_ATTR) === PLANT_TAG) return true;              // NEW
-        return isTilerGroup(cell);                                                     // NEW
-    }                                                                                  // NEW
+    function isPlantingCell(cell) {
+        if (!cell || !cell.getAttribute) return false;
+        // Prefer explicit tag if you use it, otherwise tiler group == planting         
+        if (cell.getAttribute(PLANT_TAG_ATTR) === PLANT_TAG) return true;
+        return isTilerGroup(cell);
+    }
 
-    function toNumOrNaN(v) {                                                           // NEW
-        if (v == null) return NaN;                                                     // NEW
-        const n = parseFloat(String(v).trim());                                        // NEW
-        return Number.isFinite(n) ? n : NaN;                                           // NEW
-    }                                                                                  // NEW
+    function toNumOrNaN(v) {
+        if (v == null) return NaN;
+        const n = parseFloat(String(v).trim());
+        return Number.isFinite(n) ? n : NaN;
+    }
 
-    function canopyKey(cell) {                                                         // NEW
-        const h = toNumOrNaN(cell.getAttribute(HEIGHT_ATTR));                          // NEW
-        const d = toNumOrNaN(cell.getAttribute(DIAM_ATTR));                            // NEW
-        // We sort shorter->taller (back->front), so NaN becomes -Infinity              // NEW
-        const hh = Number.isFinite(h) ? h : NaN;                                       // NEW
-        const dd = Number.isFinite(d) ? d : NaN;                                       // NEW
-        return { h: hh, d: dd };                                                       // NEW
-    }                                                                                  // NEW
+    function canopyKey(cell) {
+        const h = toNumOrNaN(cell.getAttribute(HEIGHT_ATTR));
+        const d = toNumOrNaN(cell.getAttribute(DIAM_ATTR));
+        // We sort shorter->taller (back->front), so NaN becomes -Infinity              
+        const hh = Number.isFinite(h) ? h : NaN;
+        const dd = Number.isFinite(d) ? d : NaN;
+        return { h: hh, d: dd };
+    }
 
-    function canopyCompare(a, b) {                                                     // NEW
-        const ka = canopyKey(a), kb = canopyKey(b);                                    // NEW
+    function canopyCompare(a, b) {
+        const ka = canopyKey(a), kb = canopyKey(b);
 
-        // Primary: height                                                              // NEW
-        const ah = Number.isFinite(ka.h) ? ka.h : -Infinity;                            // NEW
-        const bh = Number.isFinite(kb.h) ? kb.h : -Infinity;                            // NEW
-        if (ah !== bh) return ah - bh;                                                  // NEW
+        // Primary: height                                                              
+        const ah = Number.isFinite(ka.h) ? ka.h : -Infinity;
+        const bh = Number.isFinite(kb.h) ? kb.h : -Infinity;
+        if (ah !== bh) return ah - bh;
 
-        // Fallback: diameter                                                           // NEW
-        const ad = Number.isFinite(ka.d) ? ka.d : -Infinity;                            // NEW
-        const bd = Number.isFinite(kb.d) ? kb.d : -Infinity;                            // NEW
-        if (ad !== bd) return ad - bd;                                                  // NEW
+        // Fallback: diameter                                                           
+        const ad = Number.isFinite(ka.d) ? ka.d : -Infinity;
+        const bd = Number.isFinite(kb.d) ? kb.d : -Infinity;
+        if (ad !== bd) return ad - bd;
 
-        // Stable tie-break                                                             // NEW
-        const id1 = a.id || '', id2 = b.id || '';                                       // NEW
-        return id1 < id2 ? -1 : id1 > id2 ? 1 : 0;                                      // NEW
-    }                                                                                  // NEW
+        // Stable tie-break                                                             
+        const id1 = a.id || '', id2 = b.id || '';
+        return id1 < id2 ? -1 : id1 > id2 ? 1 : 0;
+    }
 
-    function snapCanopyOrderInParent(parent) {                                         // NEW
-        if (!parent) return;                                                           // NEW
-        const childCount = model.getChildCount(parent);                                // NEW
-        if (childCount <= 1) return;                                                   // NEW
+    function snapCanopyOrderInParent(parent) {
+        if (!parent) return;
+        const childCount = model.getChildCount(parent);
+        if (childCount <= 1) return;
 
-        // Gather current child list (includes non-vertices too)                        // NEW
-        const children = [];                                                           // NEW
-        for (let i = 0; i < childCount; i++) children.push(model.getChildAt(parent, i)); // NEW
+        // Gather current child list (includes non-vertices too)                        
+        const children = [];
+        for (let i = 0; i < childCount; i++) children.push(model.getChildAt(parent, i));
 
-        // Identify planting children and their current slot indices                    // NEW
-        const plantingSlots = [];                                                      // NEW
-        const plantings = [];                                                          // NEW
-        for (let i = 0; i < children.length; i++) {                                    // NEW
-            const c = children[i];                                                     // NEW
-            if (model.isVertex(c) && isPlantingCell(c)) {                              // NEW
-                plantingSlots.push(i);                                                 // NEW
-                plantings.push(c);                                                     // NEW
-            }                                                                          // NEW
-        }                                                                              // NEW
+        // Identify planting children and their current slot indices                    
+        const plantingSlots = [];
+        const plantings = [];
+        for (let i = 0; i < children.length; i++) {
+            const c = children[i];
+            if (model.isVertex(c) && isPlantingCell(c)) {
+                plantingSlots.push(i);
+                plantings.push(c);
+            }
+        }
 
-        if (plantings.length <= 1) return;                                             // NEW
+        if (plantings.length <= 1) return;
 
-        // Sort: shorter first, taller last (front)                                     // NEW
-        const sorted = plantings.slice().sort(canopyCompare);                          // NEW
+        // Sort: shorter first, taller last (front)                                     
+        const sorted = plantings.slice().sort(canopyCompare);
 
-        // Reinsert ONLY plantings into their existing slots (preserve non-plantings)   // NEW
-        model.beginUpdate();                                                           // NEW
-        try {                                                                          // NEW
-            for (let k = 0; k < plantingSlots.length; k++) {                           // NEW
-                const idx = plantingSlots[k];                                          // NEW
-                const cell = sorted[k];                                                // NEW
-                // model.add moves within same parent; index is the z-order position   // NEW
-                model.add(parent, cell, idx);                                          // NEW
-            }                                                                          // NEW
-        } finally {                                                                    // NEW
-            model.endUpdate();                                                         // NEW
-        }                                                                              // NEW
-        graph.refresh();                                                               // NEW (ensure repaint) 
-    }                                                                                  // NEW
+        // Reinsert ONLY plantings into their existing slots (preserve non-plantings)   
+        model.beginUpdate();
+        try {
+            for (let k = 0; k < plantingSlots.length; k++) {
+                const idx = plantingSlots[k];
+                const cell = sorted[k];
+                // model.add moves within same parent; index is the z-order position   
+                model.add(parent, cell, idx);
+            }
+        } finally {
+            model.endUpdate();
+        }
+        graph.refresh();
+    }
 
-    let canopySnapRaf = null;                                                          // NEW
-    function scheduleCanopySnap(parent) {                                                    // CHANGED
-        if (!parent) return;                                                                 // kept
-        if (canopySnapRaf != null) cancelAnimationFrame(canopySnapRaf);                      // kept
-        canopySnapRaf = requestAnimationFrame(() => {                                        // kept
-            canopySnapRaf = null;                                                            // kept
-            snapCanopyOrderInParent(parent);                                                 // kept
+    let canopySnapRaf = null;
+    function scheduleCanopySnap(parent) {
+        if (!parent) return;
+        if (canopySnapRaf != null) cancelAnimationFrame(canopySnapRaf);
+        canopySnapRaf = requestAnimationFrame(() => {
+            canopySnapRaf = null;
+            snapCanopyOrderInParent(parent);
 
-            const sel = graph.getSelectionCell();                                            // NEW
-            if (sel && model.getParent(sel) === parent && isPlantingCell(sel)) {             // NEW
-                bringCellToFrontInParent(sel);                                               // NEW: reassert front
-            }                                                                                // NEW
-        });                                                                                  // kept
-    }                                                                                        // kept
+            const sel = graph.getSelectionCell();
+            if (sel && model.getParent(sel) === parent && isPlantingCell(sel)) {
+                bringCellToFrontInParent(sel);
+            }
+        });
+    }
 
 
     // debounce
@@ -203,61 +212,192 @@ Draw.loadPlugin(function (ui) {
     graph.getView().addListener(mxEvent.SCALE_AND_TRANSLATE, invalidateBoundsCache);
 
 
-    // -------------------- Significant overlap (area-based) -------------------- // NEW
-    function rectArea(r) {                                                       // NEW
-        return (!r) ? 0 : Math.max(0, r.w) * Math.max(0, r.h);                   // NEW
-    }                                                                            // NEW
+    // -------------------- Significant overlap (area-based) -------------------- 
+    function rectArea(r) {
+        return (!r) ? 0 : Math.max(0, r.w) * Math.max(0, r.h);
+    }
 
-    function rectIntersectionArea(a, b) {                                        // NEW
-        if (!a || !b) return 0;                                                  // NEW
-        const x1 = Math.max(a.x, b.x);                                           // NEW
-        const y1 = Math.max(a.y, b.y);                                           // NEW
-        const x2 = Math.min(a.x + a.w, b.x + b.w);                               // NEW
-        const y2 = Math.min(a.y + a.h, b.y + b.h);                               // NEW
-        const iw = x2 - x1;                                                     // NEW
-        const ih = y2 - y1;                                                     // NEW
-        if (iw <= 0 || ih <= 0) return 0;  // touching edges/corners => 0         // NEW
-        return iw * ih;                                                         // NEW
-    }                                                                            // NEW
+    function rectIntersectionArea(a, b) {
+        if (!a || !b) return 0;
+        const x1 = Math.max(a.x, b.x);
+        const y1 = Math.max(a.y, b.y);
+        const x2 = Math.min(a.x + a.w, b.x + b.w);
+        const y2 = Math.min(a.y + a.h, b.y + b.h);
+        const iw = x2 - x1;
+        const ih = y2 - y1;
+        if (iw <= 0 || ih <= 0) return 0;  // touching edges/corners => 0         
+        return iw * ih;
+    }
 
-    function isGardenBed(cell) {                                                 // NEW
-        if (!cell || !cell.getAttribute) return false;                           // NEW
-        return cell.getAttribute('garden_bed') === '1' ||                        // NEW (assumption)
-            cell.getAttribute('gardenBed') === '1' ||                         // NEW (fallback)
-            cell.getAttribute('is_garden_bed') === '1';                       // NEW (fallback)
-    }                                                                            // NEW
+    function isGardenBed(cell) {
+        if (!cell || !cell.getAttribute) return false;
+        return cell.getAttribute('garden_bed') === '1' ||
+            cell.getAttribute('gardenBed') === '1' ||
+            cell.getAttribute('is_garden_bed') === '1';
+    }
 
-    function rectContainsPoint(r, px, py) {                                      // NEW
-        if (!r) return false;                                                    // NEW
-        return px >= r.x && px <= (r.x + r.w) && py >= r.y && py <= (r.y + r.h); // NEW
-    }                                                                            // NEW
+    function rectContainsPoint(r, px, py) {
+        if (!r) return false;
+        return px >= r.x && px <= (r.x + r.w) && py >= r.y && py <= (r.y + r.h);
+    }
 
-    function rectCenter(r) {                                                     // NEW
-        return (!r) ? null : { x: r.x + r.w / 2, y: r.y + r.h / 2 };             // NEW
-    }                                                                            // NEW
+    function rectCenter(r) {
+        return (!r) ? null : { x: r.x + r.w / 2, y: r.y + r.h / 2 };
+    }
 
-    function significantOverlap(a, b) {                                          // NEW
-        if (!a || !b) return false;                                              // NEW
-        const ia = rectIntersectionArea(a, b);                                   // NEW
-        if (ia <= 0) return false;                                               // NEW
-        const aa = rectArea(a), ab = rectArea(b);                                // NEW
-        if (aa <= 0 || ab <= 0) return false;                                    // NEW
+    function bedsForCluster(key) {                                                                     
+        const st = clusterStates.get(key);                                                             
+        if (!st || !st.order || !st.order.length) return [];                                           
+    
+        const parent = model.getParent(st.order[0]);                                                    
+        if (!parent) return [];                                                                         
+    
+        const sibVerts = graph.getChildVertices(parent) || [];                                          
+        const beds = sibVerts.filter(isGardenBed);                                                      
+        if (!beds.length) return [];                                                                    
+    
+        const bedBounds = beds.map(getAbsBounds);                                                       
+        const chosenIds = new Set();                                                                    
+    
+        for (const tg of st.order) {                                                                    
+            const b = getAbsBounds(tg);                                                                 
+            const c = rectCenter(b);                                                                    
+            if (!c) continue;                                                                           
+    
+            let chosen = null;                                                                          
+            let chosenArea = Infinity;                                                                  
+            for (let k = 0; k < beds.length; k++) {                                                     
+                const bb = bedBounds[k];                                                                
+                if (!bb) continue;                                                                      
+                if (rectContainsPoint(bb, c.x, c.y)) {                                                   
+                    const a = rectArea(bb);                                                             
+                    if (a > 0 && a < chosenArea) {                                                      
+                        chosenArea = a;                                                                 
+                        chosen = beds[k];                                                               
+                    }                                                                                   
+                }                                                                                       
+            }                                                                                           
+            if (chosen && chosen.id) chosenIds.add(chosen.id);                                          
+        }                                                                                               
+    
+        const out = [];                                                                                 
+        chosenIds.forEach(id => {                                                                       
+            const cell = model.getCell(id);                                                             
+            if (cell && model.isVertex(cell) && isGardenBed(cell)) out.push(cell);                      
+        });                                                                                             
+        return out;                                                                                     
+    }                                                                                                       
 
-        let denom;                                                               // NEW
-        if (OVERLAP_PCT_MODE === 'union') {                                      // NEW
-            denom = (aa + ab - ia);                                              // NEW
-        } else {                                                                 // NEW
-            denom = Math.min(aa, ab); // 'smaller'                               // NEW
-        }                                                                        // NEW
-        if (denom <= 0) return false;                                            // NEW
-        const pct = ia / denom;                                                  // NEW
-        return pct >= OVERLAP_MIN_PCT;                                           // NEW
-    }                                                                            // NEW
+    function significantOverlap(a, b) {
+        if (!a || !b) return false;
+        const ia = rectIntersectionArea(a, b);
+        if (ia <= 0) return false;
+        const aa = rectArea(a), ab = rectArea(b);
+        if (aa <= 0 || ab <= 0) return false;
+
+        let denom;
+        if (OVERLAP_PCT_MODE === 'union') {
+            denom = (aa + ab - ia);
+        } else {
+            denom = Math.min(aa, ab); // 'smaller'                               
+        }
+        if (denom <= 0) return false;
+        const pct = ia / denom;
+        return pct >= OVERLAP_MIN_PCT;
+    }
 
     function getSiblingsInParent(parent) {
         const verts = graph.getChildVertices(parent) || [];
         return verts.filter(isTilerGroup);
     }
+
+    // -------------------- prevent beds from being dropped into tiler groups --------------------
+
+    // Returns true if `cell` is a tiler group OR is inside a tiler group (any ancestor)          
+    function isInTilerGroup(cell) {                                                               
+        let p = cell;                                                                             
+        while (p) {                                                                               
+            if (isTilerGroup(p)) return true;                                                     
+            p = model.getParent(p);                                                               
+        }                                                                                         
+        return false;                                                                             
+    }                                                                                             
+
+    // Find the nearest ancestor (including self) that is a tiler group, else null                
+    function findTilerGroupAncestor(cell) {                                                       
+        let p = cell;                                                                             
+        while (p) {                                                                               
+            if (isTilerGroup(p)) return p;                                                        
+            p = model.getParent(p);                                                               
+        }                                                                                         
+        return null;                                                                              
+    }                                                                                             
+
+    // 1) Primary: block drop target at drag-time                                                  
+    (function installBedDropBlock() {                                                             
+        if (graph.__bedDropBlockInstalled) return;                                                
+        graph.__bedDropBlockInstalled = true;                                                     
+
+        const origIsValidDropTarget = graph.isValidDropTarget;                                    
+        graph.isValidDropTarget = function (target, cells, evt) {                                 
+            // If any dragged cell is a garden bed, forbid dropping into tiler groups              
+            const dragged = (cells || []).filter(Boolean);                                        
+            const anyBed = dragged.some(c => model.isVertex(c) && isGardenBed(c));                
+            if (anyBed) {                                                                         
+                const tg = target ? findTilerGroupAncestor(target) : null;                        
+                if (tg) return false;                                                             
+            }                                                                                     
+            return origIsValidDropTarget ? origIsValidDropTarget.apply(this, arguments) : true;   
+        };                                                                                        
+    })();                                                                                         
+
+    // 2) Secondary: safety net after moves (undo/redo/programmatic moves/outline drag)            
+    function enforceBedsNotInTilerGroups(cells) {                                                  
+        const moved = (cells || []).filter(Boolean);                                               
+        if (!moved.length) return;                                                                 
+
+        // Choose a safe parent. Default parent is usually correct.                                 
+        const safeParent = graph.getDefaultParent();                                               
+
+        model.beginUpdate();                                                                       
+        try {                                                                                      
+            for (const c of moved) {                                                               
+                if (!model.isVertex(c) || !isGardenBed(c)) continue;                               
+                const parent = model.getParent(c);                                                 
+                if (!parent) continue;                                                             
+
+                if (isInTilerGroup(parent)) {                                                      
+                    // Move bed out to safe parent, preserving absolute geometry                     
+                    const geo = model.getGeometry(c);                                              
+                    if (!geo) {                                                                    
+                        model.add(safeParent, c, model.getChildCount(safeParent));                 
+                        continue;                                                                  
+                    }                                                                              
+
+                    // Convert current geometry to absolute, then re-add under safe parent          
+                    const abs = geo.clone();                                                       
+                    const parentGeo = model.getGeometry(parent);                                   
+                    if (parentGeo) {                                                               
+                        abs.x += parentGeo.x;                                                      
+                        abs.y += parentGeo.y;                                                      
+                    }                                                                              
+
+                    model.add(safeParent, c, model.getChildCount(safeParent));                     
+                    model.setGeometry(c, abs);                                                     
+                }                                                                                  
+            }                                                                                      
+        } finally {                                                                                
+            model.endUpdate();                                                                     
+        }                                                                                          
+
+        graph.refresh();                                                                           
+    }                                                                                              
+
+    graph.addListener(mxEvent.CELLS_MOVED, function (sender, evt) {                                
+        const cells = evt.getProperty('cells');                                                    
+        enforceBedsNotInTilerGroups(cells);                                                        
+    });                                                                                            
+
 
     // -------------------- Time ordering --------------------
     function parseISO(s) {
@@ -375,41 +515,41 @@ Draw.loadPlugin(function (ui) {
         const bounds = nodes.map(getAbsBounds);
 
         // --- NEW: collect beds in same parent and precompute bounds ---
-        const sibVerts = graph.getChildVertices(parent) || [];                               // NEW
-        const beds = sibVerts.filter(isGardenBed);                                           // NEW
-        const bedBounds = beds.map(getAbsBounds);                                            // NEW
+        const sibVerts = graph.getChildVertices(parent) || [];
+        const beds = sibVerts.filter(isGardenBed);
+        const bedBounds = beds.map(getAbsBounds);
 
         // Map each TG index -> chosen bed id (or null) based on center-in-bed
-        const tgBedId = new Array(n).fill(null);                                             // NEW
-        for (let i = 0; i < n; i++) {                                                        // NEW
-            const b = bounds[i];                                                             // NEW
-            const c = rectCenter(b);                                                         // NEW
-            if (!c) continue;                                                                // NEW
+        const tgBedId = new Array(n).fill(null);
+        for (let i = 0; i < n; i++) {
+            const b = bounds[i];
+            const c = rectCenter(b);
+            if (!c) continue;
 
-            let chosen = null;                                                               // NEW
-            let chosenArea = Infinity;                                                       // NEW
-            for (let k = 0; k < beds.length; k++) {                                          // NEW
-                const bb = bedBounds[k];                                                     // NEW
-                if (!bb) continue;                                                           // NEW
-                if (rectContainsPoint(bb, c.x, c.y)) {                                       // NEW
-                    const a = rectArea(bb);                                                  // NEW
+            let chosen = null;
+            let chosenArea = Infinity;
+            for (let k = 0; k < beds.length; k++) {
+                const bb = bedBounds[k];
+                if (!bb) continue;
+                if (rectContainsPoint(bb, c.x, c.y)) {
+                    const a = rectArea(bb);
                     // If multiple beds contain the point, pick the smallest bed (more specific)
-                    if (a > 0 && a < chosenArea) {                                           // NEW
-                        chosenArea = a;                                                      // NEW
-                        chosen = beds[k].id;                                                 // NEW
-                    }                                                                        // NEW
-                }                                                                            // NEW
-            }                                                                                // NEW
-            tgBedId[i] = chosen;                                                             // NEW
-        }                                                                                    // NEW
+                    if (a > 0 && a < chosenArea) {
+                        chosenArea = a;
+                        chosen = beds[k].id;
+                    }
+                }
+            }
+            tgBedId[i] = chosen;
+        }
 
         const adj = Array.from({ length: n }, () => []);
 
         for (let i = 0; i < n; i++) {
             for (let j = i + 1; j < n; j++) {
-                const sameBed = (tgBedId[i] && tgBedId[i] === tgBedId[j]);                   // NEW
-                const sigOv = significantOverlap(bounds[i], bounds[j]);                      // NEW
-                if (sameBed || sigOv) {                                                      // CHANGE
+                const sameBed = (tgBedId[i] && tgBedId[i] === tgBedId[j]);
+                const sigOv = significantOverlap(bounds[i], bounds[j]);
+                if (sameBed || sigOv) {
                     adj[i].push(j);
                     adj[j].push(i);
                 }
@@ -453,8 +593,9 @@ Draw.loadPlugin(function (ui) {
                 dimmed: new Set(),
                 badgePrev: null,
                 badgeNext: null,
-                btnDrag: null,        // NEW
-                btnSelectAll: null // NEW
+                btnDrag: null,
+                btnSelectAll: null,
+                btnSelectBeds: null,
             };
             clusterStates.set(key, st);
         } else {
@@ -579,31 +720,31 @@ Draw.loadPlugin(function (ui) {
         el.style.pointerEvents = 'auto';
     }
 
-    function styleSelectBtn(el) {                          // CHANGED
-        el.style.position = 'absolute';                      // kept
-        el.style.width = BTN_SIZE + 'px';                    // NEW
-        el.style.height = BTN_SIZE + 'px';                   // NEW
-        el.style.zIndex = '100000';                          // kept
-        el.style.cursor = 'pointer';                         // kept
-        el.style.pointerEvents = 'auto';                     // kept
-        el.style.userSelect = 'none';                        // NEW
-    }                                                      // CHANGED
+    function styleSelectBtn(el) {
+        el.style.position = 'absolute';
+        el.style.width = BTN_SIZE + 'px';
+        el.style.height = BTN_SIZE + 'px';
+        el.style.zIndex = '100000';
+        el.style.cursor = 'pointer';
+        el.style.pointerEvents = 'auto';
+        el.style.userSelect = 'none';
+    }
 
 
-    function consumeEvt(evt) {                                // NEW
-        if (evt) mxEvent.consume(evt);                        // NEW
-    }                                                        // NEW
+    function consumeEvt(evt) {
+        if (evt) mxEvent.consume(evt);
+    }
 
-    function setNavEnabled(btn, enabled) {                    // CHANGED
-        if (!btn) return;                                     // kept
-        btn.dataset.navEnabled = enabled ? '1' : '0';         // kept
-        btn.style.cursor = enabled ? 'pointer' : 'default';   // kept
-        btn.style.opacity = enabled ? '1' : '0.35';           // NEW
-    }                                                        // CHANGED
+    function setNavEnabled(btn, enabled) {
+        if (!btn) return;
+        btn.dataset.navEnabled = enabled ? '1' : '0';
+        btn.style.cursor = enabled ? 'pointer' : 'default';
+        btn.style.opacity = enabled ? '1' : '0.35';
+    }
 
-    function isNavEnabled(btn) {                              // NEW
-        return !!btn && btn.dataset.navEnabled === '1';       // NEW
-    }                                                        // NEW
+    function isNavEnabled(btn) {
+        return !!btn && btn.dataset.navEnabled === '1';
+    }
 
 
     function ensureButtonsFor(key) {
@@ -613,14 +754,14 @@ Draw.loadPlugin(function (ui) {
         if (!st.btnPrev) {
             st.btnPrev = document.createElement('img');
             st.btnPrev.src = ICON_PREV; styleBtn(st.btnPrev); st.btnPrev.title = 'Previous';
-            st.btnPrev.draggable = false;                                             // NEW
+            st.btnPrev.draggable = false;
 
-            st.btnPrev.addEventListener('pointerdown', consumeEvt, { passive: false }); // NEW
-            st.btnPrev.addEventListener('mousedown', consumeEvt, { passive: false });   // NEW
+            st.btnPrev.addEventListener('pointerdown', consumeEvt, { passive: false });
+            st.btnPrev.addEventListener('mousedown', consumeEvt, { passive: false });
 
             st.btnPrev.addEventListener('click', function (evt) {
-                consumeEvt(evt);                                                      // CHANGED (always consume)
-                if (!isNavEnabled(st.btnPrev)) return;                                // NEW (inactive: no-op)
+                consumeEvt(evt);
+                if (!isNavEnabled(st.btnPrev)) return;
                 onCycleCluster(key, -1);
             });
 
@@ -630,14 +771,14 @@ Draw.loadPlugin(function (ui) {
         if (!st.btnNext) {
             st.btnNext = document.createElement('img');
             st.btnNext.src = ICON_NEXT; styleBtn(st.btnNext); st.btnNext.title = 'Next';
-            st.btnNext.draggable = false;                                             // NEW
+            st.btnNext.draggable = false;
 
-            st.btnNext.addEventListener('pointerdown', consumeEvt, { passive: false }); // NEW
-            st.btnNext.addEventListener('mousedown', consumeEvt, { passive: false });   // NEW
+            st.btnNext.addEventListener('pointerdown', consumeEvt, { passive: false });
+            st.btnNext.addEventListener('mousedown', consumeEvt, { passive: false });
 
             st.btnNext.addEventListener('click', function (evt) {
-                consumeEvt(evt);                                                      // CHANGED (always consume)
-                if (!isNavEnabled(st.btnNext)) return;                                // NEW (inactive: no-op)
+                consumeEvt(evt);
+                if (!isNavEnabled(st.btnNext)) return;
                 onCycleCluster(key, +1);
             });
 
@@ -648,41 +789,84 @@ Draw.loadPlugin(function (ui) {
         st.btnNext.style.display = '';
     }
 
-    function ensureSelectAllFor(key) {                                           // CHANGED
-        const host = getHost();                                                    // kept
-        const st = clusterStates.get(key); if (!st) return;                        // kept
+    function ensureSelectAllFor(key) {
+        const host = getHost();
+        const st = clusterStates.get(key); if (!st) return;
 
-        if (!st.btnSelectAll) {                                                    // kept
-            const b = document.createElement('img');                                 // CHANGED
-            b.src = ICON_SELECT;                                                     // NEW
-            b.alt = 'Select';                                                        // NEW
-            styleSelectBtn(b);                                                       // kept
-            b.title = 'Select entire cluster';                                       // kept
-            b.draggable = false;                                                     // NEW
+        if (!st.btnSelectAll) {
+            const b = document.createElement('img');
+            b.src = ICON_SELECT;
+            b.alt = 'Select';
+            styleSelectBtn(b);
+            b.title = 'Select entire cluster';
+            b.draggable = false;
 
-            b.addEventListener('pointerdown', consumeEvt, { passive: false });       // kept
-            b.addEventListener('mousedown', consumeEvt, { passive: false });         // kept
+            b.addEventListener('pointerdown', consumeEvt, { passive: false });
+            b.addEventListener('mousedown', consumeEvt, { passive: false });
 
-            b.addEventListener('click', function (evt) {                             // kept
-                consumeEvt(evt);                                                       // kept
-                const st2 = clusterStates.get(key);                                    // kept
-                if (!st2 || !st2.order || st2.order.length < 2) return;                // kept
+            b.addEventListener('click', function (evt) {
+                consumeEvt(evt);
+                const st2 = clusterStates.get(key);
+                if (!st2 || !st2.order || st2.order.length < 2) return;
 
-                const members = st2.order.slice();                                     // kept
-                clearVisibilityFor(key);                                               // kept
-                graph.setSelectionCells(members);                                      // kept
-                graph.refresh();                                                       // kept
-                hideUIFor(key);                                                        // kept
+                const members = st2.order.slice();
+                clearVisibilityFor(key);
+                graph.setSelectionCells(members);
+                graph.refresh();
+                hideUIFor(key);
             });
 
-            host.appendChild(b);                                                     // kept
-            st.btnSelectAll = b;                                                     // kept
-        } else if (st.btnSelectAll.parentNode !== host) {                          // kept
-            host.appendChild(st.btnSelectAll);                                       // kept
+            host.appendChild(b);
+            st.btnSelectAll = b;
+        } else if (st.btnSelectAll.parentNode !== host) {
+            host.appendChild(st.btnSelectAll);
         }
 
-        st.btnSelectAll.style.display = '';                                       // kept
-    }                                                                            // CHANGED
+        st.btnSelectAll.style.display = '';
+    }
+
+    function ensureSelectBedsFor(key) {
+        const host = getHost();
+        const st = clusterStates.get(key); if (!st) return;
+
+        if (!st.btnSelectBeds) {
+            const b = document.createElement('img');
+            b.src = ICON_SELECT_BEDS;
+            b.alt = 'Select beds';
+            styleSelectBtn(b);
+            b.title = 'Select garden beds (temporary bring-to-front)';
+            b.draggable = false;
+
+            b.addEventListener('pointerdown', consumeEvt, { passive: false });
+            b.addEventListener('mousedown', consumeEvt, { passive: false });
+
+            b.addEventListener('click', function (evt) {
+                consumeEvt(evt);
+                const st2 = clusterStates.get(key);
+                if (!st2 || !st2.order || !st2.order.length) return;
+            
+                const parent = model.getParent(st2.order[0]);
+                if (!parent) return;
+            
+                const beds = bedsForCluster(key);                                                               
+                if (!beds.length) return;                                                                       
+            
+                bringCellsToFrontTemporarilyInParent(parent, beds);
+                clearVisibilityFor(key);
+                graph.setSelectionCells(beds);                                                                  
+                graph.refresh(parent);
+                hideUIFor(key);
+            });
+            
+
+            host.appendChild(b);
+            st.btnSelectBeds = b;
+        } else if (st.btnSelectBeds.parentNode !== host) {
+            host.appendChild(st.btnSelectBeds);
+        }
+
+        st.btnSelectBeds.style.display = '';
+    }
 
     function ensureBadgeFor(key) {
         const host = getHost();
@@ -697,7 +881,7 @@ Draw.loadPlugin(function (ui) {
             b.style.border = '1px solid #000';
             b.style.borderRadius = '10px';
             b.style.pointerEvents = 'none';
-            b.style.width = '54px';  // fixed to avoid reflow reads                 
+            b.style.width = '54px';
             b.style.textAlign = 'center';
             host.appendChild(b);
             st.badge = b;
@@ -714,7 +898,9 @@ Draw.loadPlugin(function (ui) {
         if (st.badge) st.badge.style.display = 'none';
         if (st.badgePrev) st.badgePrev.style.display = 'none';
         if (st.badgeNext) st.badgeNext.style.display = 'none';
-        if (st.btnSelectAll) st.btnSelectAll.style.display = 'none'; // NEW
+        if (st.btnSelectAll) st.btnSelectAll.style.display = 'none';
+        if (st.btnSelectBeds) st.btnSelectBeds.style.display = 'none';
+
     }
 
     // compute cluster bounding box from member states                         
@@ -752,29 +938,38 @@ Draw.loadPlugin(function (ui) {
         st.badge.style.left = Math.round(cx - bw / 2) + 'px';
         st.badge.style.top = Math.round(box.y - bh - gap) + 'px';
 
-        // place select button at the top-left outside corner of the cluster bbox
-        if (st.btnSelectAll) {                                                       // CHANGED
-            const x = Math.round(box.x - BTN_SIZE - BTN_INSET);                         // NEW
-            const y = Math.round(box.y - BTN_SIZE - BTN_INSET);                         // NEW
-            st.btnSelectAll.style.left = x + 'px';                                      // NEW
-            st.btnSelectAll.style.top = y + 'px';                                      // NEW
-        }
+        // place select buttons at the top-left outside corner of the cluster bbox
+        if (st.btnSelectAll || st.btnSelectBeds) {
+            const baseX = Math.round(box.x - BTN_SIZE - BTN_INSET);
+            const y = Math.round(box.y - BTN_SIZE - BTN_INSET);
+            const gap = 4;
 
+            // Left: beds, Right: cluster (so they read left->right)                     
+            if (st.btnSelectBeds) {
+                st.btnSelectBeds.style.left = baseX + 'px';
+                st.btnSelectBeds.style.top = y + 'px';
+            }
+            if (st.btnSelectAll) {
+                const x2 = baseX + (st.btnSelectBeds ? (BTN_SIZE + gap) : 0);
+                st.btnSelectAll.style.left = x2 + 'px';
+                st.btnSelectAll.style.top = y + 'px';
+            }
+        }
 
         updateOverlapValuesFor(key);
         positionOverlapBadgesFor(key);
     }
 
-    function updateControlsVisibilityFor(key) {                     // CHANGED
-        const st = clusterStates.get(key); if (!st) return;         // kept
-        const last = st.order.length - 1;                           // kept
+    function updateControlsVisibilityFor(key) {
+        const st = clusterStates.get(key); if (!st) return;
+        const last = st.order.length - 1;
 
-        if (st.btnPrev) setNavEnabled(st.btnPrev, st.currentIdx > 0);            // kept
-        if (st.btnNext) setNavEnabled(st.btnNext, st.currentIdx < last);         // kept
+        if (st.btnPrev) setNavEnabled(st.btnPrev, st.currentIdx > 0);
+        if (st.btnNext) setNavEnabled(st.btnNext, st.currentIdx < last);
 
-        if (st.badgePrev) st.badgePrev.style.opacity = (st.currentIdx > 0) ? '1' : '0.35';   // NEW
-        if (st.badgeNext) st.badgeNext.style.opacity = (st.currentIdx < last) ? '1' : '0.35';// NEW
-    }                                                               // CHANGED
+        if (st.badgePrev) st.badgePrev.style.opacity = (st.currentIdx > 0) ? '1' : '0.35';
+        if (st.badgeNext) st.badgeNext.style.opacity = (st.currentIdx < last) ? '1' : '0.35';
+    }
 
 
     // -------------------- Per-cluster visibility --------------------
@@ -814,26 +1009,94 @@ Draw.loadPlugin(function (ui) {
 
 
     // -------------------- Navigation per cluster --------------------
-    function bringCellToFrontInParent(cell) {                                                // CHANGED
-        if (!cell) return;                                                                   // kept
-        const p = model.getParent(cell);                                                     // kept
-        if (!p) return;                                                                      // kept
-        model.beginUpdate();                                                                 // kept
-        try {                                                                                // kept
-            const topIdx = model.getChildCount(p);                                           // CHANGED: append at end
-            model.add(p, cell, topIdx);                                                      // CHANGED: true front-most
-        } finally {                                                                          // kept
-            model.endUpdate();                                                               // kept
-        }                                                                                    // kept
-        graph.refresh(cell);                                                                 // kept
-    }                                                                                        // kept
-    // NEW
+    function bringCellToFrontInParent(cell) {
+        if (!cell) return;
+        const p = model.getParent(cell);
+        if (!p) return;
+        model.beginUpdate();
+        try {
+            const topIdx = model.getChildCount(p);
+            model.add(p, cell, topIdx);
+        } finally {
+            model.endUpdate();
+        }
+        graph.refresh(cell);
+    }
 
-    function bringToFrontAndSelect(cell) {                                                   // CHANGED
-        bringCellToFrontInParent(cell);                                                      // NEW
-        graph.setSelectionCell(cell);                                                        // CHANGED
-        lastSelectedPlantingId = cell ? cell.id : null;                                      // (kept)
-        lastSelectedPlantingParent = cell ? model.getParent(cell) : null;                    // (kept)
+    // -------------------- NEW: temporary bed front-ordering --------------------
+    const parentOrderSnapshots = new Map(); // parentId -> [childId,...]               
+    let lastSelectedBedParent = null;
+
+    function snapshotChildOrder(parent) {
+        if (!parent || !parent.id) return;
+        if (parentOrderSnapshots.has(parent.id)) return;
+        const n = model.getChildCount(parent);
+        const ids = [];
+        for (let i = 0; i < n; i++) {
+            const c = model.getChildAt(parent, i);
+            ids.push(c && c.id ? c.id : null);
+        }
+        parentOrderSnapshots.set(parent.id, ids);
+    }
+
+    function restoreChildOrder(parent) {
+        if (!parent || !parent.id) return;
+        const snap = parentOrderSnapshots.get(parent.id);
+        if (!snap) return;
+
+        // Re-add children in the snap order (ignoring missing/null ids)
+        model.beginUpdate();
+        try {
+            let idx = 0;
+            for (const id of snap) {
+                if (!id) continue;
+                const cell = model.getCell(id);
+                if (!cell) continue;
+                if (model.getParent(cell) !== parent) continue;
+                model.add(parent, cell, idx++);
+            }
+        } finally {
+            model.endUpdate();
+        }
+        parentOrderSnapshots.delete(parent.id);
+        graph.refresh(parent);
+    }
+
+    function bringCellsToFrontTemporarilyInParent(parent, cells) {
+        if (!parent || !cells || !cells.length) return;
+
+        // Snapshot once, then move target cells to the end in their current order
+        snapshotChildOrder(parent);
+
+        // Preserve relative order as currently in parent
+        const n = model.getChildCount(parent);
+        const order = [];
+        const set = new Set(cells.map(c => c && c.id).filter(Boolean));
+        for (let i = 0; i < n; i++) {
+            const c = model.getChildAt(parent, i);
+            if (c && set.has(c.id)) order.push(c);
+        }
+        if (!order.length) return;
+
+        model.beginUpdate();
+        try {
+            for (const c of order) {
+                model.add(parent, c, model.getChildCount(parent)); // always append
+            }
+        } finally {
+            model.endUpdate();
+        }
+
+        lastSelectedBedParent = parent;
+        graph.refresh(parent);
+    }
+
+
+    function bringToFrontAndSelect(cell) {
+        bringCellToFrontInParent(cell);
+        graph.setSelectionCell(cell);
+        lastSelectedPlantingId = cell ? cell.id : null;                                     
+        lastSelectedPlantingParent = cell ? model.getParent(cell) : null;                  
     }
 
     function onCycleCluster(key, dir) {
@@ -877,7 +1140,8 @@ Draw.loadPlugin(function (ui) {
 
             ensureButtonsFor(key);
             ensureBadgeFor(key);
-            ensureSelectAllFor(key); // NEW
+            ensureSelectAllFor(key);
+            ensureSelectBedsFor(key);
             updateControlsVisibilityFor(key);
             positionUIFor(key);
             applyVisibilityFor(key);
@@ -1001,28 +1265,36 @@ Draw.loadPlugin(function (ui) {
 
 
     // -------------------- Events --------------------
-    let lastSelectedPlantingId = null;                                                 // NEW
-    let lastSelectedPlantingParent = null;                                             // NEW
+    let lastSelectedPlantingId = null;
+    let lastSelectedPlantingParent = null;
 
     graph.getSelectionModel().addListener(mxEvent.CHANGE, function () {
-        const sel = graph.getSelectionCell();                                          // NEW
-        const selIsPlanting = sel && model.isVertex(sel) && isPlantingCell(sel);       // NEW
+        const sel = graph.getSelectionCell();
+
+        //if we previously brought beds to front, restore when leaving bed selection
+        const selIsBed = sel && model.isVertex(sel) && isGardenBed(sel);
+        if (lastSelectedBedParent && !selIsBed) {
+            restoreChildOrder(lastSelectedBedParent);
+            lastSelectedBedParent = null;
+        }
+
+        const selIsPlanting = sel && model.isVertex(sel) && isPlantingCell(sel);
 
         // If we just deselected a planting (or switched away), snap canopy in old parent
-        if (lastSelectedPlantingId && (!selIsPlanting || sel.id !== lastSelectedPlantingId)) { // NEW
-            scheduleCanopySnap(lastSelectedPlantingParent);                            // NEW
-            lastSelectedPlantingId = null;                                             // NEW
-            lastSelectedPlantingParent = null;                                         // NEW
+        if (lastSelectedPlantingId && (!selIsPlanting || sel.id !== lastSelectedPlantingId)) {
+            scheduleCanopySnap(lastSelectedPlantingParent);
+            lastSelectedPlantingId = null;
+            lastSelectedPlantingParent = null;
         }
 
         // If selecting a planting, bring it to front (temporary) and remember it
-        if (selIsPlanting) {                                                           // NEW
-            graph.orderCells(false, [sel]); // to front                                // NEW
-            lastSelectedPlantingId = sel.id;                                           // NEW
-            lastSelectedPlantingParent = model.getParent(sel);                         // NEW
+        if (selIsPlanting) {
+            graph.orderCells(false, [sel]); // to front                                
+            lastSelectedPlantingId = sel.id;
+            lastSelectedPlantingParent = model.getParent(sel);
         }
 
-        rafDebounce(refreshAllForSelectionOrAnchor);                                   // CHANGED (kept)
+        rafDebounce(refreshAllForSelectionOrAnchor);
     });
 
     graph.addListener(mxEvent.CELLS_MOVED, function () { rafDebounce(refreshAllForSelectionOrAnchor); });
