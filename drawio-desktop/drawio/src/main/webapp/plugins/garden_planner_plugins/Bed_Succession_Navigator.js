@@ -667,7 +667,7 @@ Draw.loadPlugin(function (ui) {
         el.style.position = 'absolute';
         el.style.width = OVERLAP_BADGE_W + 'px';
         el.style.height = OVERLAP_BADGE_H + 'px';
-        el.style.zIndex = '100000';
+        el.style.zIndex = '10000';
         el.style.pointerEvents = 'none';
         el.style.border = '1px solid #000';
         el.style.borderRadius = '10px';
@@ -747,7 +747,7 @@ Draw.loadPlugin(function (ui) {
         el.style.position = 'absolute';
         el.style.width = BTN_SIZE + 'px';
         el.style.height = BTN_SIZE + 'px';
-        el.style.zIndex = '100000';
+        el.style.zIndex = '10000';
         el.style.cursor = 'pointer';
         el.style.pointerEvents = 'auto';
     }
@@ -756,7 +756,7 @@ Draw.loadPlugin(function (ui) {
         el.style.position = 'absolute';
         el.style.width = BTN_SIZE + 'px';
         el.style.height = BTN_SIZE + 'px';
-        el.style.zIndex = '100000';
+        el.style.zIndex = '10000';
         el.style.cursor = 'pointer';
         el.style.pointerEvents = 'auto';
         el.style.userSelect = 'none';
@@ -906,7 +906,7 @@ Draw.loadPlugin(function (ui) {
         if (!st.badge) {
             const b = document.createElement('div');
             b.style.position = 'absolute';
-            b.style.zIndex = '100000';
+            b.style.zIndex = '10000';
             b.style.padding = '2px 6px';
             b.style.font = '12px/16px sans-serif';
             b.style.background = 'rgba(255,255,255,0.9)';

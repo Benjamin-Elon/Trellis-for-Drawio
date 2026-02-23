@@ -59,7 +59,10 @@ Draw.loadPlugin(function (ui) {
     let __dbPathCached = null;
 
     async function getDbPath() {
-        if (__dbPathCached) return __dbPathCached;
+        if (__dbPathCached) {
+            console.log("[DB] Using cached database path:", __dbPathCached);
+            return __dbPathCached;
+        }
 
         if (!window.dbBridge || typeof window.dbBridge.resolvePath !== "function") {
             throw new Error("dbBridge.resolvePath not available; add dbResolvePath wiring");
@@ -72,11 +75,38 @@ Draw.loadPlugin(function (ui) {
         });
 
         __dbPathCached = r.dbPath;
+
+        console.log("[DB] Resolved database path:", __dbPathCached);
+
         return __dbPathCached;
     }
 
+    // -------------------- DB helpers (open → exec/run → close) ------------------------------
+    async function execRunOnDb(dbId, sql, params = []) {
+        try {
+            if (typeof window.dbBridge.exec === "function") {
+                return await window.dbBridge.exec(dbId, sql, params || []);
+            }
+            if (typeof window.dbBridge.run === "function") {
+                return await window.dbBridge.run(dbId, sql, params || []);
+            }
+            throw new Error("dbBridge.exec/run not available");
+        } catch (e) {
+            console.error("[DB RUN FAIL]", { dbId, sql, params, message: e?.message || String(e) }); // <-- PLACE HERE
+            throw e;
+        }
+    }
 
-    // -------------------- DB helpers (open → query → close) ------------------------------
+    async function withDbWrite(fn) {
+        const dbPath = await getDbPath();
+        const opened = await window.dbBridge.open(dbPath, { readOnly: false });
+        try {
+            return await fn(opened.dbId);
+        } finally {
+            try { await window.dbBridge.close(opened.dbId); } catch (_) { }
+        }
+    }
+
     async function queryAll(sql, params) {
         if (!window.dbBridge || typeof window.dbBridge.open !== 'function') {
             throw new Error('dbBridge not available; check preload/main wiring');
@@ -164,10 +194,10 @@ Draw.loadPlugin(function (ui) {
 
         static async listBasic() {
             const sql = `
-          SELECT plant_id, plant_name, abbr, yield_per_plant_kg, gdd_to_maturity,
+          SELECT plant_id, plant_name, abbr, yield_per_plant_kg, gdd_to_maturity, 
                  tmin_c, topt_low_c, topt_high_c, tmax_c, tbase_c,
                  harvest_window_days, days_maturity, days_transplant, days_germ,
-                 direct_sow, transplant, overwinter_ok, start_cooling_threshold_c,
+                 direct_sow, transplant, default_planting_method, overwinter_ok, start_cooling_threshold_c,
                  soil_temp_min_plant_c, annual, biennial, perennial, lifespan_years, veg_diameter_cm, spacing_cm                                                                  
           FROM Plants
           WHERE abbr IS NOT NULL
@@ -176,15 +206,39 @@ Draw.loadPlugin(function (ui) {
             return rows.map(r => new PlantModel(r));
         }
 
-        allowedMethods() {
-            const m = [];
-            if (this.direct_sow === 1) m.push('direct_sow');
-            if (this.transplant === 1) {
-                m.push('transplant_indoor');   // trays/indoors → field later
-                m.push('transplant_outdoor');  // field date is the “start”
-            }
-            if (!m.length) m.push('transplant_indoor'); // conservative fallback
-            return m;
+        static async listAllowedBaseMethodsForPlant(plantId) {
+            const sql = `
+              SELECT pm.method_id, pm.method_name
+              FROM PlantAllowedMethods AS pam
+              JOIN PlantingMethods AS pm
+                ON pm.method_id = pam.method_id
+              WHERE pam.plant_id = ?`;
+            return await queryAll(sql, [Number(plantId)]);
+        }
+
+
+        static async listVariantsForMethod(methodId) {
+            const mid = String(methodId || '').trim();
+            if (!mid) return [];
+
+            const sql = `
+                SELECT variant_id, method_id, variant_name, tasks_required_json
+                FROM PlantingMethodVariants
+                WHERE method_id = ?;`;
+            return await queryAll(sql, [mid]);
+        }
+
+
+        static async getVariantById(variantId) {
+            if (!variantId) return null;
+
+            const sql = `
+                SELECT variant_id, method_id, variant_name, tasks_required_json
+                FROM PlantingMethodVariants
+                WHERE variant_id = ?
+                LIMIT 1;`;
+            const rows = await queryAll(sql, [variantId]);
+            return rows[0] || null;
         }
 
 
@@ -253,6 +307,7 @@ Draw.loadPlugin(function (ui) {
             if (!cols.length) throw new Error('No fields to create plant.');
 
             const sql = `INSERT INTO Plants (${cols.join(', ')}) VALUES (${qs.join(', ')});`;
+
             await execAll(sql, vals);
 
             // Return the created row (SQLite: last_insert_rowid)                              
@@ -274,6 +329,10 @@ Draw.loadPlugin(function (ui) {
 
             vals.push(id);
             const sql = `UPDATE Plants SET ${sets.join(', ')} WHERE plant_id = ?;`;
+
+            console.log("[PlantModel.update] patch keys =", Object.keys(patch || {}));
+            console.log("[PlantModel.update] default_planting_variant =", patch?.default_planting_variant);
+
             await execAll(sql, vals);
 
             return await PlantModel.loadById(id);
@@ -361,8 +420,7 @@ Draw.loadPlugin(function (ui) {
             await execAll(sql, [Number(varietyId), String(method), json, now]);
         }
 
-        static async resolveFor({ plantId, varietyId, method }) {
-            // 1) variety+method
+        static async resolveFor({ plantId, varietyId, method, variantId = null }) { // CHANGED            // 1) variety+method
             if (varietyId != null) {
                 const v = await this.loadVarietyTemplate(varietyId, method);
                 if (v) return v;
@@ -372,8 +430,8 @@ Draw.loadPlugin(function (ui) {
                 const p = await this.loadPlantTemplate(plantId, method);
                 if (p) return p;
             }
-            // 3) code default
-            return getDefaultTaskTemplateForMethod(method);
+            // Prefer variant-driven default if available; otherwise fall back to method default
+            return await getDefaultTaskTemplateForVariant(variantId); // CHANGED
         }
 
         static async saveForSelection({ plantId, varietyId, method, template }) {
@@ -1824,7 +1882,7 @@ Draw.loadPlugin(function (ui) {
         if (step != null) el.step = String(step);
         el.style.width = '100%'; el.style.padding = '6px';                    // NEW
         return el;
-    }    
+    }
 
     function readNullableNumber(inputEl) {
         const s = String(inputEl?.value ?? '').trim();
@@ -2011,10 +2069,51 @@ Draw.loadPlugin(function (ui) {
         ui.showDialog(div, 860, 480, true, true);
     }
 
-    async function openPlantEditorDialog(ui, { mode, plantId = null } = {}) {
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    async function openPlantEditorDialog(ui, { mode, plantId = null, varietyId = null, startVarietyMode = null } = {}) { // CHANGED
         const isEdit = mode === 'edit';
         const existing = isEdit ? await PlantModel.loadById(Number(plantId)) : null;
         if (isEdit && !existing) throw new Error('Plant not found');
+
+        const initialPlantId = Number.isFinite(Number(plantId)) ? Number(plantId) : null;        // NEW
+        const initialVarietyId = Number.isFinite(Number(varietyId)) ? Number(varietyId) : null;  // NEW
+        const initialStartVarietyMode = (startVarietyMode === 'add' || startVarietyMode === 'edit') ? startVarietyMode : null; // NEW
+
+        let currentPlantId = isEdit ? Number(plantId) : initialPlantId;                           // CHANGED
+        let currentPlantRow = existing ? toPlainDict(existing) : null;
+        let currentPlantMode = isEdit ? "edit" : (initialPlantId ? "edit" : "add");               // CHANGED
+
+        const NEW_VARIETY_VALUE = "__NEW__";                         // NEW
+        let currentVarietyMode = null; // 'add' | 'edit' | null       // NEW
+
+        let currentVarietyId = null;                                            // NEW
+        let currentVarietyRow = null;                                           // NEW
+        let varietiesCache = [];                                                // NEW
 
         const div = document.createElement('div');
         div.style.padding = '12px';
@@ -2027,6 +2126,171 @@ Draw.loadPlugin(function (ui) {
         title.style.fontWeight = '600';
         title.style.marginBottom = '10px';
         div.appendChild(title);
+
+        // -------------------- DB helpers (local) --------------------
+        async function listActiveMethods() {
+            const sql = `
+        SELECT method_id, method_name
+        FROM PlantingMethods;`;
+            try {
+                return await queryAll(sql, []);
+            } catch (_) {
+                const sql2 = `
+            SELECT method_id, method_name
+            FROM PlantingMethods
+            ORDER BY method_name;`;
+                return await queryAll(sql2, []);
+            }
+        }
+
+        async function listAllowedMethodIdsForPlant(pid) {
+            const sql = `
+        SELECT method_id
+        FROM PlantAllowedMethods
+        WHERE plant_id = ?;`;
+            try {
+                const rows = await queryAll(sql, [pid]);
+                return rows.map(r => r.method_id);
+            } catch (_) {
+                // Legacy fallback: must read the plant row for THIS pid (not "existing")        // CHANGED
+                const row = await PlantModel.loadById(Number(pid));                              // NEW
+                const p = row ? toPlainDict(row) : null;                                         // NEW
+                const out = [];
+                if (p?.direct_sow === 1) out.push('direct_sow');
+                if (p?.transplant === 1) out.push('transplant');
+                return out;
+            }
+        }
+
+        async function setAllowedMethodIdsForPlant(pid, methodIds) {
+            const pidNum = Number(pid);
+            const ids = Array.isArray(methodIds) ? methodIds.map(String) : [];
+
+            console.log("[AllowedMethods] saving", { pid: pidNum, methodIds: ids });
+
+            return await withDbWrite(async (dbId) => {
+                await execRunOnDb(dbId, "BEGIN;");
+                try {
+                    await execRunOnDb(
+                        dbId,
+                        "DELETE FROM PlantAllowedMethods WHERE plant_id = ?;",
+                        [pidNum]
+                    );
+
+                    for (const mid of ids) {
+                        await execRunOnDb(
+                            dbId,
+                            "INSERT OR IGNORE INTO PlantAllowedMethods (plant_id, method_id) VALUES (?, ?);",
+                            [pidNum, mid]
+                        );
+                    }
+
+                    await execRunOnDb(dbId, "COMMIT;");
+                } catch (e) {
+                    try { await execRunOnDb(dbId, "ROLLBACK;"); } catch (_) { }
+                    throw e;
+                }
+            });
+        }
+
+        async function fetchVariantsForAllowedMethods(methodIds) {
+            if (!methodIds || methodIds.length === 0) return [];
+            const placeholders = methodIds.map(() => '?').join(',');
+            const sql = `
+        SELECT variant_id, method_id, variant_name, tasks_required_json
+        FROM PlantingMethodVariants
+        WHERE method_id IN (${placeholders});`;
+            try {
+                return await queryAll(sql, methodIds);
+            } catch (_) {
+                const sql2 = `
+            SELECT variant_id, method_id, variant_name, tasks_required_json
+            FROM PlantingMethodVariants
+            WHERE method_id IN (${placeholders});`;
+                return await queryAll(sql2, methodIds);
+            }
+        }
+
+        async function listPlantsBasic() {                                      // NEW
+            const sql = `
+        SELECT plant_id, plant_name
+        FROM Plants
+        ORDER BY plant_name;`;
+            return await queryAll(sql, []);
+        }
+
+        async function listVarietiesForPlant(pid) {                             // NEW
+            // ASSUMPTION: table name PlantVarieties; change if your schema differs
+            const sql = `
+        SELECT variety_id, variety_name
+        FROM PlantVarieties
+        WHERE plant_id = ?
+        ORDER BY variety_name;`;
+            try {
+                return await queryAll(sql, [pid]);
+            } catch (e) {
+                console.warn("listVarietiesForPlant failed; check table name", e);
+                return [];
+            }
+        }
+
+        // -------------------- Top selectors (Plant + Variety) --------------------   // NEW
+        const selectorWrap = document.createElement('div');                          // NEW
+        selectorWrap.style.display = 'flex';                                         // NEW
+        selectorWrap.style.gap = '8px';                                              // NEW
+        selectorWrap.style.alignItems = 'center';                                    // NEW
+        selectorWrap.style.marginBottom = '10px';                                    // NEW
+
+        const plantSel = document.createElement('select');                           // NEW
+        plantSel.style.padding = '6px';                                              // NEW
+        plantSel.style.flex = '1';                                                   // NEW
+
+        const varietySel = document.createElement('select');                         // NEW
+        varietySel.style.padding = '6px';                                            // NEW
+        varietySel.style.flex = '1';                                                 // NEW
+
+        const addVarBtn = mxUtils.button('Add variety', async () => {                 // CHANGED
+            try {
+                const pid = Number(currentPlantId);
+                if (!Number.isFinite(pid)) {
+                    mxUtils.alert('Save the plant first');
+                    return;
+                }
+                varietySel.value = NEW_VARIETY_VALUE;
+                varietySel.dispatchEvent(new Event('change'));
+            } catch (e) {
+                mxUtils.alert('Add variety error: ' + (e?.message || String(e)));
+            }
+        });
+
+        const editVarBtn = mxUtils.button('Edit variety', async () => {               // CHANGED
+            try {
+                const pid = Number(currentPlantId);
+                if (!Number.isFinite(pid)) {
+                    mxUtils.alert('Select a plant first');
+                    return;
+                }
+                const vidRaw = String(varietySel.value || '').trim();
+                if (!vidRaw || vidRaw === NEW_VARIETY_VALUE) {
+                    mxUtils.alert('Select an existing variety to edit');
+                    return;
+                }
+                await loadVarietyIntoOverrides(Number(vidRaw));
+            } catch (e) {
+                mxUtils.alert('Edit variety error: ' + (e?.message || String(e)));
+            }
+        });
+
+        selectorWrap.appendChild(plantSel);
+        selectorWrap.appendChild(varietySel);
+        selectorWrap.appendChild(addVarBtn);
+        selectorWrap.appendChild(editVarBtn);
+        div.appendChild(selectorWrap);
+
+        // -------------------- Layout (single column; inline overrides) --------------------
+        const leftCol = document.createElement('div');                                             // NEW
+        leftCol.style.minWidth = '0';                                                             // NEW
+        div.appendChild(leftCol);                                                                 // NEW
 
         // --- Identity ---
         const nameInput = document.createElement('input');
@@ -2041,8 +2305,18 @@ Draw.loadPlugin(function (ui) {
         abbrInput.style.width = '100%';
         abbrInput.style.padding = '6px';
 
-        div.appendChild(row('Plant name:', nameInput).row);
-        div.appendChild(row('Abbreviation (abbr):', abbrInput).row);
+        const varietyNameInput = document.createElement('input');                                  // NEW
+        varietyNameInput.type = 'text';                                                            // NEW
+        varietyNameInput.value = '';                                                               // NEW
+        varietyNameInput.style.width = '100%';                                                     // NEW
+        varietyNameInput.style.padding = '6px';                                                    // NEW
+
+        const varietyNameRow = row('Variety name:', varietyNameInput);                             // NEW
+        varietyNameRow.row.style.display = 'none';                                                 // NEW
+
+        leftCol.appendChild(row('Plant name:', nameInput).row);
+        leftCol.appendChild(varietyNameRow.row);
+        leftCol.appendChild(row('Abbreviation (abbr):', abbrInput).row);
 
         // --- Lifecycle ---
         const typeSel = makeSelect([
@@ -2054,10 +2328,14 @@ Draw.loadPlugin(function (ui) {
         const lifespanInput = makeNullableNumber(existing?.lifespan_years ?? null, { min: 1, step: 1 });
         const overwinterChk = makeCheckbox(existing?.overwinter_ok === 1);
 
-        div.appendChild(row('Lifecycle:', typeSel).row);
+        const lifecycleRow = row('Lifecycle:', typeSel);                                           // NEW
+        leftCol.appendChild(lifecycleRow.row);                                                     // CHANGED
+
         const lifeRow = row('Lifespan (years):', lifespanInput);
-        div.appendChild(lifeRow.row);
-        div.appendChild(row('Overwinter OK:', overwinterChk).row);
+        leftCol.appendChild(lifeRow.row);                                                          // CHANGED
+
+        const overwinterRow = row('Overwinter OK:', overwinterChk);                                // NEW
+        leftCol.appendChild(overwinterRow.row);                                                    // CHANGED
 
         function syncLifecycleEnablement() {
             const isPer = typeSel.value === 'perennial';
@@ -2067,12 +2345,228 @@ Draw.loadPlugin(function (ui) {
         syncLifecycleEnablement();
         typeSel.addEventListener('change', syncLifecycleEnablement);
 
-        // --- Methods ---
-        const directSowChk = makeCheckbox((existing?.direct_sow ?? 0) === 1);
-        const transplantChk = makeCheckbox((existing?.transplant ?? 0) === 1);
+        // --- Methods (DB-driven checkboxes) ---
+        const methodsBox = document.createElement('div');
+        methodsBox.style.display = 'flex';
+        methodsBox.style.flexDirection = 'column';
+        methodsBox.style.gap = '6px';
 
-        div.appendChild(row('Direct sow:', directSowChk).row);
-        div.appendChild(row('Transplant:', transplantChk).row);
+        leftCol.appendChild(row('Allowed methods:', methodsBox).row);                              // CHANGED
+
+        const methodChecksById = new Map(); // method_id -> checkbox
+
+        const methods = await listActiveMethods();
+        const allowedInitial = isEdit ? await listAllowedMethodIdsForPlant(Number(plantId)) : [];
+        const allowedInitialSet = new Set(allowedInitial);
+
+        for (const m of methods) {
+            const chk = makeCheckbox(allowedInitialSet.has(m.method_id));
+            methodChecksById.set(m.method_id, chk);
+            methodsBox.appendChild(row(m.method_name + ':', chk).row);
+        }
+
+        function getAllowedMethodIdsFromUI() {
+            const ids = [];
+            for (const [mid, chk] of methodChecksById.entries()) {
+                if (chk.checked) ids.push(mid);
+            }
+            return ids;
+        }
+
+        // --- Default planting variant (filtered by allowed methods) ---
+        const defaultVariantSel = document.createElement('select');
+        defaultVariantSel.style.padding = '6px';
+        defaultVariantSel.style.width = '100%';
+        leftCol.appendChild(row('Default planting variant:', defaultVariantSel).row);              // CHANGED
+
+        function selectDefaultVariantFromPlantRow() {
+            const wanted = String(
+                currentPlantRow?.default_planting_variant ??
+                currentPlantRow?.default_planting_method ??
+                ''
+            ).trim();
+
+            if (!wanted) return;
+
+            const valid = new Set(Array.from(defaultVariantSel.options).map(o => String(o.value)));
+            if (valid.has(wanted)) {
+                defaultVariantSel.value = wanted;
+            } else {
+                console.warn("[DefaultVariant] saved value not in options", { wanted });
+            }
+        }
+
+        async function rebuildDefaultVariantOptions() {
+            const allowed = getAllowedMethodIdsFromUI();
+            const previous = defaultVariantSel.value;
+
+            defaultVariantSel.innerHTML = '';
+
+            const autoOpt = document.createElement('option');
+            autoOpt.value = '';
+            autoOpt.textContent = '';
+            defaultVariantSel.appendChild(autoOpt);
+
+            const variants = await fetchVariantsForAllowedMethods(allowed);
+            for (const v of variants) {
+                const opt = document.createElement('option');
+                opt.value = v.variant_id;
+                opt.textContent = v.variant_name || v.variant_id;
+                defaultVariantSel.appendChild(opt);
+            }
+
+            const validValues = new Set(Array.from(defaultVariantSel.options).map(o => o.value));
+            const fallback = String(
+                currentPlantRow?.default_planting_variant ??
+                currentPlantRow?.default_planting_method ??
+                ''
+            );
+
+            defaultVariantSel.value = validValues.has(previous)
+                ? previous
+                : (validValues.has(fallback) ? fallback : '');
+        }
+
+        await rebuildDefaultVariantOptions();
+        selectDefaultVariantFromPlantRow();
+
+        for (const chk of methodChecksById.values()) {
+            chk.addEventListener('change', async () => {
+                await rebuildDefaultVariantOptions();
+                selectDefaultVariantFromPlantRow();
+            });
+        }
+
+        // -------------------- Inline override system --------------------
+        function fmtBaseVal(key) {                                                       // NEW
+            const v = currentPlantRow ? currentPlantRow[key] : null;
+            if (v == null || v === '') return '(null)';
+            return String(v);
+        }
+
+        const overrideInlineByKey = {}; // key -> { def, chk, input, wrap, baseHint }     // NEW
+
+        function makeInlineOverrideControls(def) {                                        // NEW
+            const wrap = document.createElement('div');
+            wrap.style.display = 'flex';
+            wrap.style.gap = '6px';
+            wrap.style.alignItems = 'center';
+            wrap.style.justifyContent = 'flex-end';
+
+            const chk = makeCheckbox(false);
+
+            let input = null;
+            if (def.type === 'bool01') input = makeCheckbox(false);
+            else if (def.type === 'int_ge0') input = makeNullableNumber(null, { min: 0, step: 1 });
+            else if (def.type === 'num_ge0') input = makeNullableNumber(null, { min: 0, step: def.step ?? 0.1 });
+            else if (def.type === 'nullable_num') input = makeNullableNumber(null, { step: def.step ?? 0.1 });
+            else {
+                input = document.createElement('input');
+                input.type = 'text';
+            }
+
+            if (def.type !== 'bool01') {
+                input.style.width = '120px';
+                input.style.padding = '6px';
+            } else {
+                input.style.marginLeft = '2px';
+            }
+
+            input.disabled = true;
+
+            chk.addEventListener('change', () => {
+                input.disabled = !chk.checked;
+                if (!chk.checked) {
+                    if (def.type === 'bool01') input.checked = false;
+                    else input.value = '';
+                }
+            });
+
+            const baseHint = document.createElement('span');
+            baseHint.textContent = 'Base: ' + fmtBaseVal(def.key);
+            baseHint.style.fontSize = '12px';
+            baseHint.style.opacity = '0.75';
+            baseHint.style.whiteSpace = 'nowrap';
+
+            wrap.appendChild(chk);
+            wrap.appendChild(input);
+            wrap.appendChild(baseHint);
+
+            wrap.style.display = 'none'; // hidden until variety mode
+            return { wrap, chk, input, baseHint };
+        }
+
+        function attachInlineOverrideToRow(rowObj, def) {                                  // NEW
+            rowObj.row.style.display = 'flex';
+            rowObj.row.style.alignItems = 'center';
+            rowObj.row.style.gap = '8px';
+
+            const o = makeInlineOverrideControls(def);
+            rowObj.row.appendChild(o.wrap);
+
+            overrideInlineByKey[def.key] = { def, chk: o.chk, input: o.input, wrap: o.wrap, baseHint: o.baseHint };
+        }
+
+        function setInlineOverridesVisible(show) {                                         // NEW
+            for (const key of Object.keys(overrideInlineByKey)) {
+                overrideInlineByKey[key].wrap.style.display = show ? 'flex' : 'none';
+            }
+        }
+
+        function refreshInlineBaseHints() {                                                // NEW
+            for (const key of Object.keys(overrideInlineByKey)) {
+                overrideInlineByKey[key].baseHint.textContent = 'Base: ' + fmtBaseVal(key);
+            }
+        }
+
+        const OVERRIDE_SCHEMA = [                                                          // NEW
+            { key: 'days_maturity', type: 'int_ge0' },
+            { key: 'gdd_to_maturity', type: 'num_ge0', step: 1 },
+            { key: 'days_germ', type: 'int_ge0' },
+            { key: 'days_transplant', type: 'int_ge0' },
+            { key: 'yield_per_plant_kg', type: 'num_ge0', step: 0.001 },
+            { key: 'harvest_window_days', type: 'int_ge0' },
+
+            { key: 'soil_temp_min_plant_c', type: 'nullable_num', step: 0.1 },
+            { key: 'start_cooling_threshold_c', type: 'nullable_num', step: 0.1 },
+            { key: 'overwinter_ok', type: 'bool01' },
+
+            { key: 'tbase_c', type: 'nullable_num', step: 0.1 },
+            { key: 'tmin_c', type: 'nullable_num', step: 0.1 },
+            { key: 'topt_low_c', type: 'nullable_num', step: 0.1 },
+            { key: 'topt_high_c', type: 'nullable_num', step: 0.1 },
+            { key: 'tmax_c', type: 'nullable_num', step: 0.1 },
+        ];
+
+        function readOverrideValue(def, inputEl) {                                         // NEW
+            if (def.type === 'bool01') return inputEl.checked ? 1 : 0;
+            if (def.type === 'int_ge0') return readIntGE0(inputEl);
+            if (def.type === 'num_ge0') return readNumGE0(inputEl);
+            if (def.type === 'nullable_num') return readNullableNumber(inputEl);
+            return null;
+        }
+
+        function applyOverridesToUI(overridesObj) {                                        // CHANGED
+            for (const key of Object.keys(overrideInlineByKey)) {
+                const { def, chk, input } = overrideInlineByKey[key];
+                const has = Object.prototype.hasOwnProperty.call(overridesObj, key);
+                chk.checked = has;
+                input.disabled = !has;
+
+                if (def.type === 'bool01') input.checked = has ? (Number(overridesObj[key] ?? 0) === 1) : false;
+                else input.value = has ? String(overridesObj[key] ?? '') : '';
+            }
+        }
+
+        function buildOverridesFromUI() {                                                  // CHANGED
+            const out = {};
+            for (const key of Object.keys(overrideInlineByKey)) {
+                const { def, chk, input } = overrideInlineByKey[key];
+                if (!chk.checked) continue;
+                out[key] = readOverrideValue(def, input);
+            }
+            return out;
+        }
 
         // --- Maturity budget ---
         const hasGdd = Number(existing?.gdd_to_maturity ?? 0) > 0;
@@ -2084,32 +2578,48 @@ Draw.loadPlugin(function (ui) {
         const gddInput = makeNullableNumber(existing?.gdd_to_maturity ?? null, { min: 0, step: 1 });
         const daysMatInput = makeNullableNumber(existing?.days_maturity ?? null, { min: 0, step: 1 });
 
-        const gddRow = row('GDD to maturity:', gddInput);
-        const daysRow = row('Days to maturity:', daysMatInput);
+        leftCol.appendChild(row('Maturity budget:', budgetModeSel).row);                    // CHANGED
 
-        div.appendChild(row('Maturity budget:', budgetModeSel).row);
-        div.appendChild(gddRow.row);
-        div.appendChild(daysRow.row);
+        const gddRow = row('GDD to maturity:', gddInput);
+        leftCol.appendChild(gddRow.row);
+        attachInlineOverrideToRow(gddRow, { key: 'gdd_to_maturity', type: 'num_ge0', step: 1 });
+
+        const daysRow = row('Days to maturity:', daysMatInput);
+        leftCol.appendChild(daysRow.row);
+        attachInlineOverrideToRow(daysRow, { key: 'days_maturity', type: 'int_ge0' });
 
         function syncBudgetModeUI() {
             const mode = budgetModeSel.value;
-            gddRow.row.style.display = (mode === 'gdd') ? '' : 'none';
-            daysRow.row.style.display = (mode === 'days') ? '' : 'none';
+            gddRow.row.style.display = (mode === 'gdd') ? 'flex' : 'none';   // CHANGED
+            daysRow.row.style.display = (mode === 'days') ? 'flex' : 'none'; // CHANGED
         }
+
         syncBudgetModeUI();
         budgetModeSel.addEventListener('change', syncBudgetModeUI);
 
         // --- Timing ---
         const daysGermInput = makeNullableNumber(existing?.days_germ ?? 0, { min: 0, step: 1 });
         const daysTransInput = makeNullableNumber(existing?.days_transplant ?? 0, { min: 0, step: 1 });
-        div.appendChild(row('Days to germ:', daysGermInput).row);
-        div.appendChild(row('Days to transplant:', daysTransInput).row);
+
+        const daysGermRow = row('Days to germ:', daysGermInput);                             // FIXED
+        leftCol.appendChild(daysGermRow.row);
+        attachInlineOverrideToRow(daysGermRow, { key: 'days_germ', type: 'int_ge0' });
+
+        const daysTransRow = row('Days to transplant:', daysTransInput);                     // NEW
+        leftCol.appendChild(daysTransRow.row);
+        attachInlineOverrideToRow(daysTransRow, { key: 'days_transplant', type: 'int_ge0' });
 
         // --- Yield ---
         const yieldInput = makeNullableNumber(existing?.yield_per_plant_kg ?? null, { min: 0, step: 0.001 });
         const hwInput = makeNullableNumber(existing?.harvest_window_days ?? null, { min: 0, step: 1 });
-        div.appendChild(row('Yield per plant (kg):', yieldInput).row);
-        div.appendChild(row('Harvest window (days):', hwInput).row);
+
+        const yieldRow = row('Yield per plant (kg):', yieldInput);                           // NEW
+        leftCol.appendChild(yieldRow.row);
+        attachInlineOverrideToRow(yieldRow, { key: 'yield_per_plant_kg', type: 'num_ge0', step: 0.001 });
+
+        const hwRow = row('Harvest window (days):', hwInput);                                // NEW
+        leftCol.appendChild(hwRow.row);
+        attachInlineOverrideToRow(hwRow, { key: 'harvest_window_days', type: 'int_ge0' });
 
         // --- Temperature envelope ---
         const tbaseInput = makeNullableNumber(existing?.tbase_c ?? null, { step: 0.1 });
@@ -2118,17 +2628,263 @@ Draw.loadPlugin(function (ui) {
         const toptHighInput = makeNullableNumber(existing?.topt_high_c ?? null, { step: 0.1 });
         const tmaxInput = makeNullableNumber(existing?.tmax_c ?? null, { step: 0.1 });
 
-        div.appendChild(row('Tbase (C):', tbaseInput).row);
-        div.appendChild(row('Tmin (C):', tminInput).row);
-        div.appendChild(row('Topt low (C):', toptLowInput).row);
-        div.appendChild(row('Topt high (C):', toptHighInput).row);
-        div.appendChild(row('Tmax (C):', tmaxInput).row);
+        const tbaseRow = row('Tbase (C):', tbaseInput);
+        leftCol.appendChild(tbaseRow.row);
+        attachInlineOverrideToRow(tbaseRow, { key: 'tbase_c', type: 'nullable_num', step: 0.1 });
+
+        const tminRow = row('Tmin (C):', tminInput);
+        leftCol.appendChild(tminRow.row);
+        attachInlineOverrideToRow(tminRow, { key: 'tmin_c', type: 'nullable_num', step: 0.1 });
+
+        const toptLowRow = row('Topt low (C):', toptLowInput);
+        leftCol.appendChild(toptLowRow.row);
+        attachInlineOverrideToRow(toptLowRow, { key: 'topt_low_c', type: 'nullable_num', step: 0.1 });
+
+        const toptHighRow = row('Topt high (C):', toptHighInput);
+        leftCol.appendChild(toptHighRow.row);
+        attachInlineOverrideToRow(toptHighRow, { key: 'topt_high_c', type: 'nullable_num', step: 0.1 });
+
+        const tmaxRow = row('Tmax (C):', tmaxInput);
+        leftCol.appendChild(tmaxRow.row);
+        attachInlineOverrideToRow(tmaxRow, { key: 'tmax_c', type: 'nullable_num', step: 0.1 });
 
         // --- Gates ---
         const soilMinInput = makeNullableNumber(existing?.soil_temp_min_plant_c ?? null, { step: 0.1 });
         const coolThreshInput = makeNullableNumber(existing?.start_cooling_threshold_c ?? null, { step: 0.1 });
-        div.appendChild(row('Soil temp min plant (C):', soilMinInput).row);
-        div.appendChild(row('Start cooling threshold (C):', coolThreshInput).row);
+
+        const soilMinRow = row('Soil temp min plant (C):', soilMinInput);
+        leftCol.appendChild(soilMinRow.row);
+        attachInlineOverrideToRow(soilMinRow, { key: 'soil_temp_min_plant_c', type: 'nullable_num', step: 0.1 });
+
+        const coolThreshRow = row('Start cooling threshold (C):', coolThreshInput);
+        leftCol.appendChild(coolThreshRow.row);
+        attachInlineOverrideToRow(coolThreshRow, { key: 'start_cooling_threshold_c', type: 'nullable_num', step: 0.1 });
+
+        // Attach overwinter override to the overwinter row (base is checkbox)
+        attachInlineOverrideToRow(overwinterRow, { key: 'overwinter_ok', type: 'bool01' });           // NEW
+
+        // hide overrides by default
+        setInlineOverridesVisible(false);                                                             // NEW
+
+        function setPlantControlsEnabled(enabled) {                                                    // NEW
+            const els = [
+                nameInput, abbrInput, typeSel, lifespanInput, overwinterChk,
+                defaultVariantSel, budgetModeSel, gddInput, daysMatInput,
+                daysGermInput, daysTransInput, yieldInput, hwInput,
+                tbaseInput, tminInput, toptLowInput, toptHighInput, tmaxInput,
+                soilMinInput, coolThreshInput
+            ];
+
+            for (const el of els) {
+                if (!el) continue;
+                if (el.type === 'checkbox') el.disabled = !enabled;
+                else el.disabled = !enabled;
+            }
+
+            for (const chk of methodChecksById.values()) chk.disabled = !enabled;
+        }
+
+        async function refreshAllowedMethodsUIForPlant(pid) {                             // NEW
+            const allowed = await listAllowedMethodIdsForPlant(Number(pid));
+            const allowedSet = new Set(allowed);
+            for (const [mid, chk] of methodChecksById.entries()) {
+                chk.checked = allowedSet.has(mid);
+            }
+            await rebuildDefaultVariantOptions();
+        }
+
+        async function refreshVarietyDropdown(pid, preferredVarietyId = null) {           // CHANGED
+            varietiesCache = Number.isFinite(Number(pid)) ? await listVarietiesForPlant(Number(pid)) : [];
+
+            const prev = String(preferredVarietyId ?? varietySel.value ?? '');
+            varietySel.innerHTML = '';
+
+            const none = document.createElement('option');
+            none.value = '';
+            none.textContent = '';
+            varietySel.appendChild(none);
+
+            const newOpt = document.createElement('option');
+            newOpt.value = NEW_VARIETY_VALUE;
+            newOpt.textContent = 'New variety…';
+            varietySel.appendChild(newOpt);
+
+            for (const v of varietiesCache) {
+                const opt = document.createElement('option');
+                opt.value = String(v.variety_id);
+                opt.textContent = String(v.variety_name || v.variety_id);
+                varietySel.appendChild(opt);
+            }
+
+            const valid = new Set(Array.from(varietySel.options).map(o => o.value));
+            varietySel.value = valid.has(prev) ? prev : '';
+
+            const hasPlant = Number.isFinite(Number(currentPlantId));
+            addVarBtn.disabled = !hasPlant;
+
+            const vval = String(varietySel.value || '').trim();
+            editVarBtn.disabled = !(hasPlant && vval && vval !== NEW_VARIETY_VALUE);
+        }
+
+        function applyPlantRowToUI(p) {                                                   // NEW
+            nameInput.value = p?.plant_name ?? '';
+            abbrInput.value = p?.abbr ?? '';
+
+            typeSel.value = (p?.perennial === 1) ? 'perennial' : (p?.biennial === 1 ? 'biennial' : 'annual');
+            lifespanInput.value = (p?.lifespan_years ?? '') === null ? '' : String(p?.lifespan_years ?? '');
+            overwinterChk.checked = (p?.overwinter_ok === 1);
+            syncLifecycleEnablement();
+
+            const hasGddLocal = Number(p?.gdd_to_maturity ?? 0) > 0;
+            budgetModeSel.value = hasGddLocal ? 'gdd' : 'days';
+            gddInput.value = (p?.gdd_to_maturity ?? '') === null ? '' : String(p?.gdd_to_maturity ?? '');
+            daysMatInput.value = (p?.days_maturity ?? '') === null ? '' : String(p?.days_maturity ?? '');
+            syncBudgetModeUI();
+
+            daysGermInput.value = String(p?.days_germ ?? 0);
+            daysTransInput.value = String(p?.days_transplant ?? 0);
+
+            yieldInput.value = (p?.yield_per_plant_kg ?? '') === null ? '' : String(p?.yield_per_plant_kg ?? '');
+            hwInput.value = (p?.harvest_window_days ?? '') === null ? '' : String(p?.harvest_window_days ?? '');
+
+            tbaseInput.value = (p?.tbase_c ?? '') === null ? '' : String(p?.tbase_c ?? '');
+            tminInput.value = (p?.tmin_c ?? '') === null ? '' : String(p?.tmin_c ?? '');
+            toptLowInput.value = (p?.topt_low_c ?? '') === null ? '' : String(p?.topt_low_c ?? '');
+            toptHighInput.value = (p?.topt_high_c ?? '') === null ? '' : String(p?.topt_high_c ?? '');
+            tmaxInput.value = (p?.tmax_c ?? '') === null ? '' : String(p?.tmax_c ?? '');
+
+            soilMinInput.value = (p?.soil_temp_min_plant_c ?? '') === null ? '' : String(p?.soil_temp_min_plant_c ?? '');
+            coolThreshInput.value = (p?.start_cooling_threshold_c ?? '') === null ? '' : String(p?.start_cooling_threshold_c ?? '');
+        }
+
+        async function loadPlantIntoForm(pidOrNull, preferredVarietyId = null, preferredStartVarietyMode = null) { // CHANGED
+            // Reset upfront
+            setInlineOverridesVisible(false);
+            varietyNameRow.row.style.display = 'flex'; // CHANGED
+
+            currentVarietyMode = null;
+            currentVarietyId = null;
+            currentVarietyRow = null;
+            setPlantControlsEnabled(true);
+
+            if (!Number.isFinite(Number(pidOrNull))) {
+                // TODO: your existing add-plant reset block
+                return;
+            }
+
+            const pid = Number(pidOrNull);
+            const rowObj = await PlantModel.loadById(pid);
+            if (!rowObj) throw new Error('Plant not found');
+
+            currentPlantMode = 'edit';
+            currentPlantId = pid;
+            currentPlantRow = toPlainDict(rowObj);
+            title.textContent = 'Edit plant';
+
+            applyPlantRowToUI(currentPlantRow);
+            refreshInlineBaseHints();
+            await refreshAllowedMethodsUIForPlant(pid);
+            selectDefaultVariantFromPlantRow();
+
+            await refreshVarietyDropdown(pid, preferredVarietyId);
+
+            const wantVid = Number.isFinite(Number(preferredVarietyId)) ? Number(preferredVarietyId) : null;
+            const vSel = String(varietySel.value || '').trim();
+
+            const forceAdd = preferredStartVarietyMode === 'add';
+            const forceEdit = preferredStartVarietyMode === 'edit';
+
+            if (forceAdd) {
+                varietySel.value = NEW_VARIETY_VALUE;
+                startNewVarietyMode();
+                return;
+            }
+
+            if (wantVid && vSel && vSel !== NEW_VARIETY_VALUE && Number(vSel) === wantVid) {
+                await loadVarietyIntoOverrides(wantVid);
+                return;
+            }
+
+            if (forceEdit && vSel && vSel !== NEW_VARIETY_VALUE) {
+                await loadVarietyIntoOverrides(Number(vSel));
+                return;
+            }
+
+            // stay in plant mode
+            currentVarietyMode = null;
+            currentVarietyId = null;
+            currentVarietyRow = null;
+            setInlineOverridesVisible(false);
+            varietyNameRow.row.style.display = 'none';
+            setPlantControlsEnabled(true);
+            syncSaveButtonLabel();
+        }
+
+        function startNewVarietyMode() {                                     // NEW
+            currentVarietyMode = 'add';
+            currentVarietyId = null;
+            currentVarietyRow = null;
+
+            varietyNameInput.value = '';
+            applyOverridesToUI({});
+
+            setPlantControlsEnabled(false);
+            setInlineOverridesVisible(true);
+            varietyNameRow.row.style.display = 'flex'; // CHANGED
+            refreshInlineBaseHints();
+            syncSaveButtonLabel();
+        }
+
+        async function loadVarietyIntoOverrides(varietyId) {                              // NEW
+            const pid = Number(currentPlantId);
+            if (!Number.isFinite(pid)) return;
+
+            const vid = Number(varietyId);
+            if (!Number.isFinite(vid)) return;
+
+            const vrow = await PlantVarietyModel.loadById(vid);
+            if (!vrow) throw new Error('Variety not found');
+
+            currentVarietyId = vid;
+            currentVarietyRow = toPlainDict(vrow);
+            currentVarietyMode = 'edit';
+
+            let overrides = {};
+            try {
+                const raw = currentVarietyRow?.overrides_json;
+                if (raw) {
+                    const obj = JSON.parse(String(raw));
+                    if (obj && typeof obj === 'object' && !Array.isArray(obj)) overrides = obj;
+                }
+            } catch (_) { overrides = {}; }
+
+            varietyNameInput.value = String(currentVarietyRow?.variety_name ?? '');
+            applyOverridesToUI(overrides);
+
+            setPlantControlsEnabled(false);
+            setInlineOverridesVisible(true);
+            varietyNameRow.row.style.display = 'flex'; // CHANGED
+            refreshInlineBaseHints();
+            syncSaveButtonLabel();
+        }
+
+        // -------------------- Populate plant dropdown --------------------
+        const plantRows = await listPlantsBasic();
+        plantSel.innerHTML = '';
+
+        const emptyPlantOpt = document.createElement('option');
+        emptyPlantOpt.value = '';
+        emptyPlantOpt.textContent = '';
+        plantSel.appendChild(emptyPlantOpt);
+
+        for (const p of plantRows) {
+            const opt = document.createElement('option');
+            opt.value = String(p.plant_id);
+            opt.textContent = String(p.plant_name || p.plant_id);
+            plantSel.appendChild(opt);
+        }
+
+        plantSel.value = Number.isFinite(Number(currentPlantId)) ? String(currentPlantId) : '';
 
         // --- Buttons ---
         const btns = document.createElement('div');
@@ -2141,6 +2897,48 @@ Draw.loadPlugin(function (ui) {
 
         const saveBtn = mxUtils.button('Save', async () => {
             try {
+                // -------------------- Variety mode (add/edit) --------------------
+                if (currentVarietyMode === 'add' || currentVarietyMode === 'edit') {
+                    const pid = Number(currentPlantId);
+                    if (!Number.isFinite(pid)) throw new Error('Save the plant first');
+
+                    const varietyName = String(varietyNameInput.value || '').trim();
+                    if (!varietyName) throw new Error('Variety name is required');
+
+                    const overrides = buildOverridesFromUI();
+
+                    let savedVar = null;
+                    if (currentVarietyMode === 'edit') {
+                        const vid = Number(currentVarietyId);
+                        if (!Number.isFinite(vid)) throw new Error('Select a variety');
+                        savedVar = await PlantVarietyModel.update({
+                            varietyId: vid,
+                            varietyName,
+                            overrides
+                        });
+                    } else {
+                        savedVar = await PlantVarietyModel.create({
+                            plantId: pid,
+                            varietyName,
+                            overrides
+                        });
+                    }
+
+                    const newVid = Number(savedVar?.variety_id);
+                    if (Number.isFinite(newVid)) {
+                        currentVarietyId = newVid;
+                        currentVarietyMode = 'edit';
+                        await refreshVarietyDropdown(pid, newVid);
+                        varietySel.value = String(newVid);
+                    } else {
+                        await refreshVarietyDropdown(pid, null);
+                    }
+
+                    div.__commit(savedVar);
+                    return;
+                }
+
+                // -------------------- Plant mode --------------------
                 const plant_name = String(nameInput.value || '').trim();
                 if (!plant_name) throw new Error('Plant name is required');
 
@@ -2154,9 +2952,11 @@ Draw.loadPlugin(function (ui) {
                     throw new Error('Perennials require lifespan_years >= 1');
                 }
 
-                const direct_sow = directSowChk.checked ? 1 : 0;
-                const transplant = transplantChk.checked ? 1 : 0;
-                if (!direct_sow && !transplant) throw new Error('Enable direct_sow and/or transplant');
+                const allowedMethodIds = getAllowedMethodIdsFromUI();
+                if (!allowedMethodIds.length) throw new Error('Enable at least one method');
+
+                const default_planting_variant_raw = String(defaultVariantSel.value || '').trim();
+                const default_planting_variant = default_planting_variant_raw ? default_planting_variant_raw : null;
 
                 const overwinter_ok = overwinterChk.checked ? 1 : 0;
 
@@ -2177,7 +2977,7 @@ Draw.loadPlugin(function (ui) {
                     annual, biennial, perennial,
                     lifespan_years,
                     overwinter_ok,
-                    direct_sow, transplant,
+                    default_planting_variant,
                     gdd_to_maturity, days_maturity,
                     days_germ: readIntGE0(daysGermInput),
                     days_transplant: readIntGE0(daysTransInput),
@@ -2193,16 +2993,96 @@ Draw.loadPlugin(function (ui) {
                 };
 
                 let saved = null;
-                if (isEdit) {
-                    saved = await PlantModel.update(Number(plantId), patch);
+                if (currentPlantMode === 'edit') {
+                    const pid = Number(currentPlantId);
+                    if (!Number.isFinite(pid)) throw new Error('Select a plant');
+                    saved = await PlantModel.update(pid, patch);
                 } else {
                     saved = await PlantModel.create(patch);
                 }
 
-                div.__commit(saved);
+                const savedId = Number(saved?.plant_id ?? currentPlantId);
+                if (!Number.isFinite(savedId)) throw new Error('Save succeeded but plant_id is missing');
+                await setAllowedMethodIdsForPlant(savedId, allowedMethodIds);
 
+                // After save, sync dialog state to saved plant
+                currentPlantId = savedId;
+                currentPlantMode = 'edit';
+                plantSel.value = String(savedId);
+                currentPlantRow = toPlainDict(await PlantModel.loadById(savedId));
+                refreshInlineBaseHints();
+
+                await refreshAllowedMethodsUIForPlant(savedId);
+                await refreshVarietyDropdown(savedId, null);
+
+                currentVarietyMode = null;
+                currentVarietyId = null;
+                currentVarietyRow = null;
+
+                setInlineOverridesVisible(false);
+                varietyNameRow.row.style.display = 'none';
+                setPlantControlsEnabled(true);
+                varietySel.value = '';
+                syncSaveButtonLabel();
+
+                div.__commit(saved);
             } catch (e) {
-                mxUtils.alert('Save plant error: ' + (e?.message || String(e)));
+                mxUtils.alert('Save error: ' + (e?.message || String(e)));
+            }
+        });
+
+        function syncSaveButtonLabel() {
+            if (!saveBtn) return;
+            if (currentVarietyMode === 'add') saveBtn.textContent = 'Save variety';
+            else if (currentVarietyMode === 'edit') saveBtn.textContent = 'Save variety';
+            else saveBtn.textContent = 'Save plant';
+        }
+
+        await loadPlantIntoForm(initialPlantId, initialVarietyId, initialStartVarietyMode);
+        plantSel.value = Number.isFinite(Number(initialPlantId)) ? String(initialPlantId) : '';
+
+        plantSel.addEventListener('change', async () => {
+            try {
+                const pid = String(plantSel.value || '').trim();
+                await loadPlantIntoForm(pid ? Number(pid) : null);
+            } catch (e) {
+                mxUtils.alert('Load plant error: ' + (e?.message || String(e)));
+            }
+        });
+
+        varietySel.addEventListener('change', async () => {
+            try {
+                const v = String(varietySel.value || '').trim();
+                const hasPlant = Number.isFinite(Number(currentPlantId));
+
+                addVarBtn.disabled = !hasPlant;
+                editVarBtn.disabled = !(hasPlant && v && v !== NEW_VARIETY_VALUE);
+
+                if (!v) {
+                    currentVarietyMode = null;
+                    currentVarietyId = null;
+                    currentVarietyRow = null;
+
+                    setInlineOverridesVisible(false);
+                    varietyNameRow.row.style.display = 'none';
+                    setPlantControlsEnabled(true);
+                    syncSaveButtonLabel();
+                    return;
+                }
+
+                if (v === NEW_VARIETY_VALUE) {
+                    if (!hasPlant) {
+                        mxUtils.alert('Save the plant first');
+                        varietySel.value = '';
+                        return;
+                    }
+                    startNewVarietyMode();
+                    return;
+                }
+
+                await loadVarietyIntoOverrides(Number(v));
+            } catch (e) {
+                mxUtils.alert('Load variety error: ' + (e?.message || String(e)));
             }
         });
 
@@ -2214,271 +3094,60 @@ Draw.loadPlugin(function (ui) {
     }
 
 
-    (function installVarietyEditorBridge() {
-        const graph = ui && ui.editor ? ui.editor.graph : null;
-        if (!graph) return;
-
-        if (graph.__uslVarietyEditorBridgeInstalled) return;
-        graph.__uslVarietyEditorBridgeInstalled = true;
-
-        graph.addListener("usl:openVarietyEditor", async function (sender, evt) {
-            const cropId = String(evt.getProperty("cropId") || "").trim();
-            const plantId = Number(evt.getProperty("plantId"));
-            const varietyIdRaw = evt.getProperty("varietyId");
-            const varietyId = (varietyIdRaw == null || varietyIdRaw === "") ? null : Number(varietyIdRaw);
-
-            console.log("[Scheduler] received usl:openVarietyEditor", { cropId, plantId, varietyId });
-
-            if (!Number.isFinite(plantId)) return;
-
-            const mode = (varietyId != null && Number.isFinite(varietyId)) ? "edit" : "add";
-
-            try {
-                const saved = await openVarietyEditorDialog(ui, {
-                    mode,
-                    plantId,
-                    varietyId
-                });
-
-                // Emit close event (include cropId so Year Planner updates right row)
-                graph.fireEvent(new mxEventObject(
-                    "usl:varietyEditorClosed",
-                    "cropId", cropId,
-                    "plantId", plantId,
-                    "action", saved && saved.variety_id ? mode : "cancel",
-                    "varietyId", saved && saved.variety_id ? Number(saved.variety_id) : null,
-                    "varietyName", saved && saved.variety_name ? String(saved.variety_name) : ""
-                ));
-            } catch (e) {
-                console.error("[Scheduler] openVarietyEditorDialog failed", e);
-                try {
-                    graph.fireEvent(new mxEventObject(
-                        "usl:varietyEditorClosed",
-                        "cropId", cropId,
-                        "plantId", plantId,
-                        "action", "error",
-                        "varietyId", null,
-                        "varietyName", "",
-                        "error", String(e?.message || e)
-                    ));
-                } catch (_) { }
-            }
-        });
-    })();
 
 
-    async function openVarietyEditorDialog(ui, { mode, plantId = null, varietyId = null } = {}) {
-        const isEdit = mode === 'edit';
-        const existing = isEdit ? await PlantVarietyModel.loadById(Number(varietyId)) : null;
-        if (isEdit && !existing) throw new Error('Variety not found');
 
-        const pid = Number(plantId);
-        if (!Number.isFinite(pid)) throw new Error('plantId is required');
 
-        const basePlant = await PlantModel.loadById(pid);
-        if (!basePlant) throw new Error('Base plant not found');
-        const baseDict = toPlainDict(basePlant);
 
-        // ---- parse initial overrides ----
-        let initialOverrides = {};
-        try {
-            const raw = existing?.overrides_json;
-            if (raw) {
-                const obj = JSON.parse(String(raw));
-                if (obj && typeof obj === 'object' && !Array.isArray(obj)) initialOverrides = obj;
-            }
-        } catch (_) { initialOverrides = {}; }
 
-        const div = document.createElement('div');
-        div.style.padding = '12px';
-        div.style.width = '720px';
-        div.style.maxHeight = '70vh';
-        div.style.overflow = 'auto';
 
-        const title = document.createElement('div');
-        title.textContent = isEdit ? 'Edit variety' : 'Add variety';
-        title.style.fontWeight = '600';
-        title.style.marginBottom = '10px';
-        div.appendChild(title);
 
-        // --- Variety name ---
-        const nameInput = document.createElement('input');
-        nameInput.type = 'text';
-        nameInput.value = String(existing?.variety_name ?? '');
-        nameInput.style.width = '100%';
-        nameInput.style.padding = '6px';
-        div.appendChild(row('Variety name:', nameInput).row);
 
-        // --- helpers ---
-        function fmtBaseVal(key) {
-            const v = baseDict[key];
-            if (v == null || v === '') return '(null)';
-            return String(v);
-        }
 
-        function makeOverrideRow(def) {
-            const wrap = document.createElement('div');
-            wrap.style.display = 'flex';
-            wrap.style.gap = '8px';
-            wrap.style.alignItems = 'center';
 
-            const chk = makeCheckbox(Object.prototype.hasOwnProperty.call(initialOverrides, def.key));
 
-            let input = null;
-            if (def.type === 'int_ge0') input = makeNullableNumber(initialOverrides[def.key] ?? null, { min: 0, step: 1 });
-            else if (def.type === 'num_ge0') input = makeNullableNumber(initialOverrides[def.key] ?? null, { min: 0, step: def.step ?? 0.1 });
-            else if (def.type === 'nullable_num') input = makeNullableNumber(
-                Object.prototype.hasOwnProperty.call(initialOverrides, def.key) ? initialOverrides[def.key] : null,
-                { step: def.step ?? 0.1 }
-            );
-            else if (def.type === 'bool01') {
-                input = makeCheckbox(Number(initialOverrides[def.key] ?? 0) === 1);
-            }
 
-            input.style.flex = '1';
-            input.disabled = !chk.checked;
 
-            const baseSpan = document.createElement('div');
-            baseSpan.textContent = 'Base: ' + fmtBaseVal(def.key);
-            baseSpan.style.fontSize = '12px';
-            baseSpan.style.opacity = '0.8';
-            baseSpan.style.minWidth = '170px';
 
-            chk.addEventListener('change', () => {
-                input.disabled = !chk.checked;
-                if (!chk.checked) {
-                    // reset UI to initial override value or blank
-                    if (def.type === 'bool01') input.checked = false;
-                    else input.value = '';
-                }
-            });
 
-            wrap.appendChild(chk);
-            wrap.appendChild(input);
-            wrap.appendChild(baseSpan);
 
-            return { chk, input, wrap };
-        }
 
-        function readOverrideValue(def, inputEl) {
-            if (def.type === 'bool01') return inputEl.checked ? 1 : 0;
-            if (def.type === 'int_ge0') return readIntGE0(inputEl);
-            if (def.type === 'num_ge0') return readNumGE0(inputEl);
-            if (def.type === 'nullable_num') return readNullableNumber(inputEl);
-            return null;
-        }
 
-        // --- schema ---
-        const OVERRIDE_SCHEMA = [
-            { section: 'Timing & yield', key: 'days_maturity', label: 'Days to maturity', type: 'int_ge0' },
-            { section: 'Timing & yield', key: 'gdd_to_maturity', label: 'GDD to maturity', type: 'num_ge0', step: 1 },
-            { section: 'Timing & yield', key: 'days_germ', label: 'Days to germ', type: 'int_ge0' },
-            { section: 'Timing & yield', key: 'days_transplant', label: 'Days to transplant', type: 'int_ge0' },
-            { section: 'Timing & yield', key: 'yield_per_plant_kg', label: 'Yield per plant (kg)', type: 'num_ge0', step: 0.001 },
-            { section: 'Timing & yield', key: 'harvest_window_days', label: 'Harvest window (days)', type: 'int_ge0' },
 
-            { section: 'Gates', key: 'soil_temp_min_plant_c', label: 'Soil temp min plant (C)', type: 'nullable_num', step: 0.1 },
-            { section: 'Gates', key: 'start_cooling_threshold_c', label: 'Start cooling threshold (C)', type: 'nullable_num', step: 0.1 },
-            { section: 'Gates', key: 'overwinter_ok', label: 'Overwinter OK', type: 'bool01' },
 
-            { section: 'Temperature envelope (advanced)', key: 'tbase_c', label: 'Tbase (C)', type: 'nullable_num', step: 0.1 },
-            { section: 'Temperature envelope (advanced)', key: 'tmin_c', label: 'Tmin (C)', type: 'nullable_num', step: 0.1 },
-            { section: 'Temperature envelope (advanced)', key: 'topt_low_c', label: 'Topt low (C)', type: 'nullable_num', step: 0.1 },
-            { section: 'Temperature envelope (advanced)', key: 'topt_high_c', label: 'Topt high (C)', type: 'nullable_num', step: 0.1 },
-            { section: 'Temperature envelope (advanced)', key: 'tmax_c', label: 'Tmax (C)', type: 'nullable_num', step: 0.1 }
-        ];
 
-        // --- render overrides grouped by section ---
-        const overridesTitle = document.createElement('div');
-        overridesTitle.textContent = 'Overrides';
-        overridesTitle.style.marginTop = '12px';
-        overridesTitle.style.fontWeight = '600';
-        div.appendChild(overridesTitle);
 
-        const rowsByKey = {};
-        let lastSection = null;
-        OVERRIDE_SCHEMA.forEach(def => {
-            if (def.section !== lastSection) {
-                lastSection = def.section;
-                const h = document.createElement('div');
-                h.textContent = def.section;
-                h.style.marginTop = '10px';
-                h.style.fontWeight = '600';
-                h.style.opacity = '0.9';
-                div.appendChild(h);
-            }
 
-            const { chk, input, wrap } = makeOverrideRow(def);
-            rowsByKey[def.key] = { def, chk, input };
 
-            const r = row(def.label + ':', wrap);
-            r.label.style.minWidth = '240px';
-            div.appendChild(r.row);
-        });
 
-        // --- Buttons ---
-        const btns = document.createElement('div');
-        btns.style.marginTop = '12px';
-        btns.style.display = 'flex';
-        btns.style.justifyContent = 'flex-end';
-        btns.style.gap = '8px';
 
-        const cancelBtn = mxUtils.button('Cancel', () => div.__cancel());
 
-        const saveBtn = mxUtils.button('Save', async () => {
-            try {
-                const varietyName = String(nameInput.value || '').trim();
-                if (!varietyName) throw new Error('Variety name is required');
 
-                // Build sparse overrides
-                const overrides = {};
-                for (const key of Object.keys(rowsByKey)) {
-                    const { def, chk, input } = rowsByKey[key];
-                    if (!chk.checked) continue;
-                    overrides[key] = readOverrideValue(def, input);
-                }
 
-                // Optional: envelope sanity warning (non-blocking)
-                const tmin = overrides.tmin_c ?? baseDict.tmin_c;
-                const tlow = overrides.topt_low_c ?? baseDict.topt_low_c;
-                const thigh = overrides.topt_high_c ?? baseDict.topt_high_c;
-                const tmax = overrides.tmax_c ?? baseDict.tmax_c;
-                if ([tmin, tlow, thigh, tmax].every(v => v != null && Number.isFinite(Number(v)))) {
-                    if (!(Number(tmin) <= Number(tlow) && Number(tlow) <= Number(thigh) && Number(thigh) <= Number(tmax))) {
-                        // warning only
-                        console.warn('Variety envelope order is unusual', { tmin, tlow, thigh, tmax });
-                    }
-                }
 
-                let saved = null;
-                if (isEdit) {
-                    saved = await PlantVarietyModel.update({
-                        varietyId: Number(varietyId),
-                        varietyName,
-                        overrides
-                    });
-                } else {
-                    saved = await PlantVarietyModel.create({
-                        plantId: pid,
-                        varietyName,
-                        overrides
-                    });
-                }
 
-                div.__commit(saved);
-            } catch (e) {
-                mxUtils.alert('Save variety error: ' + (e?.message || String(e)));
-            }
-        });
 
-        btns.appendChild(cancelBtn);
-        btns.appendChild(saveBtn);
-        div.appendChild(btns);
 
-        setTimeout(() => { try { nameInput.focus(); nameInput.select(); } catch (_) { } }, 0);
 
-        return await showCommitDialog(ui, { container: div, width: 760, height: 640, modal: true, closable: true });
-    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -2522,35 +3191,40 @@ Draw.loadPlugin(function (ui) {
         plantControlsWrap.style.alignItems = 'center';
         plantControlsWrap.appendChild(plantSel);
 
-        const addPlantBtn = inlineButton('Add plant', async () => {
+        const addPlantBtn = inlineButton('Add plant', async () => { // CHANGED
             try {
-                const saved = await openPlantEditorDialog(ui, { mode: 'add' });
+                const saved = await openPlantEditorDialog(ui, { mode: 'add', plantId: null, varietyId: null }); // CHANGED
                 if (!saved) return;
+
                 await reloadPlantsList();
                 plantSel.value = String(saved.plant_id);
-                if (!findPlantById(Number(plantSel.value))) {
-                    mxUtils.alert('Saved plant was not found in refreshed list.');
-                    return;
-                }
                 plantSel.dispatchEvent(new Event('change'));
             } catch (e) {
                 mxUtils.alert('Add plant error: ' + (e?.message || String(e)));
             }
         });
 
-        const editPlantBtn = inlineButton('Edit plant', async () => {
+        const editPlantBtn = inlineButton('Edit plant', async () => { // CHANGED label + logic
             try {
+                syncStateFromControls();                                   // NEW (ensures formState is current)
+
                 const pid = Number(plantSel.value);
                 if (!Number.isFinite(pid)) return;
-                const saved = await openPlantEditorDialog(ui, { mode: 'edit', plantId: pid });
+
+                const vid = Number(formState.varietyId);                   // NEW
+                const saved = await openPlantEditorDialog(ui, {
+                    mode: 'edit',
+                    plantId: pid,
+                    varietyId: Number.isFinite(vid) ? vid : null            // NEW
+                });
+
                 if (!saved) return;
-                await reloadPlantsList();
-                plantSel.value = String(saved.plant_id);
-                if (!findPlantById(Number(plantSel.value))) {
-                    mxUtils.alert('Saved plant was not found in refreshed list.');
-                    return;
-                }
-                plantSel.dispatchEvent(new Event('change'));
+
+                const savedPid = Number(saved?.plant_id ?? pid);
+                await afterPlantOrVarietySaved({
+                    preferPlantId: savedPid,
+                    preferVarietyId: Number.isFinite(vid) ? vid : null      // keep same selected variety if still exists
+                });
             } catch (e) {
                 mxUtils.alert('Edit plant error: ' + (e?.message || String(e)));
             }
@@ -2605,6 +3279,37 @@ Draw.loadPlugin(function (ui) {
             mode = getModeForPlant(effectivePlant);
         }
 
+        async function afterPlantOrVarietySaved({ preferPlantId = null, preferVarietyId = null } = {}) { // NEW
+            await reloadPlantsList();
+
+            if (Number.isFinite(Number(preferPlantId))) {
+                plantSel.value = String(preferPlantId);
+            }
+            // Ensure schedule dialog state updates as if user changed plant
+            plantSel.dispatchEvent(new Event('change'));
+
+            // If a specific variety was saved/selected, reload varieties and set it
+            syncStateFromControls();
+
+            if (Number.isFinite(Number(formState.plantId))) {
+                await reloadVarietyOptionsForPlant(formState.plantId, preferVarietyId);
+                if (Number.isFinite(Number(preferVarietyId))) {
+                    varietySel.value = String(preferVarietyId);
+                }
+                syncVarietyButtons();
+            }
+
+            syncStateFromControls();
+            await refreshEffectivePlant();
+
+            await resetMethodOptionsForPlant(formState.plantId);
+            await resetVariantOptionsForMethod(methodSel.value, {
+                preferVariantId: String(effectivePlant?.default_planting_variant ?? '')
+            });
+
+            await recomputeAll('plantOrVarietySaved');     // NEW reason string
+            await refreshTaskTemplateFromSelection();
+        }
 
         const plantRow = document.createElement('div');
         const plantLbl = document.createElement('span'); plantLbl.textContent = 'Plant:';
@@ -2624,61 +3329,79 @@ Draw.loadPlugin(function (ui) {
         varietyControlsWrap.style.alignItems = 'center';
         varietyControlsWrap.appendChild(varietySel);
 
-        const addVarietyBtn = inlineButton('Add variety', async () => {
+        const addVarietyBtn = inlineButton('Add variety', async () => { // CHANGED
             try {
                 syncStateFromControls();
 
-                const saved = await openVarietyEditorDialog(ui, { mode: 'add', plantId: formState.plantId });
+                const pid = Number(formState.plantId);
+                if (!Number.isFinite(pid)) {
+                    mxUtils.alert('Select a plant first');
+                    return;
+                }
+
+                const saved = await openPlantEditorDialog(ui, {               // CHANGED
+                    mode: 'add',
+                    plantId: pid,
+                    startVarietyMode: 'add'                                     // NEW (forces New variety mode)
+                });
                 if (!saved) return;
 
-                await reloadVarietyOptionsForPlant(formState.plantId);
+                await reloadVarietyOptionsForPlant(pid);
 
                 const savedId = Number(saved?.variety_id ?? saved?.varietyId ?? saved?.id);
-                if (Number.isFinite(savedId)) {
-                    varietySel.value = String(savedId);
-                }
+                if (Number.isFinite(savedId)) varietySel.value = String(savedId);
 
                 syncStateFromControls();
                 await refreshEffectivePlant();
-                resetMethodOptions(effectivePlant);
+                await resetMethodOptionsForPlant(formState.plantId);
+                await resetVariantOptionsForMethod(methodSel.value, {
+                    preferVariantId: String(effectivePlant?.default_planting_variant ?? '')
+                });
                 await recomputeAll('varietyChanged');
                 await refreshTaskTemplateFromSelection();
             } catch (e) {
                 mxUtils.alert('Add variety error: ' + (e?.message || String(e)));
             }
         });
+
         varietyControlsWrap.appendChild(addVarietyBtn);
 
-        const editVarietyBtn = inlineButton('Edit variety', async () => {
+        const editVarietyBtn = inlineButton('Edit variety', async () => { // CHANGED
             try {
                 syncStateFromControls();
-                if (!formState.varietyId) {
-                    setVarietyStatus('Select a variety to edit.');
-                    return;
-                }
+
+                const pid = Number(formState.plantId);
+                const vid = Number(formState.varietyId);
+                if (!Number.isFinite(pid)) { mxUtils.alert('Select a plant first'); return; }
+                if (!Number.isFinite(vid)) { setVarietyStatus('Select a variety to edit.'); return; }
 
                 setVarietyStatus('');
-                const saved = await openVarietyEditorDialog(ui, {
-                    mode: 'edit',
-                    plantId: formState.plantId,
-                    varietyId: formState.varietyId
+                const saved = await openPlantEditorDialog(ui, {               // CHANGED
+                    mode: 'add',
+                    plantId: pid,
+                    varietyId: vid,
+                    startVarietyMode: 'edit'                                    // NEW (ensures overrides mode)
                 });
                 if (!saved) return;
 
-                await reloadVarietyOptionsForPlant(formState.plantId);
+                await reloadVarietyOptionsForPlant(pid);
 
-                const savedId = Number(saved?.variety_id ?? saved?.varietyId ?? formState.varietyId);
+                const savedId = Number(saved?.variety_id ?? saved?.varietyId ?? vid);
                 varietySel.value = String(savedId);
 
                 syncStateFromControls();
                 await refreshEffectivePlant();
-                resetMethodOptions(effectivePlant);
+                await resetMethodOptionsForPlant(formState.plantId);
+                await resetVariantOptionsForMethod(methodSel.value, {
+                    preferVariantId: String(effectivePlant?.default_planting_variant ?? '')
+                });
                 await recomputeAll('varietyChanged');
                 await refreshTaskTemplateFromSelection();
             } catch (e) {
                 setVarietyStatus('Edit variety error: ' + (e?.message || String(e)));
             }
         });
+
         varietyControlsWrap.appendChild(editVarietyBtn);
 
         const varietyRow = row('Variety:', varietyControlsWrap);
@@ -2714,28 +3437,67 @@ Draw.loadPlugin(function (ui) {
         }
 
 
-        // City & Method
+        // City & Method & Variant
         const cityOpts = cities.map(c => ({ value: c.city_name, label: c.city_name }));
         const citySel = makeSelect(cityOpts, cityOpts[0]?.value);
-        const methodSel = document.createElement('select'); methodSel.style.width = '100%'; methodSel.style.padding = '6px';
 
-        function resetMethodOptions(p) {
-            const LABELS = {
-                'direct_sow': 'direct_sow',
-                'transplant_indoor': 'transplant (indoor → field)',
-                'transplant_outdoor': 'transplant (field date)'
-            };
-            const opts = p.allowedMethods().map(v => ({ value: v, label: LABELS[v] || v }));
-            methodSel.innerHTML = '';
-            opts.forEach(o => {
-                const opt = document.createElement('option');
-                opt.value = o.value; opt.textContent = o.label;
-                methodSel.appendChild(opt);
-            });
-            methodSel.value = opts[0].value;
+        // base method select (allowed per plant)
+        const methodSel = document.createElement('select');
+        methodSel.style.width = '100%';
+        methodSel.style.padding = '6px';
+
+        // variant select (filtered by method)
+        const variantSel = document.createElement('select');
+        variantSel.style.width = '100%';
+        variantSel.style.padding = '6px';
+
+        let currentAllowedMethods = [];   // [{method_id, method_name}]
+        let currentVariants = [];         // [{variant_id, ...}]
+
+        async function resetMethodOptionsForPlant(plantId, { preferMethodId = null } = {}) {
+            currentAllowedMethods = await PlantModel.listAllowedBaseMethodsForPlant(Number(plantId));
+
+            const opts = currentAllowedMethods.map(m => ({
+                value: m.method_id,
+                label: m.method_name || m.method_id
+            }));
+
+            const fallback = opts[0]?.value ?? 'transplant';
+            const desired = preferMethodId && opts.some(o => o.value === preferMethodId) ? preferMethodId : fallback;
+
+            setSelectOptions(methodSel, opts, desired);
         }
 
-        resetMethodOptions(selPlant);
+        async function resetVariantOptionsForMethod(methodId, { preferVariantId = null } = {}) {
+            currentVariants = await PlantModel.listVariantsForMethod(String(methodId));
+
+            const opts = currentVariants.map(v => ({
+                value: v.variant_id,
+                label: v.variant_name || v.variant_id
+            }));
+
+            // allow blank selection
+            const withBlank = [{ value: '', label: '' }].concat(opts);
+
+            const fallback = opts[0]?.value ?? '';
+            const desired = (preferVariantId && withBlank.some(o => o.value === preferVariantId))
+                ? preferVariantId
+                : fallback;
+
+            setSelectOptions(variantSel, withBlank, desired);
+        }
+
+        // initialize method+variant for initial plant
+        await resetMethodOptionsForPlant(selPlant.plant_id);
+
+        // Prefer plant default_planting_variant if it exists and matches chosen method
+        const preferredVariant0 = String(
+            effectivePlant?.default_planting_variant ??
+            effectivePlant?.default_planting_method ?? // legacy name if still present
+            ''
+        );
+
+        await resetVariantOptionsForMethod(methodSel.value, { preferVariantId: preferredVariant0 });
 
         // Start/End inputs + auto buttons
         const initialStartISO = earliestFeasibleSowDate.toISOString().slice(0, 10);
@@ -2783,7 +3545,7 @@ Draw.loadPlugin(function (ui) {
 
         async function loadDefaultsForCurrentSelection() {
             // Factory defaults = code default, not DB “saved defaults”                       
-            taskTemplate = getDefaultTaskTemplateForMethod(formState.method);
+            taskTemplate = await getDefaultTaskTemplateForVariant(formState.variantId);
             taskRules = Array.isArray(taskTemplate?.rules) ? [...taskTemplate.rules] : [];
             taskEditorDiv.innerHTML = "";
             taskDirty = false;
@@ -2804,30 +3566,40 @@ Draw.loadPlugin(function (ui) {
             plantId: initId,
             varietyId: cellVarietyId0,
             cityName: citySel.value,
-            method: methodSel.value,
+
+            // keep both (methodId is for UI + filtering; variantId is the scheduler “method” everywhere)
+            methodId: methodSel.value,
+            variantId: variantSel.value,
+
+            // variantId replaces old "method" everywhere you previously used method
+            method: variantSel.value,
+
             startISO: startInput.value,
             seasonEndISO: seasonEndInput.value,
             seasonStartYear: Number(seasonYearInput.value || (new Date()).getUTCFullYear()),
             harvestWindowDays: (harvestWindowInput.value === '' ? null : Number(harvestWindowInput.value)),
-            autoEarliestISO: initialStartISO,                        // auto earliest sow
+            autoEarliestISO: initialStartISO,
             lastFeasibleSowISO: null,
-            lastHarvestISO: initialEndISO,                           // schedule-derived last harvest
-            lastHarvestSource: 'auto'                                // track where it came from
+            lastHarvestISO: initialEndISO,
+            lastHarvestSource: 'auto'
         };
-
-
 
 
         function syncStateFromControls() {
             formState.plantId = Number(plantSel.value);
             formState.varietyId = (varietySel && varietySel.value) ? Number(varietySel.value) : null;
             formState.cityName = citySel.value;
-            formState.method = methodSel.value;
+
+            formState.methodId = methodSel.value;
+            formState.variantId = variantSel.value;
+            formState.method = formState.variantId; // backward-compatible alias (variant_id)
+
             formState.startISO = startInput.value;
             formState.seasonEndISO = seasonEndInput.value;
             formState.seasonStartYear = Number(seasonYearInput.value || (new Date()).getUTCFullYear());
             formState.harvestWindowDays = (harvestWindowInput.value === '' ? null : Number(harvestWindowInput.value));
         }
+
 
         function syncControlsFromState({ start = false, end = false, lastHarvest = false } = {}) {
             if (start && formState.startISO) {
@@ -2848,7 +3620,8 @@ Draw.loadPlugin(function (ui) {
         const FIELD_SCHEMA = [
             { key: 'seasonStartYear', label: 'Season start year:', control: seasonYearInput },
             { key: 'cityName', label: 'City:', control: citySel },
-            { key: 'method', label: 'Method:', control: methodSel },
+            { key: 'methodId', label: 'Method:', control: methodSel },
+            { key: 'variantId', label: 'Variant:', control: variantSel },
             { key: 'harvestWindowDays', label: 'Harvest window days:', control: harvestWindowInput },
         ];
 
@@ -2866,7 +3639,13 @@ Draw.loadPlugin(function (ui) {
 
         syncStateFromControls();                                                     // MOVED (after setting varietySel) 
         await refreshEffectivePlant();                                                // same
-        resetMethodOptions(effectivePlant);                                           // same
+        await resetMethodOptionsForPlant(formState.plantId);
+        await resetVariantOptionsForMethod(methodSel.value, {
+            preferVariantId: String(
+                effectivePlant?.default_planting_variant ??
+                ''
+            )
+        });
 
         const autoEarliestRowObj = row('Earliest feasible sow:', autoEarliestInput);
 
@@ -2880,7 +3659,7 @@ Draw.loadPlugin(function (ui) {
         const lastHarvestRowObj = row('Last harvest date:', lastHarvestInput);
 
         appendFieldRows(div, fieldRows, ['seasonStartYear']);
-        appendFieldRows(div, fieldRows, ['cityName', 'method', 'harvestWindowDays']); // NEW
+        appendFieldRows(div, fieldRows, ['cityName', 'methodId', 'variantId', 'harvestWindowDays']);
         div.appendChild(autoEarliestRowObj.row);
         div.appendChild(autoLastSowRowObj.row);
         div.appendChild(firstSowRowObj.row);
@@ -3196,8 +3975,19 @@ Draw.loadPlugin(function (ui) {
             await refreshEffectivePlant();
 
 
-            resetMethodOptions(effectivePlant);
-            formState.method = methodSel.value;
+            await resetMethodOptionsForPlant(formState.plantId);
+            await resetVariantOptionsForMethod(methodSel.value, {
+                preferVariantId: String(
+                    effectivePlant?.default_planting_variant ??
+                    effectivePlant?.default_planting_method ??
+                    ''
+                )
+            });
+
+            formState.methodId = methodSel.value;
+            formState.variantId = variantSel.value;
+            formState.method = formState.variantId;
+
 
             harvestWindowInput.value = (effectivePlant.defaultHW() ?? '');
             formState.harvestWindowDays = (harvestWindowInput.value === '' ? null : Number(harvestWindowInput.value));
@@ -3221,7 +4011,13 @@ Draw.loadPlugin(function (ui) {
             syncVarietyButtons();
             syncStateFromControls();
             await refreshEffectivePlant();
-            resetMethodOptions(effectivePlant);
+            await resetMethodOptionsForPlant(formState.plantId);
+            await resetVariantOptionsForMethod(methodSel.value, {
+                preferVariantId: String(
+                    effectivePlant?.default_planting_variant ??
+                    ''
+                )
+            });
             harvestWindowInput.value = (effectivePlant.defaultHW() ?? '');
             formState.harvestWindowDays = (harvestWindowInput.value === '' ? null : Number(harvestWindowInput.value));
             await recomputeAll('varietyChanged');
@@ -3263,8 +4059,17 @@ Draw.loadPlugin(function (ui) {
             })();
         });
         methodSel.addEventListener('change', async () => {
-            await recomputeAll('methodChanged');
+            // method changed -> variants need rebuild
+            await resetVariantOptionsForMethod(methodSel.value, { preferVariantId: '' });
+
             syncStateFromControls();
+            await recomputeAll('methodChanged');
+            await refreshTaskTemplateFromSelection();
+        });
+
+        variantSel.addEventListener('change', async () => {
+            syncStateFromControls();
+            await recomputeAll('methodChanged'); // treat variant change like method change (same downstream effects)
             await refreshTaskTemplateFromSelection();
         });
 
@@ -3400,7 +4205,7 @@ Draw.loadPlugin(function (ui) {
                     await TaskTemplateModel.saveForSelection({
                         plantId: formState.plantId,
                         varietyId: formState.varietyId,
-                        method: formState.method,
+                        variantId: formState.variantId,
                         template: taskTemplate
                     });
                 }
@@ -3443,8 +4248,7 @@ Draw.loadPlugin(function (ui) {
         // TASK TAB UI ADDITION
         // ============================================================================
 
-        // 1. Load existing OR resolve from DB fallback chain                                
-
+        // 1. Load existing OR resolve from DB fallback chain
         const rawTpl = cell?.getAttribute?.('task_template_json');
         if (rawTpl) {
             try { taskTemplate = JSON.parse(rawTpl); } catch (_) { taskTemplate = null; }
@@ -3454,7 +4258,7 @@ Draw.loadPlugin(function (ui) {
             taskTemplate = await TaskTemplateModel.resolveFor({
                 plantId: formState.plantId,
                 varietyId: formState.varietyId,
-                method: formState.method
+                variantId: formState.variantId
             });
         }
 
@@ -3517,7 +4321,7 @@ Draw.loadPlugin(function (ui) {
         tasksTab.appendChild(taskEditorDiv);
 
         async function refreshTaskTemplateFromSelection() {
-            // Do not overwrite if the cell already has a per-plan template 
+            // Do not overwrite if the cell already has a per-plan template
             const raw = String(cell?.getAttribute?.('task_template_json') || '').trim();
             const hasCellTpl = raw.length > 0;
             if (hasCellTpl || taskDirty) return;
@@ -3525,7 +4329,7 @@ Draw.loadPlugin(function (ui) {
             const resolved = await TaskTemplateModel.resolveFor({
                 plantId: formState.plantId,
                 varietyId: formState.varietyId,
-                method: formState.method
+                variantId: formState.variantId
             });
 
             taskTemplate = resolved;
@@ -3645,7 +4449,7 @@ Draw.loadPlugin(function (ui) {
         addTaskBtn.style.marginTop = "12px";
         tasksTab.appendChild(addTaskBtn);
 
-        // Reset to defaults button                                                    
+        // Reset to defaults button
         const resetTasksBtn = mxUtils.button("Reset to defaults", async () => {
             try {
                 syncStateFromControls();
@@ -3653,14 +4457,13 @@ Draw.loadPlugin(function (ui) {
                 const graph = ui.editor.graph;
                 clearCellTaskTemplateUndoable(graph, cell);   // remove per-plan override
 
-                await loadDefaultsForCurrentSelection();      // refresh UI list
+                await loadDefaultsForCurrentSelection();      // variant-based defaults
             } catch (e) {
                 mxUtils.alert("Reset tasks error: " + (e?.message || String(e)));
             }
         });
         resetTasksBtn.style.marginTop = "8px";
         tasksTab.appendChild(resetTasksBtn);
-
 
         // Save default checkbox
         tasksTab.appendChild(
@@ -3721,7 +4524,7 @@ Draw.loadPlugin(function (ui) {
 
 
     // ============================================================================
-    // Task Template Model (In-Memory + Cell Persistence)
+    // Task Template Model (Variant-driven + Cell Persistence)
     // ============================================================================
 
     // canonical stage names
@@ -3737,14 +4540,79 @@ Draw.loadPlugin(function (ui) {
         return TASK_STAGE_LABELS[stage] || stage;
     }
 
-    function prepAnchorFor(method) {
-        return method === "direct_sow" ? "SOW" : "TRANSPLANT";
+    // -------------------- DB access (variant) -----------------------------------
+
+    function safeJsonParse(s, fallback) {
+        try { return JSON.parse(s); } catch (_) { return fallback; }
     }
 
-    function getDefaultTaskTemplateForMethod(method) {
-        // Base rules common to all methods (harvest + thin)                   
-        const common = [
-            {
+    async function getPlantingVariantById(variantId) {
+        if (!variantId) return null;
+        const sql = `
+        SELECT variant_id, method_id, variant_name, tasks_required_json
+        FROM PlantingMethodVariants
+        WHERE variant_id = ?
+        LIMIT 1;`;
+        const rows = await queryAll(sql, [String(variantId)]);
+        return rows[0] || null;
+    }
+
+    // -------------------- Rule library (single source) --------------------------
+
+    function prepAnchorForBaseMethod(methodId) {
+        return methodId === "direct_sow" ? "SOW" : "TRANSPLANT";
+    }
+
+    function taskRuleLibraryForBaseMethod(methodId) {
+        const prepAnchor = prepAnchorForBaseMethod(methodId);
+
+        return {
+            prep: {
+                id: "prep",
+                title: "Prep bed for {plant}",
+                anchorStage: prepAnchor,
+                offsetDays: 3,
+                offsetDirection: "before",
+                durationDays: 3,
+                repeat: false
+            },
+            sow: {
+                id: "sow",
+                title: "Sow {plant}",
+                anchorStage: "SOW",
+                offsetDays: 0,
+                offsetDirection: "after",
+                durationDays: 7,
+                repeat: false
+            },
+            start: {
+                id: "start",
+                title: "Start {plant} indoors",
+                anchorStage: "SOW",
+                offsetDays: 0,
+                offsetDirection: "after",
+                durationDays: 0,
+                repeat: false
+            },
+            harden: {
+                id: "harden",
+                title: "Harden off {plant}",
+                anchorStage: "TRANSPLANT",
+                offsetDays: 7,
+                offsetDirection: "before",
+                durationDays: 7,
+                repeat: false
+            },
+            transplant: {
+                id: "transplant",
+                title: "Transplant {plant}",
+                anchorStage: "TRANSPLANT",
+                offsetDays: 0,
+                offsetDirection: "after",
+                durationDays: 7,
+                repeat: false
+            },
+            thin: {
                 id: "thin",
                 title: "Thin / check {plant}",
                 anchorStage: "GERM",
@@ -3753,7 +4621,7 @@ Draw.loadPlugin(function (ui) {
                 durationDays: 7,
                 repeat: false
             },
-            {
+            harvest: {
                 id: "harvest",
                 title: "Harvest – {plant}",
                 anchorStage: "HARVEST_START",
@@ -3762,191 +4630,66 @@ Draw.loadPlugin(function (ui) {
                 durationDays: 0, // HARVEST_START → HARVEST_END
                 repeat: false
             }
-        ];
-
-        if (method === "direct_sow") {
-            return {
-                version: 1,
-                rules: [
-                    {
-                        id: "prep",
-                        title: "Prep bed for {plant}",
-                        anchorStage: prepAnchorFor(method),
-                        offsetDays: 3,
-                        offsetDirection: "before",
-                        durationDays: 3,
-                        repeat: false
-                    },
-                    {
-                        id: "sow",
-                        title: "Sow {plant}",
-                        anchorStage: "SOW",
-                        offsetDays: 0,
-                        offsetDirection: "after",
-                        durationDays: 7,
-                        repeat: false
-                    },
-                    ...common
-                ]
-            };
-        }
-
-        if (method === "transplant_indoor") {
-            return {
-                version: 1,
-                rules: [
-                    {
-                        id: "prep",
-                        title: "Prep bed for {plant}",
-                        anchorStage: prepAnchorFor(method),
-                        offsetDays: 3,
-                        offsetDirection: "before",
-                        durationDays: 3,
-                        repeat: false
-                    },
-                    {
-                        id: "start",
-                        title: "Start {plant} indoors",
-                        anchorStage: "SOW", // indoor sow date
-                        offsetDays: 0,
-                        offsetDirection: "after",
-                        durationDays: 0,
-                        repeat: false
-                    },
-                    {
-                        id: "harden",
-                        title: "Harden off {plant}",
-                        anchorStage: "TRANSPLANT",
-                        offsetDays: 7,
-                        offsetDirection: "before",
-                        durationDays: 7,
-                        repeat: false
-                    },
-                    {
-                        id: "transplant",
-                        title: "Transplant {plant}",
-                        anchorStage: "TRANSPLANT",
-                        offsetDays: 0,
-                        offsetDirection: "after",
-                        durationDays: 7,
-                        repeat: false
-                    },
-                    ...common
-                ]
-            };
-        }
-
-        if (method === "transplant_outdoor") {
-            // Choose whether we include indoor work; here: minimal field-focused set.
-            return {
-                version: 1,
-                rules: [
-                    {
-                        id: "prep",
-                        title: "Prep bed for {plant}",
-                        anchorStage: prepAnchorFor(method),
-                        offsetDays: 3,
-                        offsetDirection: "before",
-                        durationDays: 3,
-                        repeat: false
-                    },
-                    {
-                        id: "harden",
-                        title: "Harden off {plant}",
-                        anchorStage: "TRANSPLANT",
-                        offsetDays: 7,
-                        offsetDirection: "before",
-                        durationDays: 7,
-                        repeat: false
-                    },
-                    {
-                        id: "transplant",
-                        title: "Transplant {plant}",
-                        anchorStage: "TRANSPLANT",
-                        offsetDays: 0,
-                        offsetDirection: "after",
-                        durationDays: 7,
-                        repeat: false
-                    },
-                    ...common
-                ]
-            };
-        }
-
-        // Fallback: original generic template (for unknown methods)            
-        return {
-            version: 1,
-            rules: [
-                {
-                    id: "prep",
-                    title: "Prep bed for {plant}",
-                    anchorStage: prepAnchorFor(method),
-                    offsetDays: 3,
-                    offsetDirection: "before",
-                    durationDays: 3,
-                    repeat: false
-                },
-                {
-                    id: "sow",
-                    title: "Sow {plant}",
-                    anchorStage: "SOW",
-                    offsetDays: 0,
-                    offsetDirection: "after",
-                    durationDays: 7,
-                    repeat: false
-                },
-                {
-                    id: "thin",
-                    title: "Thin / check {plant}",
-                    anchorStage: "GERM",
-                    offsetDays: 7,
-                    offsetDirection: "after",
-                    durationDays: 7,
-                    repeat: false
-                },
-                {
-                    id: "start",
-                    title: "Start {plant} indoors",
-                    anchorStage: "SOW",
-                    offsetDays: 0,
-                    offsetDirection: "after",
-                    durationDays: 0,
-                    repeat: false
-                },
-                {
-                    id: "harden",
-                    title: "Harden off {plant}",
-                    anchorStage: "TRANSPLANT",
-                    offsetDays: 7,
-                    offsetDirection: "before",
-                    durationDays: 7,
-                    repeat: false
-                },
-                {
-                    id: "transplant",
-                    title: "Transplant {plant}",
-                    anchorStage: "TRANSPLANT",
-                    offsetDays: 0,
-                    offsetDirection: "after",
-                    durationDays: 7,
-                    repeat: false
-                },
-                {
-                    id: "harvest",
-                    title: "Harvest – {plant}",
-                    anchorStage: "HARVEST_START",
-                    offsetDays: 0,
-                    offsetDirection: "after",
-                    durationDays: 0,
-                    repeat: false
-                }
-            ]
         };
     }
 
+    function applyTaskOverrides(rule, override) {
+        if (!override || typeof override !== "object") return { ...rule };
 
-    // Load template from cell or fallback
-    function loadTaskTemplateFromCell(cell, method) {
+        const out = { ...rule };
+        const keys = ["title", "anchorStage", "offsetDays", "offsetDirection", "durationDays", "repeat"];
+        for (const k of keys) {
+            if (override[k] !== undefined) out[k] = override[k];
+        }
+        return out;
+    }
+
+    // -------------------- Default template from variant --------------------------
+
+    async function getDefaultTaskTemplateForVariant(variantId) {
+        // Conservative fallback keeps UI working if DB rows are missing
+        const fallback = (() => {
+            const lib = taskRuleLibraryForBaseMethod("transplant");
+            return { version: 1, rules: [lib.prep, lib.transplant, lib.thin, lib.harvest] };
+        })();
+
+        if (!variantId) return fallback;
+
+        const variant = await getPlantingVariantById(variantId);
+        if (!variant) return fallback;
+
+        const baseMethodId = String(variant.method_id || "transplant");
+        const lib = taskRuleLibraryForBaseMethod(baseMethodId);
+
+        // tasks_required_json supports:
+        //  - boolean: { "prep": true, "sow": false, ... }
+        //  - object override: { "prep": { "offsetDays": 5 }, ... }
+        const required = safeJsonParse(variant.tasks_required_json, {}) || {};
+
+        const orderedIds = ["prep", "sow", "start", "harden", "transplant", "thin", "harvest"];
+
+        const rules = [];
+        for (const id of orderedIds) {
+            const req = required[id];
+            if (!req) continue;
+            if (!lib[id]) continue;
+
+            const override = (req && typeof req === "object") ? req : null;
+            rules.push(applyTaskOverrides(lib[id], override));
+        }
+
+        // Force harvest if variant omitted it
+        if (!rules.some(r => r.id === "harvest")) rules.push(lib.harvest);
+
+        // If variant yielded nothing (bad JSON or all false), fall back
+        if (!rules.length) return fallback;
+
+        return { version: 1, rules };
+    }
+
+    // -------------------- Load from cell or variant fallback ---------------------
+
+    async function loadTaskTemplateFromCell(cell, variantId) {
         const raw = cell.getAttribute && cell.getAttribute("task_template_json");
         if (raw) {
             try {
@@ -3955,8 +4698,9 @@ Draw.loadPlugin(function (ui) {
                 console.warn("Invalid task_template_json");
             }
         }
-        return getDefaultTaskTemplateForMethod(method);
+        return await getDefaultTaskTemplateForVariant(variantId);
     }
+
 
 
 
@@ -4117,19 +4861,22 @@ Draw.loadPlugin(function (ui) {
         })();
 
         // Build tasks from a single planting timeline
-        function buildTasksForPlan({
+        async function buildTasksForPlan({                              // CHANGED
             method,
             plant,
             schedule,
             timelines,
-            taskTemplate
+            taskTemplate,
+            variantId = null                                           // NEW
         }) {
             const tasks = [];
             const plantName = plant?.plant_name || plant?.abbr || "Plant";
 
-            const rules = (taskTemplate && Array.isArray(taskTemplate.rules))
-                ? taskTemplate.rules
-                : getDefaultTaskTemplateForMethod(method).rules;
+            const tpl = (taskTemplate && Array.isArray(taskTemplate.rules)) // NEW
+                ? taskTemplate                                            // NEW
+                : await getDefaultTaskTemplateForVariant(variantId);       // NEW
+
+            const rules = Array.isArray(tpl?.rules) ? tpl.rules : [];      // NEW
 
             // Force single planting: use the first schedule/timeline entry only          
             const sowDate = Array.isArray(schedule) ? schedule[0] : schedule;
@@ -4240,13 +4987,7 @@ Draw.loadPlugin(function (ui) {
         }) {
             const taskTemplate = loadTaskTemplateFromCell(cell, method);
 
-            const tasks = buildTasksForPlan({
-                method,
-                plant,
-                schedule,
-                timelines,
-                taskTemplate
-            });
+            const tasks = buildTasksForPlan({ method, plant, schedule, timelines, taskTemplate, variantId }); // CHANGED
 
             const detail = {
                 tasks,
