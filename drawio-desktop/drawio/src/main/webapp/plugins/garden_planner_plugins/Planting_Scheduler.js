@@ -82,6 +82,15 @@ Draw.loadPlugin(function (ui) {
     }
 
     // -------------------- DB helpers (open → exec/run → close) ------------------------------
+
+    async function queryAllOnDb(dbId, sql, params = []) {
+        if (!window.dbBridge || typeof window.dbBridge.query !== 'function') {
+            throw new Error('dbBridge.query not available');
+        }
+        const res = await window.dbBridge.query(dbId, sql, params || []);
+        return Array.isArray(res?.rows) ? res.rows : [];
+    }
+
     async function execRunOnDb(dbId, sql, params = []) {
         try {
             if (typeof window.dbBridge.exec === "function") {
@@ -181,6 +190,8 @@ Draw.loadPlugin(function (ui) {
         }
 
         static async loadById(id) {
+            console.log('[PlantModel.loadById] called with id:', id);
+
             const sql = `
           SELECT *,
                  COALESCE(direct_sow,0) AS direct_sow,
@@ -197,7 +208,7 @@ Draw.loadPlugin(function (ui) {
           SELECT plant_id, plant_name, abbr, yield_per_plant_kg, gdd_to_maturity, 
                  tmin_c, topt_low_c, topt_high_c, tmax_c, tbase_c,
                  harvest_window_days, days_maturity, days_transplant, days_germ,
-                 direct_sow, transplant, default_planting_method, overwinter_ok, start_cooling_threshold_c,
+                 direct_sow, transplant, default_planting_method_category, default_planting_method, overwinter_ok, start_cooling_threshold_c,
                  soil_temp_min_plant_c, annual, biennial, perennial, lifespan_years, veg_diameter_cm, spacing_cm                                                                  
           FROM Plants
           WHERE abbr IS NOT NULL
@@ -206,38 +217,43 @@ Draw.loadPlugin(function (ui) {
             return rows.map(r => new PlantModel(r));
         }
 
-        static async listAllowedBaseMethodsForPlant(plantId) {
+        static async listAllowedMethodCategoriesForPlant(plantId) {
             const sql = `
-              SELECT pm.method_id, pm.method_name
-              FROM PlantAllowedMethods AS pam
-              JOIN PlantingMethods AS pm
-                ON pm.method_id = pam.method_id
+              SELECT pam.plant_id,
+                     pam.method_category_id,
+                     pmc.method_category_name
+              FROM PlantAllowedMethodCategories AS pam
+              JOIN PlantingMethodCategories AS pmc
+                ON pmc.method_category_id = pam.method_category_id
               WHERE pam.plant_id = ?`;
             return await queryAll(sql, [Number(plantId)]);
         }
 
 
-        static async listVariantsForMethod(methodId) {
-            const mid = String(methodId || '').trim();
-            if (!mid) return [];
+        static async listMethodsForMethodCategory(methodCategoryId) {
+            const mcid = String(methodCategoryId || '').trim();
+            if (!mcid) return [];
 
             const sql = `
-                SELECT variant_id, method_id, variant_name, tasks_required_json
-                FROM PlantingMethodVariants
-                WHERE method_id = ?;`;
-            return await queryAll(sql, [mid]);
+              SELECT method_id,
+                     method_name,
+                     tasks_required_json
+              FROM PlantingMethods
+              WHERE method_category_id = ?
+              ORDER BY method_name;`;
+            return await queryAll(sql, [mcid]);
         }
 
 
-        static async getVariantById(variantId) {
-            if (!variantId) return null;
+        static async getMethodById(methodId) {
+            if (!methodId) return null;
 
             const sql = `
-                SELECT variant_id, method_id, variant_name, tasks_required_json
-                FROM PlantingMethodVariants
-                WHERE variant_id = ?
+                SELECT method_category_id, method_id, method_name, tasks_required_json
+                FROM PlantingMethods
+                WHERE method_id = ?
                 LIMIT 1;`;
-            const rows = await queryAll(sql, [variantId]);
+            const rows = await queryAll(sql, [methodId]);
             return rows[0] || null;
         }
 
@@ -300,19 +316,30 @@ Draw.loadPlugin(function (ui) {
             const qs = [];
             const vals = [];
             for (const [k, v] of Object.entries(patch || {})) {
+                if (v === undefined) continue;
+                if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) throw new Error('Invalid column: ' + k);
                 cols.push(k);
                 qs.push('?');
-                vals.push(v);
+                vals.push(v === undefined ? null : v);
             }
             if (!cols.length) throw new Error('No fields to create plant.');
 
-            const sql = `INSERT INTO Plants (${cols.join(', ')}) VALUES (${qs.join(', ')});`;
+            const insertSql = `INSERT INTO Plants (${cols.join(', ')}) VALUES (${qs.join(', ')});`;  
 
-            await execAll(sql, vals);
-
-            // Return the created row (SQLite: last_insert_rowid)                              
-            const rows = await queryAll(`SELECT * FROM Plants WHERE plant_id = last_insert_rowid();`, []);
-            return rows[0] ? new PlantModel(rows[0]) : null;
+            return await withDbWrite(async (dbId) => {
+                await execRunOnDb(dbId, "BEGIN;");
+                try {
+                    await execRunOnDb(dbId, insertSql, vals);
+                    const idRows = await queryAllOnDb(dbId, "SELECT last_insert_rowid() AS id;", []);
+                    const newId = Number(idRows?.[0]?.id);
+                    const rows = await queryAllOnDb(dbId, "SELECT * FROM Plants WHERE plant_id = ?;", [newId]);
+                    await execRunOnDb(dbId, "COMMIT;");
+                    return rows[0] ? new PlantModel(rows[0]) : null;
+                } catch (e) {
+                    try { await execRunOnDb(dbId, "ROLLBACK;"); } catch (_) { }
+                    throw e;
+                }
+            });
         }
 
         static async update(plantId, patch) {
@@ -322,8 +349,10 @@ Draw.loadPlugin(function (ui) {
             const sets = [];
             const vals = [];
             for (const [k, v] of Object.entries(patch || {})) {
+                if (v === undefined) continue;
+                if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) throw new Error('Invalid column: ' + k);
                 sets.push(`${k} = ?`);
-                vals.push(v);
+                vals.push(v === undefined ? null : v);
             }
             if (!sets.length) return await PlantModel.loadById(id);
 
@@ -331,7 +360,7 @@ Draw.loadPlugin(function (ui) {
             const sql = `UPDATE Plants SET ${sets.join(', ')} WHERE plant_id = ?;`;
 
             console.log("[PlantModel.update] patch keys =", Object.keys(patch || {}));
-            console.log("[PlantModel.update] default_planting_variant =", patch?.default_planting_variant);
+            console.log("[PlantModel.update] default_planting_method =", patch?.default_planting_method);
 
             await execAll(sql, vals);
 
@@ -340,26 +369,38 @@ Draw.loadPlugin(function (ui) {
     }
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     class TaskTemplateModel {
         static async ensureTables() {
-            const sql1 = `
+            const sql = `
                 CREATE TABLE IF NOT EXISTS PlantTaskTemplates (
-                  plant_id      INTEGER NOT NULL,                                  
-                  method        TEXT    NOT NULL,                                  
-                  template_json TEXT    NOT NULL,                                  
-                  updated_at    TEXT    NOT NULL,                                  
-                  PRIMARY KEY (plant_id, method)
+                  plant_id      INTEGER NOT NULL,
+                  method_id     TEXT    NOT NULL,
+                  template_json TEXT    NOT NULL,
+                  updated_at    TEXT    NOT NULL,
+                  PRIMARY KEY (plant_id, method_id)
                 );`;
-            const sql2 = `
-                CREATE TABLE IF NOT EXISTS VarietyTaskTemplates (
-                  variety_id    INTEGER NOT NULL,                                  
-                  method        TEXT    NOT NULL,                                  
-                  template_json TEXT    NOT NULL,                                  
-                  updated_at    TEXT    NOT NULL,                                  
-                  PRIMARY KEY (variety_id, method)
-                );`;
-            await execAll(sql1, []);
-            await execAll(sql2, []);
+            await execAll(sql, []);
         }
 
         static _safeParseTemplateRow(row) {
@@ -372,76 +413,69 @@ Draw.loadPlugin(function (ui) {
             }
         }
 
-        static async loadPlantTemplate(plantId, method) {
+        static async loadPlantTemplate(plantId, methodId) {
             await this.ensureTables();
             const sql = `
-                SELECT template_json                                                
+                SELECT template_json
                 FROM PlantTaskTemplates
-                WHERE plant_id = ? AND method = ?
+                WHERE plant_id = ? AND method_id = ?
                 LIMIT 1;`;
-            const rows = await queryAll(sql, [Number(plantId), String(method)]);
+            const rows = await queryAll(sql, [Number(plantId), String(methodId)]);
             return this._safeParseTemplateRow(rows[0] || null);
         }
 
-        static async loadVarietyTemplate(varietyId, method) {
-            await this.ensureTables();
-            const sql = `
-                SELECT template_json                                                
-                FROM VarietyTaskTemplates
-                WHERE variety_id = ? AND method = ?
-                LIMIT 1;`;
-            const rows = await queryAll(sql, [Number(varietyId), String(method)]);
-            return this._safeParseTemplateRow(rows[0] || null);
-        }
-
-        static async savePlantTemplate(plantId, method, template) {
+        static async savePlantTemplate(plantId, methodId, template) {
             await this.ensureTables();
             const json = JSON.stringify(template ?? {});
             const now = new Date().toISOString();
             const sql = `
-                INSERT INTO PlantTaskTemplates (plant_id, method, template_json, updated_at)  
+                INSERT INTO PlantTaskTemplates (plant_id, method_id, template_json, updated_at)
                 VALUES (?, ?, ?, ?)
-                ON CONFLICT(plant_id, method) DO UPDATE SET
-                  template_json = excluded.template_json,                           
+                ON CONFLICT(plant_id, method_id) DO UPDATE SET
+                  template_json = excluded.template_json,
                   updated_at = excluded.updated_at;`;
-            await execAll(sql, [Number(plantId), String(method), json, now]);
+            await execAll(sql, [Number(plantId), String(methodId), json, now]);
         }
 
-        static async saveVarietyTemplate(varietyId, method, template) {
+        static async saveForSelection({ plantId, methodId, template }) {
+            return this.savePlantTemplate(plantId, methodId, template);
+        }
+
+        static async deletePlantTemplate(plantId, methodId) {
             await this.ensureTables();
-            const json = JSON.stringify(template ?? {});
-            const now = new Date().toISOString();
             const sql = `
-                INSERT INTO VarietyTaskTemplates (variety_id, method, template_json, updated_at) 
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(variety_id, method) DO UPDATE SET
-                  template_json = excluded.template_json,                          
-                  updated_at = excluded.updated_at;`;
-            await execAll(sql, [Number(varietyId), String(method), json, now]);
+              DELETE FROM PlantTaskTemplates
+              WHERE plant_id = ? AND method_id = ?;`;
+            await execAll(sql, [Number(plantId), String(methodId)]);
         }
 
-        static async resolveFor({ plantId, varietyId, method, variantId = null }) { // CHANGED            // 1) variety+method
-            if (varietyId != null) {
-                const v = await this.loadVarietyTemplate(varietyId, method);
-                if (v) return v;
-            }
-            // 2) plant+method
-            if (plantId != null) {
-                const p = await this.loadPlantTemplate(plantId, method);
-                if (p) return p;
-            }
-            // Prefer variant-driven default if available; otherwise fall back to method default
-            return await getDefaultTaskTemplateForVariant(variantId); // CHANGED
-        }
-
-        static async saveForSelection({ plantId, varietyId, method, template }) {
-            // If variety selected -> variety template; else -> plant template
-            if (varietyId != null) {
-                return this.saveVarietyTemplate(varietyId, method, template);
-            }
-            return this.savePlantTemplate(plantId, method, template);
+        static async deleteForSelection({ plantId, methodId }) {
+            return this.deletePlantTemplate(plantId, methodId);
         }
     }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
     // =====================================================================
@@ -752,6 +786,43 @@ Draw.loadPlugin(function (ui) {
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     class Planner {
         constructor(inputs) {
             // Build the full, read-only context once
@@ -779,7 +850,7 @@ Draw.loadPlugin(function (ui) {
 
 
             this.ctx = Object.freeze({
-                // invariants for the whole planning pass
+                // inmethods for the whole planning pass
                 method,
                 // cooling gate config
                 useCoolingGate: coolingThreshold != null,
@@ -796,7 +867,7 @@ Draw.loadPlugin(function (ui) {
                 HW_DAYS,
 
                 // crop & climate
-                BUDGET: budget,                            // <-- add this
+                BUDGET: budget,                       
                 env,                // {Tmin,ToptLow,ToptHigh,Tmax,Tbase}
                 dailyRates,         // {1..12: gdd/day}
                 monthlyAvg,         // {1..12: mean air temp}
@@ -988,7 +1059,7 @@ Draw.loadPlugin(function (ui) {
         const HW_DAYS = Number.isFinite(Number(inputs.harvestWindowDays)) ? Number(inputs.harvestWindowDays) : 0;
         const budget = plant.firstHarvestBudget();
 
-        const schedule = buildPlantingSchedule(inputs); // CHANGE: canonical single planting
+        const schedule = buildPlantingSchedule(inputs);
         const sow0 = schedule[0];
 
         if (!(sow0 instanceof Date) || Number.isNaN(sow0.getTime())) {
@@ -1012,12 +1083,6 @@ Draw.loadPlugin(function (ui) {
             seasonEnd, Tbase: env.Tbase, window: 'harvest', HW_DAYS
         });
 
-        const { plants: plantsAlloc } = distributePlantsToMeetTarget({
-            N: 1, // CHANGE: explicitly 1
-            yieldPerPlant: plant.yieldPerPlant(),
-            multipliers: [Number.isFinite(multipliers[0]) ? multipliers[0] : 0]
-        });
-
         const tl = timelines[0];
         if (!tl || !(tl.harvestEnd instanceof Date)) return { rows: [], lastScheduledHarvestEndISO: null };
 
@@ -1025,13 +1090,12 @@ Draw.loadPlugin(function (ui) {
             idx: 1,
             plant: plant.plant_name || (plant.abbr || '?'),
             method,
-            sow: fmtISO(sow0),                         // CHANGE: sow0
+            sow: fmtISO(sow0),
             germ: fmtISO(tl.germ),
             trans: fmtISO(tl.transplant),
             harvStart: fmtISO(tl.harvestStart),
             harvEnd: fmtISO(tl.harvestEnd),
             mult: (Number.isFinite(multipliers[0]) ? multipliers[0].toFixed(3) : ''),
-            plantsReq: (Array.isArray(plantsAlloc) ? plantsAlloc[0] : '')
         };
 
         return { rows: [row], lastScheduledHarvestEndISO: row.harvEnd };
@@ -1056,18 +1120,18 @@ Draw.loadPlugin(function (ui) {
     // -------------------- Centralized builder for schedule context -------------------- 
     async function buildScheduleContextFromForm(formState, selPlant, options = {}) {
 
-        // Prefer current selected plant instance if provided                              
         const plant = await resolveEffectivePlant(formState.plantId, formState.varietyId);
         if (!plant) throw new Error('Plant not found for schedule.');
 
         const city = await CityClimate.loadByName(formState.cityName);
         if (!city) throw new Error('City not found for schedule.');
 
-        const method = formState.method;
+        const methodCategoryId = String(formState.methodCategoryId || '').trim();            
+        const methodId = String(formState.methodId || '').trim();          
+        const method = String(formState.method || '').trim();                // existing meaning (your legacy alias)
 
         const policy = PolicyFlags.fromPlant(plant, method);
 
-        // --- NEW: define varietyId/varietyName in this scope ---
         const varietyId = formState.varietyId != null ? Number(formState.varietyId) : null;
         const varietyName = varietyId
             ? await resolveVarietyName(varietyId, options.currentVarieties)
@@ -1086,8 +1150,10 @@ Draw.loadPlugin(function (ui) {
             varietyName
         });
 
+        inputs.methodCategoryId = methodCategoryId;                                         
+        inputs.methodId = methodId;                                       
 
-        return { plant, city, method, policy, inputs };
+        return { plant, city, method, methodCategoryId, methodId, policy, inputs }; 
     }
 
     async function computeFeasibilityWindow({
@@ -1493,11 +1559,11 @@ Draw.loadPlugin(function (ui) {
         if (hasVal(spacingY)) {
             setAttr(groupCell, 'spacing_y_cm', spacingY);
         }
-        if (hasVal(s)) {                                                                 //(same as before but via helper)
+        if (hasVal(s)) {                                                     
             setAttr(groupCell, 'spacing_cm', s);
         }
 
-        if (hasVal(vd)) {                                                                //(same semantics, cleaner)
+        if (hasVal(vd)) {                                                          
             setAttr(groupCell, 'veg_diameter_cm', vd);
         }
     }
@@ -1880,7 +1946,7 @@ Draw.loadPlugin(function (ui) {
         el.value = (initial == null || initial === '') ? '' : String(initial);
         if (min != null) el.min = String(min);
         if (step != null) el.step = String(step);
-        el.style.width = '100%'; el.style.padding = '6px';                    // NEW
+        el.style.width = '100%'; el.style.padding = '6px';
         return el;
     }
 
@@ -2095,25 +2161,45 @@ Draw.loadPlugin(function (ui) {
 
 
 
-    async function openPlantEditorDialog(ui, { mode, plantId = null, varietyId = null, startVarietyMode = null } = {}) { // CHANGED
+    async function openPlantEditorDialog(ui, { mode, plantId = null, varietyId = null, startVarietyMode = null } = {}) {
+
+        console.group('[PlantEditorDialog] OPEN');
+        console.log('params:', { mode, plantId, varietyId, startVarietyMode });
+        console.log('isEdit:', mode === 'edit');
+        console.groupEnd();
+
         const isEdit = mode === 'edit';
-        const existing = isEdit ? await PlantModel.loadById(Number(plantId)) : null;
-        if (isEdit && !existing) throw new Error('Plant not found');
+        let existing = null;
+        if (isEdit) {
+            console.log('[PlantEditorDialog] loading plant for edit:', plantId);
+            existing = await PlantModel.loadById(Number(plantId));
+        }
 
-        const initialPlantId = Number.isFinite(Number(plantId)) ? Number(plantId) : null;        // NEW
-        const initialVarietyId = Number.isFinite(Number(varietyId)) ? Number(varietyId) : null;  // NEW
-        const initialStartVarietyMode = (startVarietyMode === 'add' || startVarietyMode === 'edit') ? startVarietyMode : null; // NEW
+        function parsePositiveId(v) {
+            if (v === null || v === undefined) return null;
+            const s = String(v).trim();
+            if (!s) return null;
+            const n = Number(s);
+            if (!Number.isFinite(n) || n <= 0) return null;
+            return n;
+        }
 
-        let currentPlantId = isEdit ? Number(plantId) : initialPlantId;                           // CHANGED
+        const initialPlantId = parsePositiveId(plantId);
+        const initialVarietyId = parsePositiveId(varietyId);
+
+        const initialStartVarietyMode = (startVarietyMode === 'add' || startVarietyMode === 'edit') ? startVarietyMode : null;
+
+        let currentPlantId = isEdit ? Number(plantId) : initialPlantId;
         let currentPlantRow = existing ? toPlainDict(existing) : null;
-        let currentPlantMode = isEdit ? "edit" : (initialPlantId ? "edit" : "add");               // CHANGED
+        let currentPlantMode = isEdit ? "edit" : (initialPlantId ? "edit" : "add");
 
-        const NEW_VARIETY_VALUE = "__NEW__";                         // NEW
-        let currentVarietyMode = null; // 'add' | 'edit' | null       // NEW
+        const NEW_PLANT_VALUE = "__NEW_PLANT__";
+        const NEW_VARIETY_VALUE = "__NEW__";
+        let currentVarietyMode = null; // 'add' | 'edit' | null       
 
-        let currentVarietyId = null;                                            // NEW
-        let currentVarietyRow = null;                                           // NEW
-        let varietiesCache = [];                                                // NEW
+        let currentVarietyId = null;
+        let currentVarietyRow = null;
+        let varietiesCache = [];
 
         const div = document.createElement('div');
         div.style.padding = '12px';
@@ -2128,33 +2214,27 @@ Draw.loadPlugin(function (ui) {
         div.appendChild(title);
 
         // -------------------- DB helpers (local) --------------------
-        async function listActiveMethods() {
+        async function listActiveMethodCategories() {                                            
             const sql = `
-        SELECT method_id, method_name
-        FROM PlantingMethods;`;
-            try {
-                return await queryAll(sql, []);
-            } catch (_) {
-                const sql2 = `
-            SELECT method_id, method_name
-            FROM PlantingMethods
-            ORDER BY method_name;`;
-                return await queryAll(sql2, []);
-            }
+              SELECT method_category_id, method_category_name
+              FROM PlantingMethodCategories
+              ORDER BY method_category_name;`;
+            return await queryAll(sql, []);
         }
 
-        async function listAllowedMethodIdsForPlant(pid) {
+
+        async function listAllowedmethodCategoryIdsForPlant(pid) {
             const sql = `
-        SELECT method_id
-        FROM PlantAllowedMethods
-        WHERE plant_id = ?;`;
+              SELECT method_category_id
+              FROM PlantAllowedMethodCategories
+              WHERE plant_id = ?;`;
             try {
                 const rows = await queryAll(sql, [pid]);
-                return rows.map(r => r.method_id);
+                return rows.map(r => String(r.method_category_id));                                     
             } catch (_) {
-                // Legacy fallback: must read the plant row for THIS pid (not "existing")        // CHANGED
-                const row = await PlantModel.loadById(Number(pid));                              // NEW
-                const p = row ? toPlainDict(row) : null;                                         // NEW
+                // legacy fallback unchanged
+                const row = await PlantModel.loadById(Number(pid));
+                const p = row ? toPlainDict(row) : null;
                 const out = [];
                 if (p?.direct_sow === 1) out.push('direct_sow');
                 if (p?.transplant === 1) out.push('transplant');
@@ -2162,26 +2242,26 @@ Draw.loadPlugin(function (ui) {
             }
         }
 
-        async function setAllowedMethodIdsForPlant(pid, methodIds) {
+        async function setAllowedmethodCategoryIdsForPlant(pid, methodCategoryIds) {
             const pidNum = Number(pid);
-            const ids = Array.isArray(methodIds) ? methodIds.map(String) : [];
+            const ids = Array.isArray(methodCategoryIds) ? methodCategoryIds.map(String) : [];
 
-            console.log("[AllowedMethods] saving", { pid: pidNum, methodIds: ids });
+            console.log("[AllowedMethodCategories] saving", { pid: pidNum, methodCategoryIds: ids });
 
             return await withDbWrite(async (dbId) => {
                 await execRunOnDb(dbId, "BEGIN;");
                 try {
                     await execRunOnDb(
                         dbId,
-                        "DELETE FROM PlantAllowedMethods WHERE plant_id = ?;",
+                        "DELETE FROM PlantAllowedMethodCategories WHERE plant_id = ?;",
                         [pidNum]
                     );
 
-                    for (const mid of ids) {
+                    for (const mcid of ids) {
                         await execRunOnDb(
                             dbId,
-                            "INSERT OR IGNORE INTO PlantAllowedMethods (plant_id, method_id) VALUES (?, ?);",
-                            [pidNum, mid]
+                            "INSERT OR IGNORE INTO PlantAllowedMethodCategories (plant_id, method_category_id) VALUES (?, ?);", 
+                            [pidNum, mcid]
                         );
                     }
 
@@ -2193,25 +2273,19 @@ Draw.loadPlugin(function (ui) {
             });
         }
 
-        async function fetchVariantsForAllowedMethods(methodIds) {
-            if (!methodIds || methodIds.length === 0) return [];
-            const placeholders = methodIds.map(() => '?').join(',');
+        async function fetchMethodsForAllowedMethodCategories(methodCategoryIds) {
+            if (!methodCategoryIds || methodCategoryIds.length === 0) return [];
+            const placeholders = methodCategoryIds.map(() => '?').join(',');
             const sql = `
-        SELECT variant_id, method_id, variant_name, tasks_required_json
-        FROM PlantingMethodVariants
-        WHERE method_id IN (${placeholders});`;
-            try {
-                return await queryAll(sql, methodIds);
-            } catch (_) {
-                const sql2 = `
-            SELECT variant_id, method_id, variant_name, tasks_required_json
-            FROM PlantingMethodVariants
-            WHERE method_id IN (${placeholders});`;
-                return await queryAll(sql2, methodIds);
-            }
+              SELECT method_id, method_name, method_category_id, tasks_required_json
+              FROM PlantingMethods
+              WHERE method_category_id IN (${placeholders})
+              ORDER BY method_name;`;
+            return await queryAll(sql, methodCategoryIds);
         }
 
-        async function listPlantsBasic() {                                      // NEW
+
+        async function listPlantsBasic() {
             const sql = `
         SELECT plant_id, plant_name
         FROM Plants
@@ -2219,7 +2293,7 @@ Draw.loadPlugin(function (ui) {
             return await queryAll(sql, []);
         }
 
-        async function listVarietiesForPlant(pid) {                             // NEW
+        async function listVarietiesForPlant(pid) {
             // ASSUMPTION: table name PlantVarieties; change if your schema differs
             const sql = `
         SELECT variety_id, variety_name
@@ -2234,63 +2308,54 @@ Draw.loadPlugin(function (ui) {
             }
         }
 
-        // -------------------- Top selectors (Plant + Variety) --------------------   // NEW
-        const selectorWrap = document.createElement('div');                          // NEW
-        selectorWrap.style.display = 'flex';                                         // NEW
-        selectorWrap.style.gap = '8px';                                              // NEW
-        selectorWrap.style.alignItems = 'center';                                    // NEW
-        selectorWrap.style.marginBottom = '10px';                                    // NEW
+        // -------------------- Top selectors (Plant + Variety) --------------------   
+        const selectorWrap = document.createElement('div');
+        selectorWrap.style.display = 'flex';
+        selectorWrap.style.gap = '8px';
+        selectorWrap.style.alignItems = 'center';
+        selectorWrap.style.marginBottom = '10px';
 
-        const plantSel = document.createElement('select');                           // NEW
-        plantSel.style.padding = '6px';                                              // NEW
-        plantSel.style.flex = '1';                                                   // NEW
+        const plantSel = document.createElement('select');
+        plantSel.style.padding = '6px';
+        plantSel.style.flex = '1';
 
-        const varietySel = document.createElement('select');                         // NEW
-        varietySel.style.padding = '6px';                                            // NEW
-        varietySel.style.flex = '1';                                                 // NEW
+        const varietySel = document.createElement('select');
+        varietySel.style.padding = '6px';
+        varietySel.style.flex = '1';
 
-        const addVarBtn = mxUtils.button('Add variety', async () => {                 // CHANGED
+        const addPlantBtn = mxUtils.button('Add plant', async () => {
+            try {
+                plantSel.value = NEW_PLANT_VALUE;
+                plantSel.dispatchEvent(new Event('change'));
+            } catch (e) {
+                showErrorInline('Add plant error: ' + (e?.message || String(e)));
+            }
+        });
+
+        const addVarBtn = mxUtils.button('Add variety', async () => {
             try {
                 const pid = Number(currentPlantId);
                 if (!Number.isFinite(pid)) {
-                    mxUtils.alert('Save the plant first');
+                    showErrorInline('Save the plant first');
                     return;
                 }
                 varietySel.value = NEW_VARIETY_VALUE;
                 varietySel.dispatchEvent(new Event('change'));
             } catch (e) {
-                mxUtils.alert('Add variety error: ' + (e?.message || String(e)));
-            }
-        });
-
-        const editVarBtn = mxUtils.button('Edit variety', async () => {               // CHANGED
-            try {
-                const pid = Number(currentPlantId);
-                if (!Number.isFinite(pid)) {
-                    mxUtils.alert('Select a plant first');
-                    return;
-                }
-                const vidRaw = String(varietySel.value || '').trim();
-                if (!vidRaw || vidRaw === NEW_VARIETY_VALUE) {
-                    mxUtils.alert('Select an existing variety to edit');
-                    return;
-                }
-                await loadVarietyIntoOverrides(Number(vidRaw));
-            } catch (e) {
-                mxUtils.alert('Edit variety error: ' + (e?.message || String(e)));
+                showErrorInline('Add variety error: ' + (e?.message || String(e)));
             }
         });
 
         selectorWrap.appendChild(plantSel);
         selectorWrap.appendChild(varietySel);
+        selectorWrap.appendChild(addPlantBtn);
         selectorWrap.appendChild(addVarBtn);
-        selectorWrap.appendChild(editVarBtn);
         div.appendChild(selectorWrap);
 
         // -------------------- Layout (single column; inline overrides) --------------------
-        const leftCol = document.createElement('div');                                             // NEW
-        leftCol.style.minWidth = '0';                                                             // NEW
-        div.appendChild(leftCol);                                                                 // NEW
+        const leftCol = document.createElement('div');
+        leftCol.style.minWidth = '0';
+        div.appendChild(leftCol);
 
         // --- Identity ---
         const nameInput = document.createElement('input');
@@ -2305,14 +2370,14 @@ Draw.loadPlugin(function (ui) {
         abbrInput.style.width = '100%';
         abbrInput.style.padding = '6px';
 
-        const varietyNameInput = document.createElement('input');                                  // NEW
-        varietyNameInput.type = 'text';                                                            // NEW
-        varietyNameInput.value = '';                                                               // NEW
-        varietyNameInput.style.width = '100%';                                                     // NEW
-        varietyNameInput.style.padding = '6px';                                                    // NEW
+        const varietyNameInput = document.createElement('input');
+        varietyNameInput.type = 'text';
+        varietyNameInput.value = '';
+        varietyNameInput.style.width = '100%';
+        varietyNameInput.style.padding = '6px';
 
-        const varietyNameRow = row('Variety name:', varietyNameInput);                             // NEW
-        varietyNameRow.row.style.display = 'none';                                                 // NEW
+        const varietyNameRow = row('Variety name:', varietyNameInput);
+        varietyNameRow.row.style.display = 'none';
 
         leftCol.appendChild(row('Plant name:', nameInput).row);
         leftCol.appendChild(varietyNameRow.row);
@@ -2328,22 +2393,41 @@ Draw.loadPlugin(function (ui) {
         const lifespanInput = makeNullableNumber(existing?.lifespan_years ?? null, { min: 1, step: 1 });
         const overwinterChk = makeCheckbox(existing?.overwinter_ok === 1);
 
-        const lifecycleRow = row('Lifecycle:', typeSel);                                           // NEW
-        leftCol.appendChild(lifecycleRow.row);                                                     // CHANGED
+        const lifecycleRow = row('Lifecycle:', typeSel);
+        leftCol.appendChild(lifecycleRow.row);
 
         const lifeRow = row('Lifespan (years):', lifespanInput);
-        leftCol.appendChild(lifeRow.row);                                                          // CHANGED
+        leftCol.appendChild(lifeRow.row);
 
-        const overwinterRow = row('Overwinter OK:', overwinterChk);                                // NEW
-        leftCol.appendChild(overwinterRow.row);                                                    // CHANGED
+        const overwinterRow = row('Overwinter OK:', overwinterChk);
+        leftCol.appendChild(overwinterRow.row);
 
-        function syncLifecycleEnablement() {
-            const isPer = typeSel.value === 'perennial';
-            lifespanInput.disabled = !isPer;
-            if (!isPer) lifespanInput.value = '';
-        }
-        syncLifecycleEnablement();
-        typeSel.addEventListener('change', syncLifecycleEnablement);
+        function lifecycleToFixedYears(lifecycle) {                                        
+            if (lifecycle === 'annual') return 1;                                          
+            if (lifecycle === 'biennial') return 2;                                        
+            return null; // perennial is variable                                             
+        }                                                                                  
+
+        function syncLifecycleFields() {                                                   
+            const lifecycle = typeSel.value;                                               
+            const fixed = lifecycleToFixedYears(lifecycle);                                
+
+            if (fixed != null) {                                                           
+                lifespanInput.value = String(fixed);                                       
+                lifespanInput.disabled = true;                                             
+                lifespanInput.min = '0';                                                 
+                return;                                                                    
+            }
+
+            // Perennial: enabled (unless variety-mode disables later) and min 3            
+            lifespanInput.min = '3';                                                       
+            const cur = Number(String(lifespanInput.value || '').trim());                  
+            if (!Number.isFinite(cur) || cur < 3) lifespanInput.value = '3';               
+            lifespanInput.disabled = false;                                                
+        }                                                                                  
+
+        syncLifecycleFields();                                                             
+        typeSel.addEventListener('change', syncLifecycleFields);                           
 
         // --- Methods (DB-driven checkboxes) ---
         const methodsBox = document.createElement('div');
@@ -2351,21 +2435,22 @@ Draw.loadPlugin(function (ui) {
         methodsBox.style.flexDirection = 'column';
         methodsBox.style.gap = '6px';
 
-        leftCol.appendChild(row('Allowed methods:', methodsBox).row);                              // CHANGED
+        leftCol.appendChild(row('Allowed methods:', methodsBox).row);
 
-        const methodChecksById = new Map(); // method_id -> checkbox
+        const methodChecksById = new Map(); // method_category_id -> checkbox                      
 
-        const methods = await listActiveMethods();
-        const allowedInitial = isEdit ? await listAllowedMethodIdsForPlant(Number(plantId)) : [];
+        const categories = await listActiveMethodCategories();                                     
+        const allowedInitial = isEdit ? await listAllowedmethodCategoryIdsForPlant(Number(plantId)) : [];
         const allowedInitialSet = new Set(allowedInitial);
 
-        for (const m of methods) {
-            const chk = makeCheckbox(allowedInitialSet.has(m.method_id));
-            methodChecksById.set(m.method_id, chk);
-            methodsBox.appendChild(row(m.method_name + ':', chk).row);
+        for (const c of categories) {                                                              
+            const chk = makeCheckbox(allowedInitialSet.has(c.method_category_id));                   
+            methodChecksById.set(c.method_category_id, chk);                                         
+            methodsBox.appendChild(row(c.method_category_name + ':', chk).row);                      
         }
 
-        function getAllowedMethodIdsFromUI() {
+
+        function getAllowedmethodCategoryIdsFromUI() {
             const ids = [];
             for (const [mid, chk] of methodChecksById.entries()) {
                 if (chk.checked) ids.push(mid);
@@ -2373,80 +2458,76 @@ Draw.loadPlugin(function (ui) {
             return ids;
         }
 
-        // --- Default planting variant (filtered by allowed methods) ---
-        const defaultVariantSel = document.createElement('select');
-        defaultVariantSel.style.padding = '6px';
-        defaultVariantSel.style.width = '100%';
-        leftCol.appendChild(row('Default planting variant:', defaultVariantSel).row);              // CHANGED
+        // --- Default planting method (filtered by allowed methods) ---
+        const defaultMethodSel = document.createElement('select');
+        defaultMethodSel.style.padding = '6px';
+        defaultMethodSel.style.width = '100%';
+        leftCol.appendChild(row('Default planting method:', defaultMethodSel).row);
 
-        function selectDefaultVariantFromPlantRow() {
+        function selectDefaultMethodFromPlantRow() {
             const wanted = String(
-                currentPlantRow?.default_planting_variant ??
+                currentPlantRow?.default_planting_method ??
                 currentPlantRow?.default_planting_method ??
                 ''
             ).trim();
 
             if (!wanted) return;
 
-            const valid = new Set(Array.from(defaultVariantSel.options).map(o => String(o.value)));
+            const valid = new Set(Array.from(defaultMethodSel.options).map(o => String(o.value)));
             if (valid.has(wanted)) {
-                defaultVariantSel.value = wanted;
+                defaultMethodSel.value = wanted;
             } else {
-                console.warn("[DefaultVariant] saved value not in options", { wanted });
+                console.warn("[DefaultMethod] saved value not in options", { wanted });
             }
         }
 
-        async function rebuildDefaultVariantOptions() {
-            const allowed = getAllowedMethodIdsFromUI();
-            const previous = defaultVariantSel.value;
+        async function rebuildDefaultMethodOptions() {
+            const allowed = getAllowedmethodCategoryIdsFromUI();
+            const previous = defaultMethodSel.value;
 
-            defaultVariantSel.innerHTML = '';
+            defaultMethodSel.innerHTML = '';
 
             const autoOpt = document.createElement('option');
             autoOpt.value = '';
             autoOpt.textContent = '';
-            defaultVariantSel.appendChild(autoOpt);
+            defaultMethodSel.appendChild(autoOpt);
 
-            const variants = await fetchVariantsForAllowedMethods(allowed);
-            for (const v of variants) {
+            const methods = await fetchMethodsForAllowedMethodCategories(allowed);
+            for (const m of methods) {
                 const opt = document.createElement('option');
-                opt.value = v.variant_id;
-                opt.textContent = v.variant_name || v.variant_id;
-                defaultVariantSel.appendChild(opt);
+                opt.value = m.method_id;                                                               
+                opt.textContent = m.method_name || m.method_id;                                         
+                defaultMethodSel.appendChild(opt);
             }
 
-            const validValues = new Set(Array.from(defaultVariantSel.options).map(o => o.value));
-            const fallback = String(
-                currentPlantRow?.default_planting_variant ??
-                currentPlantRow?.default_planting_method ??
-                ''
-            );
+            const validValues = new Set(Array.from(defaultMethodSel.options).map(o => o.value));
+            const fallback = String(currentPlantRow?.default_planting_method ?? '').trim();
 
-            defaultVariantSel.value = validValues.has(previous)
+            defaultMethodSel.value = validValues.has(previous)
                 ? previous
                 : (validValues.has(fallback) ? fallback : '');
         }
 
-        await rebuildDefaultVariantOptions();
-        selectDefaultVariantFromPlantRow();
+        await rebuildDefaultMethodOptions();
+        selectDefaultMethodFromPlantRow();
 
         for (const chk of methodChecksById.values()) {
             chk.addEventListener('change', async () => {
-                await rebuildDefaultVariantOptions();
-                selectDefaultVariantFromPlantRow();
+                await rebuildDefaultMethodOptions();
+                selectDefaultMethodFromPlantRow();
             });
         }
 
         // -------------------- Inline override system --------------------
-        function fmtBaseVal(key) {                                                       // NEW
+        function fmtBaseVal(key) {
             const v = currentPlantRow ? currentPlantRow[key] : null;
             if (v == null || v === '') return '(null)';
             return String(v);
         }
 
-        const overrideInlineByKey = {}; // key -> { def, chk, input, wrap, baseHint }     // NEW
+        const overrideInlineByKey = {}; // key -> { def, chk, input, wrap, baseHint }     
 
-        function makeInlineOverrideControls(def) {                                        // NEW
+        function makeInlineOverrideControls(def) {
             const wrap = document.createElement('div');
             wrap.style.display = 'flex';
             wrap.style.gap = '6px';
@@ -2496,7 +2577,7 @@ Draw.loadPlugin(function (ui) {
             return { wrap, chk, input, baseHint };
         }
 
-        function attachInlineOverrideToRow(rowObj, def) {                                  // NEW
+        function attachInlineOverrideToRow(rowObj, def) {
             rowObj.row.style.display = 'flex';
             rowObj.row.style.alignItems = 'center';
             rowObj.row.style.gap = '8px';
@@ -2507,19 +2588,19 @@ Draw.loadPlugin(function (ui) {
             overrideInlineByKey[def.key] = { def, chk: o.chk, input: o.input, wrap: o.wrap, baseHint: o.baseHint };
         }
 
-        function setInlineOverridesVisible(show) {                                         // NEW
+        function setInlineOverridesVisible(show) {
             for (const key of Object.keys(overrideInlineByKey)) {
                 overrideInlineByKey[key].wrap.style.display = show ? 'flex' : 'none';
             }
         }
 
-        function refreshInlineBaseHints() {                                                // NEW
+        function refreshInlineBaseHints() {
             for (const key of Object.keys(overrideInlineByKey)) {
                 overrideInlineByKey[key].baseHint.textContent = 'Base: ' + fmtBaseVal(key);
             }
         }
 
-        const OVERRIDE_SCHEMA = [                                                          // NEW
+        const OVERRIDE_SCHEMA = [
             { key: 'days_maturity', type: 'int_ge0' },
             { key: 'gdd_to_maturity', type: 'num_ge0', step: 1 },
             { key: 'days_germ', type: 'int_ge0' },
@@ -2536,9 +2617,13 @@ Draw.loadPlugin(function (ui) {
             { key: 'topt_low_c', type: 'nullable_num', step: 0.1 },
             { key: 'topt_high_c', type: 'nullable_num', step: 0.1 },
             { key: 'tmax_c', type: 'nullable_num', step: 0.1 },
+
+            { key: 'veg_height_cm', type: 'num_ge0', step: 1 },
+            { key: 'veg_diameter_cm', type: 'num_ge0', step: 1 },
+            { key: 'spacing_cm', type: 'num_ge0', step: 1 },
         ];
 
-        function readOverrideValue(def, inputEl) {                                         // NEW
+        function readOverrideValue(def, inputEl) {
             if (def.type === 'bool01') return inputEl.checked ? 1 : 0;
             if (def.type === 'int_ge0') return readIntGE0(inputEl);
             if (def.type === 'num_ge0') return readNumGE0(inputEl);
@@ -2546,7 +2631,7 @@ Draw.loadPlugin(function (ui) {
             return null;
         }
 
-        function applyOverridesToUI(overridesObj) {                                        // CHANGED
+        function applyOverridesToUI(overridesObj) {
             for (const key of Object.keys(overrideInlineByKey)) {
                 const { def, chk, input } = overrideInlineByKey[key];
                 const has = Object.prototype.hasOwnProperty.call(overridesObj, key);
@@ -2558,7 +2643,7 @@ Draw.loadPlugin(function (ui) {
             }
         }
 
-        function buildOverridesFromUI() {                                                  // CHANGED
+        function buildOverridesFromUI() {
             const out = {};
             for (const key of Object.keys(overrideInlineByKey)) {
                 const { def, chk, input } = overrideInlineByKey[key];
@@ -2578,7 +2663,7 @@ Draw.loadPlugin(function (ui) {
         const gddInput = makeNullableNumber(existing?.gdd_to_maturity ?? null, { min: 0, step: 1 });
         const daysMatInput = makeNullableNumber(existing?.days_maturity ?? null, { min: 0, step: 1 });
 
-        leftCol.appendChild(row('Maturity budget:', budgetModeSel).row);                    // CHANGED
+        leftCol.appendChild(row('Maturity budget:', budgetModeSel).row);
 
         const gddRow = row('GDD to maturity:', gddInput);
         leftCol.appendChild(gddRow.row);
@@ -2590,8 +2675,8 @@ Draw.loadPlugin(function (ui) {
 
         function syncBudgetModeUI() {
             const mode = budgetModeSel.value;
-            gddRow.row.style.display = (mode === 'gdd') ? 'flex' : 'none';   // CHANGED
-            daysRow.row.style.display = (mode === 'days') ? 'flex' : 'none'; // CHANGED
+            gddRow.row.style.display = (mode === 'gdd') ? 'flex' : 'none';
+            daysRow.row.style.display = (mode === 'days') ? 'flex' : 'none';
         }
 
         syncBudgetModeUI();
@@ -2601,11 +2686,11 @@ Draw.loadPlugin(function (ui) {
         const daysGermInput = makeNullableNumber(existing?.days_germ ?? 0, { min: 0, step: 1 });
         const daysTransInput = makeNullableNumber(existing?.days_transplant ?? 0, { min: 0, step: 1 });
 
-        const daysGermRow = row('Days to germ:', daysGermInput);                             // FIXED
+        const daysGermRow = row('Days to germ:', daysGermInput);
         leftCol.appendChild(daysGermRow.row);
         attachInlineOverrideToRow(daysGermRow, { key: 'days_germ', type: 'int_ge0' });
 
-        const daysTransRow = row('Days to transplant:', daysTransInput);                     // NEW
+        const daysTransRow = row('Days to transplant:', daysTransInput);
         leftCol.appendChild(daysTransRow.row);
         attachInlineOverrideToRow(daysTransRow, { key: 'days_transplant', type: 'int_ge0' });
 
@@ -2613,11 +2698,11 @@ Draw.loadPlugin(function (ui) {
         const yieldInput = makeNullableNumber(existing?.yield_per_plant_kg ?? null, { min: 0, step: 0.001 });
         const hwInput = makeNullableNumber(existing?.harvest_window_days ?? null, { min: 0, step: 1 });
 
-        const yieldRow = row('Yield per plant (kg):', yieldInput);                           // NEW
+        const yieldRow = row('Yield per plant (kg):', yieldInput);
         leftCol.appendChild(yieldRow.row);
         attachInlineOverrideToRow(yieldRow, { key: 'yield_per_plant_kg', type: 'num_ge0', step: 0.001 });
 
-        const hwRow = row('Harvest window (days):', hwInput);                                // NEW
+        const hwRow = row('Harvest window (days):', hwInput);
         leftCol.appendChild(hwRow.row);
         attachInlineOverrideToRow(hwRow, { key: 'harvest_window_days', type: 'int_ge0' });
 
@@ -2660,40 +2745,61 @@ Draw.loadPlugin(function (ui) {
         leftCol.appendChild(coolThreshRow.row);
         attachInlineOverrideToRow(coolThreshRow, { key: 'start_cooling_threshold_c', type: 'nullable_num', step: 0.1 });
 
+        // --- Vegetative geometry ---
+        const vegHeightInput = makeNullableNumber(existing?.veg_height_cm ?? null, { min: 0, step: 1 });
+        const vegDiamInput = makeNullableNumber(existing?.veg_diameter_cm ?? null, { min: 0, step: 1 });
+        const spacingInput = makeNullableNumber(existing?.spacing_cm ?? null, { min: 0, step: 1 });
+
+        const vegHeightRow = row('Veg height (cm):', vegHeightInput);
+        leftCol.appendChild(vegHeightRow.row);
+        attachInlineOverrideToRow(vegHeightRow, { key: 'veg_height_cm', type: 'num_ge0', step: 1 });
+
+        const vegDiamRow = row('Veg diameter (cm):', vegDiamInput);
+        leftCol.appendChild(vegDiamRow.row);
+        attachInlineOverrideToRow(vegDiamRow, { key: 'veg_diameter_cm', type: 'num_ge0', step: 1 });
+
+        const spacingRow = row('Spacing (cm):', spacingInput);
+        leftCol.appendChild(spacingRow.row);
+        attachInlineOverrideToRow(spacingRow, { key: 'spacing_cm', type: 'num_ge0', step: 1 });
         // Attach overwinter override to the overwinter row (base is checkbox)
-        attachInlineOverrideToRow(overwinterRow, { key: 'overwinter_ok', type: 'bool01' });           // NEW
+        attachInlineOverrideToRow(overwinterRow, { key: 'overwinter_ok', type: 'bool01' });
 
         // hide overrides by default
-        setInlineOverridesVisible(false);                                                             // NEW
+        setInlineOverridesVisible(false);
 
-        function setPlantControlsEnabled(enabled) {                                                    // NEW
+        function setPlantControlsEnabled(enabled) {
             const els = [
-                nameInput, abbrInput, typeSel, lifespanInput, overwinterChk,
-                defaultVariantSel, budgetModeSel, gddInput, daysMatInput,
+                nameInput, abbrInput, typeSel, /* lifespanInput, */ overwinterChk,          
+                defaultMethodSel, budgetModeSel, gddInput, daysMatInput,
                 daysGermInput, daysTransInput, yieldInput, hwInput,
                 tbaseInput, tminInput, toptLowInput, toptHighInput, tmaxInput,
-                soilMinInput, coolThreshInput
+                soilMinInput, coolThreshInput,
+                vegHeightInput, vegDiamInput, spacingInput
             ];
 
             for (const el of els) {
                 if (!el) continue;
-                if (el.type === 'checkbox') el.disabled = !enabled;
-                else el.disabled = !enabled;
+                el.disabled = !enabled;
             }
 
             for (const chk of methodChecksById.values()) chk.disabled = !enabled;
+
+            // Lifespan obeys lifecycle + global enabled flag                               
+            syncLifecycleFields();                                                          
+            const isPerennial = (String(typeSel.value) === 'perennial');                    
+            lifespanInput.disabled = (!enabled) || (!isPerennial);                          
         }
 
-        async function refreshAllowedMethodsUIForPlant(pid) {                             // NEW
-            const allowed = await listAllowedMethodIdsForPlant(Number(pid));
+        async function refreshAllowedMethodCategoriesUIForPlant(pid) {
+            const allowed = await listAllowedmethodCategoryIdsForPlant(Number(pid));
             const allowedSet = new Set(allowed);
             for (const [mid, chk] of methodChecksById.entries()) {
                 chk.checked = allowedSet.has(mid);
             }
-            await rebuildDefaultVariantOptions();
+            await rebuildDefaultMethodOptions();
         }
 
-        async function refreshVarietyDropdown(pid, preferredVarietyId = null) {           // CHANGED
+        async function refreshVarietyDropdown(pid, preferredVarietyId = null) {
             varietiesCache = Number.isFinite(Number(pid)) ? await listVarietiesForPlant(Number(pid)) : [];
 
             const prev = String(preferredVarietyId ?? varietySel.value ?? '');
@@ -2721,19 +2827,16 @@ Draw.loadPlugin(function (ui) {
 
             const hasPlant = Number.isFinite(Number(currentPlantId));
             addVarBtn.disabled = !hasPlant;
-
-            const vval = String(varietySel.value || '').trim();
-            editVarBtn.disabled = !(hasPlant && vval && vval !== NEW_VARIETY_VALUE);
         }
 
-        function applyPlantRowToUI(p) {                                                   // NEW
+        function applyPlantRowToUI(p) {
             nameInput.value = p?.plant_name ?? '';
             abbrInput.value = p?.abbr ?? '';
 
             typeSel.value = (p?.perennial === 1) ? 'perennial' : (p?.biennial === 1 ? 'biennial' : 'annual');
             lifespanInput.value = (p?.lifespan_years ?? '') === null ? '' : String(p?.lifespan_years ?? '');
             overwinterChk.checked = (p?.overwinter_ok === 1);
-            syncLifecycleEnablement();
+            syncLifecycleFields();
 
             const hasGddLocal = Number(p?.gdd_to_maturity ?? 0) > 0;
             budgetModeSel.value = hasGddLocal ? 'gdd' : 'days';
@@ -2755,24 +2858,94 @@ Draw.loadPlugin(function (ui) {
 
             soilMinInput.value = (p?.soil_temp_min_plant_c ?? '') === null ? '' : String(p?.soil_temp_min_plant_c ?? '');
             coolThreshInput.value = (p?.start_cooling_threshold_c ?? '') === null ? '' : String(p?.start_cooling_threshold_c ?? '');
+
+            vegHeightInput.value = (p?.veg_height_cm ?? '') === null ? '' : String(p?.veg_height_cm ?? '');
+            vegDiamInput.value = (p?.veg_diameter_cm ?? '') === null ? '' : String(p?.veg_diameter_cm ?? '');
+            spacingInput.value = (p?.spacing_cm ?? '') === null ? '' : String(p?.spacing_cm ?? '');
         }
 
-        async function loadPlantIntoForm(pidOrNull, preferredVarietyId = null, preferredStartVarietyMode = null) { // CHANGED
+        async function loadPlantIntoForm(pidOrNull, preferredVarietyId = null, preferredStartVarietyMode = null) {
+            console.group('[PlantEditorDialog] loadPlantIntoForm');
+            console.log('pidOrNull:', pidOrNull);
+            console.log('currentPlantMode (before):', currentPlantMode);
+            console.groupEnd();
+
             // Reset upfront
             setInlineOverridesVisible(false);
-            varietyNameRow.row.style.display = 'flex'; // CHANGED
+            varietyNameRow.row.style.display = 'flex';
 
             currentVarietyMode = null;
             currentVarietyId = null;
             currentVarietyRow = null;
             setPlantControlsEnabled(true);
 
-            if (!Number.isFinite(Number(pidOrNull))) {
-                // TODO: your existing add-plant reset block
+            const pidNum = Number(pidOrNull);
+            if (!pidOrNull || !Number.isFinite(pidNum) || pidNum <= 0) {
+                console.log('[PlantEditorDialog] entering ADD plant reset path');
+                currentPlantMode = 'add';
+                currentPlantId = null;
+                currentPlantRow = null;
+
+                title.textContent = 'Add plant';
+
+                // Clear plant fields                                                     
+                nameInput.value = '';
+                abbrInput.value = '';
+                typeSel.value = 'annual';
+                lifespanInput.value = '';
+                overwinterChk.checked = false;
+                syncLifecycleFields();
+
+                budgetModeSel.value = 'days';
+                gddInput.value = '';
+                daysMatInput.value = '';
+                syncBudgetModeUI();
+
+                daysGermInput.value = '0';
+                daysTransInput.value = '0';
+                yieldInput.value = '';
+                hwInput.value = '';
+
+                tbaseInput.value = '';
+                tminInput.value = '';
+                toptLowInput.value = '';
+                toptHighInput.value = '';
+                tmaxInput.value = '';
+
+                soilMinInput.value = '';
+                coolThreshInput.value = '';
+
+                vegHeightInput.value = '';
+                vegDiamInput.value = '';
+                spacingInput.value = '';
+
+                // Reset methods + default method                                        
+                for (const chk of methodChecksById.values()) chk.checked = false;
+                await rebuildDefaultMethodOptions();
+                defaultMethodSel.value = '';
+
+                // Reset variety UI                                                      
+                varietiesCache = [];
+                varietySel.innerHTML = '';
+                const none = document.createElement('option');
+                none.value = '';
+                none.textContent = '';
+                varietySel.appendChild(none);
+                addVarBtn.disabled = true;                    
+
+                currentVarietyMode = null;
+                currentVarietyId = null;
+                currentVarietyRow = null;
+                setInlineOverridesVisible(false);
+                varietyNameRow.row.style.display = 'none';
+                setPlantControlsEnabled(true);
+
+                syncSaveButtonLabel();
                 return;
             }
 
-            const pid = Number(pidOrNull);
+
+            const pid = pidNum;
             const rowObj = await PlantModel.loadById(pid);
             if (!rowObj) throw new Error('Plant not found');
 
@@ -2783,8 +2956,8 @@ Draw.loadPlugin(function (ui) {
 
             applyPlantRowToUI(currentPlantRow);
             refreshInlineBaseHints();
-            await refreshAllowedMethodsUIForPlant(pid);
-            selectDefaultVariantFromPlantRow();
+            await refreshAllowedMethodCategoriesUIForPlant(pid);
+            selectDefaultMethodFromPlantRow();
 
             await refreshVarietyDropdown(pid, preferredVarietyId);
 
@@ -2820,7 +2993,7 @@ Draw.loadPlugin(function (ui) {
             syncSaveButtonLabel();
         }
 
-        function startNewVarietyMode() {                                     // NEW
+        function startNewVarietyMode() {
             currentVarietyMode = 'add';
             currentVarietyId = null;
             currentVarietyRow = null;
@@ -2830,12 +3003,12 @@ Draw.loadPlugin(function (ui) {
 
             setPlantControlsEnabled(false);
             setInlineOverridesVisible(true);
-            varietyNameRow.row.style.display = 'flex'; // CHANGED
+            varietyNameRow.row.style.display = 'flex';
             refreshInlineBaseHints();
             syncSaveButtonLabel();
         }
 
-        async function loadVarietyIntoOverrides(varietyId) {                              // NEW
+        async function loadVarietyIntoOverrides(varietyId) {
             const pid = Number(currentPlantId);
             if (!Number.isFinite(pid)) return;
 
@@ -2863,7 +3036,7 @@ Draw.loadPlugin(function (ui) {
 
             setPlantControlsEnabled(false);
             setInlineOverridesVisible(true);
-            varietyNameRow.row.style.display = 'flex'; // CHANGED
+            varietyNameRow.row.style.display = 'flex';
             refreshInlineBaseHints();
             syncSaveButtonLabel();
         }
@@ -2876,6 +3049,11 @@ Draw.loadPlugin(function (ui) {
         emptyPlantOpt.value = '';
         emptyPlantOpt.textContent = '';
         plantSel.appendChild(emptyPlantOpt);
+
+        const newPlantOpt = document.createElement('option');
+        newPlantOpt.value = NEW_PLANT_VALUE;
+        newPlantOpt.textContent = 'New plant…';
+        plantSel.appendChild(newPlantOpt);
 
         for (const p of plantRows) {
             const opt = document.createElement('option');
@@ -2947,16 +3125,22 @@ Draw.loadPlugin(function (ui) {
                 const biennial = (lifecycle === 'biennial') ? 1 : 0;
                 const perennial = (lifecycle === 'perennial') ? 1 : 0;
 
-                const lifespan_years = perennial ? readNullableNumber(lifespanInput) : null;
-                if (perennial && !(Number.isFinite(Number(lifespan_years)) && Number(lifespan_years) >= 1)) {
-                    throw new Error('Perennials require lifespan_years >= 1');
+                let lifespan_years = null;                                                 
+
+                if (perennial) {                                                           
+                    lifespan_years = readNullableNumber(lifespanInput);                     
+                    if (!(Number.isFinite(Number(lifespan_years)) && Number(lifespan_years) >= 3)) { 
+                        throw new Error('Perennials require lifespan_years >= 3');          
+                    }
+                } else {                                                                    
+                    lifespan_years = annual ? 1 : 2;                                        
                 }
 
-                const allowedMethodIds = getAllowedMethodIdsFromUI();
-                if (!allowedMethodIds.length) throw new Error('Enable at least one method');
+                const allowedmethodCategoryIds = getAllowedmethodCategoryIdsFromUI();
+                if (!allowedmethodCategoryIds.length) throw new Error('Enable at least one method');
 
-                const default_planting_variant_raw = String(defaultVariantSel.value || '').trim();
-                const default_planting_variant = default_planting_variant_raw ? default_planting_variant_raw : null;
+                const default_planting_method_raw = String(defaultMethodSel.value || '').trim();
+                const default_planting_method = default_planting_method_raw ? default_planting_method_raw : null;
 
                 const overwinter_ok = overwinterChk.checked ? 1 : 0;
 
@@ -2977,7 +3161,7 @@ Draw.loadPlugin(function (ui) {
                     annual, biennial, perennial,
                     lifespan_years,
                     overwinter_ok,
-                    default_planting_variant,
+                    default_planting_method,
                     gdd_to_maturity, days_maturity,
                     days_germ: readIntGE0(daysGermInput),
                     days_transplant: readIntGE0(daysTransInput),
@@ -2989,7 +3173,11 @@ Draw.loadPlugin(function (ui) {
                     topt_high_c: readNullableNumber(toptHighInput),
                     tmax_c: readNullableNumber(tmaxInput),
                     soil_temp_min_plant_c: readNullableNumber(soilMinInput),
-                    start_cooling_threshold_c: readNullableNumber(coolThreshInput)
+                    start_cooling_threshold_c: readNullableNumber(coolThreshInput),
+
+                    veg_height_cm: readNullableNumber(vegHeightInput),
+                    veg_diameter_cm: readNullableNumber(vegDiamInput),
+                    spacing_cm: readNullableNumber(spacingInput)
                 };
 
                 let saved = null;
@@ -3003,7 +3191,7 @@ Draw.loadPlugin(function (ui) {
 
                 const savedId = Number(saved?.plant_id ?? currentPlantId);
                 if (!Number.isFinite(savedId)) throw new Error('Save succeeded but plant_id is missing');
-                await setAllowedMethodIdsForPlant(savedId, allowedMethodIds);
+                await setAllowedmethodCategoryIdsForPlant(savedId, allowedmethodCategoryIds);
 
                 // After save, sync dialog state to saved plant
                 currentPlantId = savedId;
@@ -3012,7 +3200,7 @@ Draw.loadPlugin(function (ui) {
                 currentPlantRow = toPlainDict(await PlantModel.loadById(savedId));
                 refreshInlineBaseHints();
 
-                await refreshAllowedMethodsUIForPlant(savedId);
+                await refreshAllowedMethodCategoriesUIForPlant(savedId);
                 await refreshVarietyDropdown(savedId, null);
 
                 currentVarietyMode = null;
@@ -3027,7 +3215,7 @@ Draw.loadPlugin(function (ui) {
 
                 div.__commit(saved);
             } catch (e) {
-                mxUtils.alert('Save error: ' + (e?.message || String(e)));
+                showErrorInline('Save error: ' + (e?.message || String(e)));
             }
         });
 
@@ -3038,15 +3226,39 @@ Draw.loadPlugin(function (ui) {
             else saveBtn.textContent = 'Save plant';
         }
 
-        await loadPlantIntoForm(initialPlantId, initialVarietyId, initialStartVarietyMode);
-        plantSel.value = Number.isFinite(Number(initialPlantId)) ? String(initialPlantId) : '';
+        // Choose initial dropdown selection based on dialog mode and inputs                  
+        const initialPlantSelValue = isEdit
+            ? String(parsePositiveId(plantId) ?? '')
+            : (initialPlantId ? String(initialPlantId) : NEW_PLANT_VALUE);
+
+        plantSel.value = initialPlantSelValue;
+
+        console.log('[PlantEditorDialog] calling loadPlantIntoForm with:', {
+            initialPlantId,
+            plantId_raw: plantId,
+            initialPlantSelValue
+        });
+
+        await loadPlantIntoForm(
+            initialPlantSelValue === NEW_PLANT_VALUE ? null : Number(initialPlantSelValue),
+            initialVarietyId,
+            initialStartVarietyMode
+        );
 
         plantSel.addEventListener('change', async () => {
             try {
-                const pid = String(plantSel.value || '').trim();
-                await loadPlantIntoForm(pid ? Number(pid) : null);
+                const raw = String(plantSel.value || '').trim();
+
+                if (raw === NEW_PLANT_VALUE) {
+                    await loadPlantIntoForm(null);
+                    syncSaveButtonLabel();
+                    return;
+                }
+
+                const pid = raw ? Number(raw) : null;
+                await loadPlantIntoForm(Number.isFinite(Number(pid)) ? pid : null);
             } catch (e) {
-                mxUtils.alert('Load plant error: ' + (e?.message || String(e)));
+                showErrorInline('Load plant error: ' + (e?.message || String(e)));
             }
         });
 
@@ -3056,7 +3268,6 @@ Draw.loadPlugin(function (ui) {
                 const hasPlant = Number.isFinite(Number(currentPlantId));
 
                 addVarBtn.disabled = !hasPlant;
-                editVarBtn.disabled = !(hasPlant && v && v !== NEW_VARIETY_VALUE);
 
                 if (!v) {
                     currentVarietyMode = null;
@@ -3072,7 +3283,7 @@ Draw.loadPlugin(function (ui) {
 
                 if (v === NEW_VARIETY_VALUE) {
                     if (!hasPlant) {
-                        mxUtils.alert('Save the plant first');
+                        showErrorInline('Save the plant first');
                         varietySel.value = '';
                         return;
                     }
@@ -3082,7 +3293,7 @@ Draw.loadPlugin(function (ui) {
 
                 await loadVarietyIntoOverrides(Number(v));
             } catch (e) {
-                mxUtils.alert('Load variety error: ' + (e?.message || String(e)));
+                showErrorInline('Load variety error: ' + (e?.message || String(e)));
             }
         });
 
@@ -3179,7 +3390,33 @@ Draw.loadPlugin(function (ui) {
         const div = document.createElement('div');
         div.style.padding = '12px'; div.style.width = '600px';
 
-        const inlineButton = (label, onClick) => { const b = mxUtils.button(label, onClick); b.style.marginLeft = '8px'; return b; };
+        // ---- inline error bar --------------------------------------------------- 
+        const errorBar = document.createElement('div');
+        errorBar.style.display = 'none';
+        errorBar.style.marginBottom = '8px';
+        errorBar.style.padding = '8px';
+        errorBar.style.border = '1px solid #f59e0b';
+        errorBar.style.background = '#fffbeb';
+        errorBar.style.color = '#92400e';
+        errorBar.style.fontSize = '12px';
+        div.appendChild(errorBar);
+
+        function showErrorInline(msg) {
+            errorBar.textContent = String(msg || 'Unknown error');
+            errorBar.style.display = '';
+        }
+
+        function clearErrorInline() {
+            errorBar.textContent = '';
+            errorBar.style.display = 'none';
+        }
+
+        const inlineButton = (label, onClick) => {
+            const b = mxUtils.button(label, async () => { clearErrorInline(); await onClick(); }); 
+            b.style.marginLeft = '8px';
+            return b;
+        };
+
 
         // Plant selector
         const plantOpts = (plantsLocal || []).map(p => ({ value: String(p.plant_id), label: p.plant_name + (p.abbr ? ` (${p.abbr})` : '') }));
@@ -3191,42 +3428,43 @@ Draw.loadPlugin(function (ui) {
         plantControlsWrap.style.alignItems = 'center';
         plantControlsWrap.appendChild(plantSel);
 
-        const addPlantBtn = inlineButton('Add plant', async () => { // CHANGED
+        const addPlantBtn = inlineButton('Add plant', async () => {
             try {
-                const saved = await openPlantEditorDialog(ui, { mode: 'add', plantId: null, varietyId: null }); // CHANGED
+                const saved = await openPlantEditorDialog(ui, { mode: 'add', plantId: null, varietyId: null });
                 if (!saved) return;
 
                 await reloadPlantsList();
                 plantSel.value = String(saved.plant_id);
                 plantSel.dispatchEvent(new Event('change'));
             } catch (e) {
-                mxUtils.alert('Add plant error: ' + (e?.message || String(e)));
+                showErrorInline('Add plant error: ' + (e?.message || String(e)));
             }
         });
 
-        const editPlantBtn = inlineButton('Edit plant', async () => { // CHANGED label + logic
+        const editPlantBtn = inlineButton('Edit plant', async () => {
             try {
-                syncStateFromControls();                                   // NEW (ensures formState is current)
+                syncStateFromControls();
 
                 const pid = Number(plantSel.value);
                 if (!Number.isFinite(pid)) return;
 
-                const vid = Number(formState.varietyId);                   // NEW
+                const vid = Number(formState.varietyId);
                 const saved = await openPlantEditorDialog(ui, {
                     mode: 'edit',
                     plantId: pid,
-                    varietyId: Number.isFinite(vid) ? vid : null            // NEW
                 });
 
                 if (!saved) return;
 
                 const savedPid = Number(saved?.plant_id ?? pid);
+                const savedVid = Number(saved?.variety_id ?? vid);
+
                 await afterPlantOrVarietySaved({
                     preferPlantId: savedPid,
-                    preferVarietyId: Number.isFinite(vid) ? vid : null      // keep same selected variety if still exists
+                    preferVarietyId: Number.isFinite(savedVid) ? savedVid : null
                 });
             } catch (e) {
-                mxUtils.alert('Edit plant error: ' + (e?.message || String(e)));
+                showErrorInline('Edit plant error: ' + (e?.message || String(e)));
             }
         });
 
@@ -3244,14 +3482,14 @@ Draw.loadPlugin(function (ui) {
             : fallbackId;
 
         if (!Number.isFinite(initId)) {
-            mxUtils.alert('No plants available.');
+            showErrorInline('No plants available.');
             return;
         }
 
         plantSel.value = String(initId);
         let selPlant = findPlantById(initId);
         if (!selPlant) selPlant = await PlantModel.loadById(initId);
-        if (!selPlant) { mxUtils.alert('Plant not found.'); return; }
+        if (!selPlant) { showErrorInline('Plant not found.'); return; }
 
         let mode = getModeForPlant(selPlant);
 
@@ -3279,7 +3517,7 @@ Draw.loadPlugin(function (ui) {
             mode = getModeForPlant(effectivePlant);
         }
 
-        async function afterPlantOrVarietySaved({ preferPlantId = null, preferVarietyId = null } = {}) { // NEW
+        async function afterPlantOrVarietySaved({ preferPlantId = null, preferVarietyId = null } = {}) {
             await reloadPlantsList();
 
             if (Number.isFinite(Number(preferPlantId))) {
@@ -3302,12 +3540,15 @@ Draw.loadPlugin(function (ui) {
             syncStateFromControls();
             await refreshEffectivePlant();
 
-            await resetMethodOptionsForPlant(formState.plantId);
-            await resetVariantOptionsForMethod(methodSel.value, {
-                preferVariantId: String(effectivePlant?.default_planting_variant ?? '')
-            });
+            await resetMethodOptionsForPlant(formState.plantId, {                                                
+                preferMethodCategoryId: String(formState.methodCategoryId ?? cellMethodCategoryId0 ?? '')           
+            });                                                                                                  
 
-            await recomputeAll('plantOrVarietySaved');     // NEW reason string
+            await resetMethodOptionsForMethodCategory(methodCategorySel.value, {                
+                preferMethodId: String(formState.methodId ?? effectivePlant?.default_planting_method ?? '') 
+            });                                                                                               
+
+            await recomputeAll('plantChanged');
             await refreshTaskTemplateFromSelection();
         }
 
@@ -3329,20 +3570,20 @@ Draw.loadPlugin(function (ui) {
         varietyControlsWrap.style.alignItems = 'center';
         varietyControlsWrap.appendChild(varietySel);
 
-        const addVarietyBtn = inlineButton('Add variety', async () => { // CHANGED
+        const addVarietyBtn = inlineButton('Add variety', async () => {
             try {
                 syncStateFromControls();
 
                 const pid = Number(formState.plantId);
                 if (!Number.isFinite(pid)) {
-                    mxUtils.alert('Select a plant first');
+                    showErrorInline('Select a plant first');
                     return;
                 }
 
-                const saved = await openPlantEditorDialog(ui, {               // CHANGED
+                const saved = await openPlantEditorDialog(ui, {
                     mode: 'add',
                     plantId: pid,
-                    startVarietyMode: 'add'                                     // NEW (forces New variety mode)
+                    startVarietyMode: 'add'
                 });
                 if (!saved) return;
 
@@ -3353,34 +3594,37 @@ Draw.loadPlugin(function (ui) {
 
                 syncStateFromControls();
                 await refreshEffectivePlant();
-                await resetMethodOptionsForPlant(formState.plantId);
-                await resetVariantOptionsForMethod(methodSel.value, {
-                    preferVariantId: String(effectivePlant?.default_planting_variant ?? '')
-                });
+                await resetMethodOptionsForPlant(formState.plantId, {                                                
+                    preferMethodCategoryId: String(formState.methodCategoryId ?? cellMethodCategoryId0 ?? '')           
+                });                                                                                                  
+
+                await resetMethodOptionsForMethodCategory(methodCategorySel.value, {                                 
+                    preferMethodId: String(formState.methodId ?? effectivePlant?.default_planting_method ?? '')        
+                });                                                                                                                    
                 await recomputeAll('varietyChanged');
                 await refreshTaskTemplateFromSelection();
             } catch (e) {
-                mxUtils.alert('Add variety error: ' + (e?.message || String(e)));
+                showErrorInline('Add variety error: ' + (e?.message || String(e)));
             }
         });
 
         varietyControlsWrap.appendChild(addVarietyBtn);
 
-        const editVarietyBtn = inlineButton('Edit variety', async () => { // CHANGED
+        const editVarietyBtn = inlineButton('Edit variety', async () => {
             try {
                 syncStateFromControls();
 
                 const pid = Number(formState.plantId);
                 const vid = Number(formState.varietyId);
-                if (!Number.isFinite(pid)) { mxUtils.alert('Select a plant first'); return; }
+                if (!Number.isFinite(pid)) { showErrorInline('Select a plant first'); return; }
                 if (!Number.isFinite(vid)) { setVarietyStatus('Select a variety to edit.'); return; }
 
                 setVarietyStatus('');
-                const saved = await openPlantEditorDialog(ui, {               // CHANGED
+                const saved = await openPlantEditorDialog(ui, {
                     mode: 'add',
                     plantId: pid,
                     varietyId: vid,
-                    startVarietyMode: 'edit'                                    // NEW (ensures overrides mode)
+                    startVarietyMode: 'edit'
                 });
                 if (!saved) return;
 
@@ -3391,10 +3635,13 @@ Draw.loadPlugin(function (ui) {
 
                 syncStateFromControls();
                 await refreshEffectivePlant();
-                await resetMethodOptionsForPlant(formState.plantId);
-                await resetVariantOptionsForMethod(methodSel.value, {
-                    preferVariantId: String(effectivePlant?.default_planting_variant ?? '')
-                });
+                await resetMethodOptionsForPlant(formState.plantId, {                                                
+                    preferMethodCategoryId: String(formState.methodCategoryId ?? cellMethodCategoryId0 ?? '')           
+                });                                                                                                  
+
+                await resetMethodOptionsForMethodCategory(methodCategorySel.value, {                                 
+                    preferMethodId: String(formState.methodId ?? effectivePlant?.default_planting_method ?? '')        
+                });                                                                                                                    
                 await recomputeAll('varietyChanged');
                 await refreshTaskTemplateFromSelection();
             } catch (e) {
@@ -3437,67 +3684,96 @@ Draw.loadPlugin(function (ui) {
         }
 
 
-        // City & Method & Variant
+        // City & Method & Method
         const cityOpts = cities.map(c => ({ value: c.city_name, label: c.city_name }));
         const citySel = makeSelect(cityOpts, cityOpts[0]?.value);
 
         // base method select (allowed per plant)
+        const methodCategorySel = document.createElement('select');
+        methodCategorySel.style.width = '100%';
+        methodCategorySel.style.padding = '6px';
+
+        // method select (filtered by method)
         const methodSel = document.createElement('select');
         methodSel.style.width = '100%';
         methodSel.style.padding = '6px';
 
-        // variant select (filtered by method)
-        const variantSel = document.createElement('select');
-        variantSel.style.width = '100%';
-        variantSel.style.padding = '6px';
+        let currentAllowedMethodCategories = [];   // [{method_category_id, method_category_name}]  
+        let currentMethods = [];                  // [{method_id, method_name, method_category_id, ...}] 
 
-        let currentAllowedMethods = [];   // [{method_id, method_name}]
-        let currentVariants = [];         // [{variant_id, ...}]
+        async function resetMethodOptionsForPlant(plantId, { preferMethodCategoryId = null } = {}) {
+            const pid = Number(plantId);
+            currentAllowedMethodCategories = Number.isFinite(pid)
+                ? await PlantModel.listAllowedMethodCategoriesForPlant(pid)
+                : [];
 
-        async function resetMethodOptionsForPlant(plantId, { preferMethodId = null } = {}) {
-            currentAllowedMethods = await PlantModel.listAllowedBaseMethodsForPlant(Number(plantId));
+            const opts = (currentAllowedMethodCategories || []).map(mc => ({
+                value: String(mc.method_category_id ?? '').trim(),                                     
+                label: String(mc.method_category_name || mc.method_category_id || '').trim()          
+            })).filter(o => o.value);                                                               
 
-            const opts = currentAllowedMethods.map(m => ({
-                value: m.method_id,
-                label: m.method_name || m.method_id
-            }));
+            // Optional but recommended: allow blank selection
+            const withBlank = [{ value: '', label: '' }].concat(opts);                              
 
-            const fallback = opts[0]?.value ?? 'transplant';
-            const desired = preferMethodId && opts.some(o => o.value === preferMethodId) ? preferMethodId : fallback;
+            const preferred = String(preferMethodCategoryId ?? '').trim();                          
+            const hasPreferred = preferred && withBlank.some(o => o.value === preferred);           
 
-            setSelectOptions(methodSel, opts, desired);
+            const desired = hasPreferred ? preferred : (opts[0]?.value ?? '');                      
+
+            setSelectOptions(methodCategorySel, withBlank, desired);                                
         }
 
-        async function resetVariantOptionsForMethod(methodId, { preferVariantId = null } = {}) {
-            currentVariants = await PlantModel.listVariantsForMethod(String(methodId));
 
-            const opts = currentVariants.map(v => ({
-                value: v.variant_id,
-                label: v.variant_name || v.variant_id
-            }));
+        async function resetMethodOptionsForMethodCategory(methodCategoryId, { preferMethodId = null } = {}) {
+            const mcid = String(methodCategoryId ?? '').trim();                                      
+            currentMethods = mcid
+                ? await PlantModel.listMethodsForMethodCategory(mcid)
+                : [];
 
-            // allow blank selection
+            const opts = (currentMethods || []).map(m => ({
+                value: String(m.method_id ?? '').trim(),                                               
+                label: String(m.method_name || m.method_id || '').trim()
+            })).filter(o => o.value);                                                                
+
             const withBlank = [{ value: '', label: '' }].concat(opts);
 
-            const fallback = opts[0]?.value ?? '';
-            const desired = (preferVariantId && withBlank.some(o => o.value === preferVariantId))
-                ? preferVariantId
-                : fallback;
+            const preferred = String(preferMethodId ?? '').trim();                                   
+            const hasPreferred = preferred && withBlank.some(o => o.value === preferred);            
 
-            setSelectOptions(variantSel, withBlank, desired);
+            const desired = hasPreferred ? preferred : (opts[0]?.value ?? '');                       
+
+            setSelectOptions(methodSel, withBlank, desired);                                         
         }
 
-        // initialize method+variant for initial plant
-        await resetMethodOptionsForPlant(selPlant.plant_id);
 
-        // Prefer plant default_planting_variant if it exists and matches chosen method
-        const preferredVariant0 = String(
-            effectivePlant?.default_planting_variant ??
-            effectivePlant?.default_planting_method ?? // legacy name if still present
-            ''
-        );
+        // Prefill method category + method from existing cell attrs
+        const cellMethodCategoryId0 = (() => {                                              
+            const raw = cell?.getAttribute?.('method_category_id');                           
+            const s = String(raw ?? '').trim();                                               
+            return s || null;                                                                 
+        })();                                                                               
 
-        await resetVariantOptionsForMethod(methodSel.value, { preferVariantId: preferredVariant0 });
+        const cellMethodId0 = (() => {                                                      
+            const raw = cell?.getAttribute?.('method_id')                                
+            const s = String(raw ?? '').trim();                                               
+            return s || null;                                                                 
+        })();                                                                               
+
+
+        // initialize method category + method for initial plant (prefer persisted per-cell selection)
+        await resetMethodOptionsForPlant(selPlant.plant_id, {                               
+            preferMethodCategoryId: cellMethodCategoryId0                                     
+        });                                                                                 
+
+        const preferredMethod0 = String(                                                    
+            cellMethodId0                                                                     
+            ?? effectivePlant?.default_planting_method                                         
+            ?? ''                                                                             
+        );                                                                                  
+
+        await resetMethodOptionsForMethodCategory(methodCategorySel.value, {                
+            preferMethodId: preferredMethod0                                                  
+        });                                                                                 
 
         // Start/End inputs + auto buttons
         const initialStartISO = earliestFeasibleSowDate.toISOString().slice(0, 10);
@@ -3523,9 +3799,9 @@ Draw.loadPlugin(function (ui) {
         startNoteSpan.textContent = startNote || '';
 
         // --- Harvest window
-        const hwDefault = effectivePlant.defaultHW();                              // existing
+        const hwDefault = effectivePlant.defaultHW();                 
         const harvestWindowInput = makeNullableNumber(hwDefault ?? null, { min: 0, step: 1 });
-        const minYieldMultInput = makeNumber(0.50, { min: 0 }); minYieldMultInput.step = '0.01'; // unchanged (even if unused)
+        const minYieldMultInput = makeNumber(0.50, { min: 0 }); minYieldMultInput.step = '0.01'; 
 
         // --- Season control (single field) ---
         const seasonStartYear0 = Number(cell.getAttribute?.('season_start_year') ?? (new Date()).getUTCFullYear());
@@ -3543,18 +3819,32 @@ Draw.loadPlugin(function (ui) {
             graph.refresh(cell);
         }
 
-        async function loadDefaultsForCurrentSelection() {
-            // Factory defaults = code default, not DB “saved defaults”                       
-            taskTemplate = await getDefaultTaskTemplateForVariant(formState.variantId);
-            taskRules = Array.isArray(taskTemplate?.rules) ? [...taskTemplate.rules] : [];
+        async function loadDefaultsForCurrentSelection() {                                  
+            const resolved = await resolveTaskTemplate({                                    
+                cell: null,                                                                 
+                plantId: formState.plantId ?? null,                                         
+                methodId: String(formState.methodId ?? "").trim() || null                   
+            });                                                                             
+
+            taskTemplate = resolved?.template ?? null;                                      
+            taskTemplateSource = resolved?.source ?? "unknown";                             
+            taskRules = Array.isArray(taskTemplate?.rules) ? [...taskTemplate.rules] : [];  
             taskEditorDiv.innerHTML = "";
             taskDirty = false;
             renderTasksList();
+            updateTasksHeader({
+                methodSel,
+                formState,
+                currentMethodSpan,
+                currentTemplateSourceSpan,
+                taskDirty,
+                taskTemplateSource
+            });                                                          
         }
 
         const saveDefaultChk = makeCheckbox(false);
 
-        // Prefill plant/variety from existing cell attrs                             
+        // Prefill plant/variety from existing cell attrs
         const cellVarietyId0 = (() => {
             const raw = cell?.getAttribute?.('variety_id');
             const n = Number(raw);
@@ -3567,12 +3857,9 @@ Draw.loadPlugin(function (ui) {
             varietyId: cellVarietyId0,
             cityName: citySel.value,
 
-            // keep both (methodId is for UI + filtering; variantId is the scheduler “method” everywhere)
+            // keep both (methodCategoryId is for UI + filtering; methodId is the scheduler “method” everywhere)
+            methodCategoryId: methodCategorySel.value,
             methodId: methodSel.value,
-            variantId: variantSel.value,
-
-            // variantId replaces old "method" everywhere you previously used method
-            method: variantSel.value,
 
             startISO: startInput.value,
             seasonEndISO: seasonEndInput.value,
@@ -3590,9 +3877,9 @@ Draw.loadPlugin(function (ui) {
             formState.varietyId = (varietySel && varietySel.value) ? Number(varietySel.value) : null;
             formState.cityName = citySel.value;
 
+            formState.methodCategoryId = methodCategorySel.value;
             formState.methodId = methodSel.value;
-            formState.variantId = variantSel.value;
-            formState.method = formState.variantId; // backward-compatible alias (variant_id)
+            formState.method = formState.methodId; // backward-compatible alias (method_id)
 
             formState.startISO = startInput.value;
             formState.seasonEndISO = seasonEndInput.value;
@@ -3620,8 +3907,8 @@ Draw.loadPlugin(function (ui) {
         const FIELD_SCHEMA = [
             { key: 'seasonStartYear', label: 'Season start year:', control: seasonYearInput },
             { key: 'cityName', label: 'City:', control: citySel },
-            { key: 'methodId', label: 'Method:', control: methodSel },
-            { key: 'variantId', label: 'Variant:', control: variantSel },
+            { key: 'methodCategoryId', label: 'Planting Method Category:', control: methodCategorySel },
+            { key: 'methodId', label: 'Planting Method:', control: methodSel },
             { key: 'harvestWindowDays', label: 'Harvest window days:', control: harvestWindowInput },
         ];
 
@@ -3630,22 +3917,23 @@ Draw.loadPlugin(function (ui) {
 
         // Load varieties and preselect from cell                                     
         await reloadVarietyOptionsForPlant(formState.plantId, formState.varietyId);
-        syncVarietyButtons();                                                        // same
+        syncVarietyButtons();                                                
 
         // Ensure the selected value actually exists; if not, fall back to base plant 
         if (formState.varietyId != null && !String(varietySel.value)) {
             formState.varietyId = null;
         }
 
-        syncStateFromControls();                                                     // MOVED (after setting varietySel) 
-        await refreshEffectivePlant();                                                // same
-        await resetMethodOptionsForPlant(formState.plantId);
-        await resetVariantOptionsForMethod(methodSel.value, {
-            preferVariantId: String(
-                effectivePlant?.default_planting_variant ??
-                ''
-            )
-        });
+        syncStateFromControls();                                             
+        await refreshEffectivePlant();                                      
+        await resetMethodOptionsForPlant(formState.plantId, {                                              
+            preferMethodCategoryId: String(formState.methodCategoryId ?? cellMethodCategoryId0 ?? '')         
+        });                                                                                                  
+
+        await resetMethodOptionsForMethodCategory(methodCategorySel.value, {                                 
+            preferMethodId: String(formState.methodId ?? cellMethodId0 ?? effectivePlant?.default_planting_method ?? '') 
+        });                                                                                                  
+
 
         const autoEarliestRowObj = row('Earliest feasible sow:', autoEarliestInput);
 
@@ -3659,7 +3947,7 @@ Draw.loadPlugin(function (ui) {
         const lastHarvestRowObj = row('Last harvest date:', lastHarvestInput);
 
         appendFieldRows(div, fieldRows, ['seasonStartYear']);
-        appendFieldRows(div, fieldRows, ['cityName', 'methodId', 'variantId', 'harvestWindowDays']);
+        appendFieldRows(div, fieldRows, ['cityName', 'methodCategoryId', 'methodId', 'harvestWindowDays']);
         div.appendChild(autoEarliestRowObj.row);
         div.appendChild(autoLastSowRowObj.row);
         div.appendChild(firstSowRowObj.row);
@@ -3975,18 +4263,18 @@ Draw.loadPlugin(function (ui) {
             await refreshEffectivePlant();
 
 
-            await resetMethodOptionsForPlant(formState.plantId);
-            await resetVariantOptionsForMethod(methodSel.value, {
-                preferVariantId: String(
-                    effectivePlant?.default_planting_variant ??
-                    effectivePlant?.default_planting_method ??
-                    ''
-                )
-            });
+            await resetMethodOptionsForPlant(formState.plantId, {                               
+                preferMethodCategoryId: String(formState.methodCategoryId ?? cellMethodCategoryId0 ?? '') 
+            });                                                                                 
 
+            await resetMethodOptionsForMethodCategory(methodCategorySel.value, {                
+                preferMethodId: String(formState.methodId ?? cellMethodId0 ?? effectivePlant?.default_planting_method ?? '') 
+            });                                                                                 
+
+
+            formState.methodCategoryId = methodCategorySel.value;
             formState.methodId = methodSel.value;
-            formState.variantId = variantSel.value;
-            formState.method = formState.variantId;
+            formState.method = formState.methodId;
 
 
             harvestWindowInput.value = (effectivePlant.defaultHW() ?? '');
@@ -4011,13 +4299,14 @@ Draw.loadPlugin(function (ui) {
             syncVarietyButtons();
             syncStateFromControls();
             await refreshEffectivePlant();
-            await resetMethodOptionsForPlant(formState.plantId);
-            await resetVariantOptionsForMethod(methodSel.value, {
-                preferVariantId: String(
-                    effectivePlant?.default_planting_variant ??
-                    ''
-                )
-            });
+            await resetMethodOptionsForPlant(formState.plantId, {                                                
+                preferMethodCategoryId: String(formState.methodCategoryId ?? cellMethodCategoryId0 ?? '')           
+            });                                                                                                  
+
+            await resetMethodOptionsForMethodCategory(methodCategorySel.value, {                
+                preferMethodId: String(formState.methodId ?? effectivePlant?.default_planting_method ?? '') 
+            });                                                                                 
+
             harvestWindowInput.value = (effectivePlant.defaultHW() ?? '');
             formState.harvestWindowDays = (harvestWindowInput.value === '' ? null : Number(harvestWindowInput.value));
             await recomputeAll('varietyChanged');
@@ -4053,24 +4342,53 @@ Draw.loadPlugin(function (ui) {
             recomputeAll('yearChanged');
         });
 
+        harvestWindowInput.addEventListener('input', async () => {
+            syncStateFromControls();
+            await recomputeAll('hwChanged');
+            await refreshTaskTemplateFromSelection();
+        });
+
         citySel.addEventListener('change', () => {
             (async () => {
                 await recomputeAll('cityChanged');
             })();
         });
-        methodSel.addEventListener('change', async () => {
-            // method changed -> variants need rebuild
-            await resetVariantOptionsForMethod(methodSel.value, { preferVariantId: '' });
 
+        methodCategorySel.addEventListener('change', async () => {
+            syncStateFromControls();
+
+            await resetMethodOptionsForMethodCategory(methodCategorySel.value, {                                 
+                preferMethodId: String(formState.methodId ?? effectivePlant?.default_planting_method ?? '')        
+            });                                                                                                                
+
+            syncStateFromControls();
+
+            await recomputeAll('methodChanged');
+            await refreshTaskTemplateFromSelection();
+            updateTasksHeader({
+                methodSel,
+                formState,
+                currentMethodSpan,
+                currentTemplateSourceSpan,
+                taskDirty,
+                taskTemplateSource
+            });
+        });
+
+
+
+        methodSel.addEventListener('change', async () => {
             syncStateFromControls();
             await recomputeAll('methodChanged');
             await refreshTaskTemplateFromSelection();
-        });
-
-        variantSel.addEventListener('change', async () => {
-            syncStateFromControls();
-            await recomputeAll('methodChanged'); // treat variant change like method change (same downstream effects)
-            await refreshTaskTemplateFromSelection();
+            updateTasksHeader({
+                methodSel,
+                formState,
+                currentMethodSpan,
+                currentTemplateSourceSpan,
+                taskDirty,
+                taskTemplateSource
+            });
         });
 
         // recomputeLastHarvestFromSchedule:
@@ -4162,7 +4480,10 @@ Draw.loadPlugin(function (ui) {
                 div.style.whiteSpace = 'pre'; div.style.maxHeight = '70vh'; div.style.overflow = 'auto';
                 div.style.padding = '12px'; div.textContent = text;
                 ui.showDialog(div, 720, 480, true, true);
-            } catch (e) { mxUtils.alert('Explain error: ' + e.message); }
+
+
+
+            } catch (e) { showErrorInline('Explain error: ' + e.message); }
         });
         rightBtns.insertBefore(explainBtn, rightBtns.firstChild);
 
@@ -4178,9 +4499,9 @@ Draw.loadPlugin(function (ui) {
                 );
 
                 const rows = await computePreviewRows(inputs);
-                if (!rows.length) { mxUtils.alert('No feasible planting dates in the chosen season.'); return; }
+                if (!rows.length) { showErrorInline('No feasible planting dates in the chosen season.'); return; }
                 renderPreviewTable(ui, rows);
-            } catch (e) { mxUtils.alert('Preview error: ' + e.message); }
+            } catch (e) { showErrorInline('Preview error: ' + e.message); }
         });
 
 
@@ -4201,22 +4522,31 @@ Draw.loadPlugin(function (ui) {
                 };
 
                 // Save template if requested
-                if (saveDefaultChk.checked) {
-                    await TaskTemplateModel.saveForSelection({
-                        plantId: formState.plantId,
-                        varietyId: formState.varietyId,
-                        variantId: formState.variantId,
-                        template: taskTemplate
-                    });
-                }
+                if (saveDefaultChk.checked) {                                                     
+                    const methodId = String(formState.methodId || "").trim();                     
+                    if (!methodId) {                                                              
+                        throw new Error('Select a planting method before saving a plant default.'); 
+                    }                                                                             
+
+                    await TaskTemplateModel.saveForSelection({                                    
+                        plantId: formState.plantId,                                               
+                        methodId,                                                                 
+                        template: taskTemplate                                                    
+                    });                                                                           
+                }                                                                                 
 
                 const graph = ui.editor.graph;
                 const model = graph.getModel();
 
                 model.beginUpdate();
                 try {
-                    // save task template undoably (but execute inside this transaction)
-                    model.execute(new mxCellAttributeChange(cell, "task_template_json", JSON.stringify(taskTemplate)));
+                    if (taskDirty) {                                                                  
+                        model.execute(                                                                
+                            new mxCellAttributeChange(cell, "task_template_json", JSON.stringify(taskTemplate)) 
+                        );                                                                            
+                    } else {                                                                          
+                        model.execute(new mxCellAttributeChange(cell, "task_template_json", ""));     
+                    }                                                                                 
 
                     model.execute(new mxCellAttributeChange(cell, 'plant_id', String(formState.plantId)));
                     const isBase = (formState.varietyId == null);
@@ -4224,6 +4554,10 @@ Draw.loadPlugin(function (ui) {
                     model.execute(new mxCellAttributeChange(cell, 'variety_id', isBase ? '' : String(formState.varietyId)));
                     model.execute(new mxCellAttributeChange(cell, 'variety_name', isBase ? '' : String(inputs.varietyName || '')));
 
+                    // persist planting method selection on the cell
+                    model.execute(new mxCellAttributeChange(cell, 'method_category_id', String(formState.methodCategoryId ?? ''))); 
+                    model.execute(new mxCellAttributeChange(cell, 'method_id', String(formState.methodId ?? '')));                 
+                    model.execute(new mxCellAttributeChange(cell, 'method', String(formState.methodId ?? '')));                  
                 } finally {
                     model.endUpdate();
                 }
@@ -4231,10 +4565,11 @@ Draw.loadPlugin(function (ui) {
 
 
 
+
                 await applyScheduleToGraph(ui, cell, inputs);
                 ui.hideDialog();
             } catch (e) {
-                mxUtils.alert('Scheduling error: ' + e.message);
+                showErrorInline('Scheduling error: ' + e.message);
             }
         });
 
@@ -4244,29 +4579,92 @@ Draw.loadPlugin(function (ui) {
 
         await recomputeAll('cityChanged');        // or 'yearChanged' or 'methodChanged'       
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         // ============================================================================
         // TASK TAB UI ADDITION
         // ============================================================================
 
         // 1. Load existing OR resolve from DB fallback chain
-        const rawTpl = cell?.getAttribute?.('task_template_json');
-        if (rawTpl) {
-            try { taskTemplate = JSON.parse(rawTpl); } catch (_) { taskTemplate = null; }
-        }
+        let taskTemplateSource = "unknown"; 
 
-        if (!taskTemplate) {
-            taskTemplate = await TaskTemplateModel.resolveFor({
-                plantId: formState.plantId,
-                varietyId: formState.varietyId,
-                variantId: formState.variantId
-            });
-        }
+        const resolved = await resolveTaskTemplate({              
+            cell,                                                 
+            plantId: formState.plantId,                           
+            methodId: formState.methodId                          
+        });                                                       
+
+        taskTemplate = resolved?.template ?? null;          
+        taskTemplateSource = resolved?.source ?? "unknown"; 
 
         taskRules = Array.isArray(taskTemplate?.rules) ? [...taskTemplate.rules] : [];
 
         // 2. Build the Tasks tab body
         const tasksTab = document.createElement("div");
-        tasksTab.style.padding = "12px";
+        // Current method/method category header                                            
+        const tasksHeaderRow = document.createElement("div");
+        tasksHeaderRow.style.display = "flex";
+        tasksHeaderRow.style.justifyContent = "space-between";
+        tasksHeaderRow.style.alignItems = "center";
+        tasksHeaderRow.style.gap = "8px";
+        tasksHeaderRow.style.marginBottom = "10px";
+
+        const currentMethodSpan = document.createElement("div");
+        currentMethodSpan.style.fontWeight = "600";
+        currentMethodSpan.textContent = "Method: (loading…)";
+
+        const currentTemplateSourceSpan = document.createElement("div"); 
+        currentTemplateSourceSpan.style.fontSize = "12px";              
+        currentTemplateSourceSpan.style.opacity = "0.85";               
+        currentTemplateSourceSpan.textContent = "Source: (loading…)";   
+
+        const leftHeaderCol = document.createElement("div");            
+        leftHeaderCol.style.display = "flex";                           
+        leftHeaderCol.style.flexDirection = "column";                   
+        leftHeaderCol.style.gap = "2px";                                
+        leftHeaderCol.appendChild(currentMethodSpan);                   
+        leftHeaderCol.appendChild(currentTemplateSourceSpan);           
+
+        tasksHeaderRow.appendChild(leftHeaderCol);                     
+
+        tasksTab.appendChild(tasksHeaderRow);
+
+        // "Add Task" button
+        const addTaskBtn = mxUtils.button("Add Task", () => openTaskEditor(null, null));
+        addTaskBtn.style.marginTop = "12px";
+        tasksTab.appendChild(addTaskBtn);
 
         // List container
         const tasksListDiv = document.createElement("div");
@@ -4321,22 +4719,52 @@ Draw.loadPlugin(function (ui) {
         tasksTab.appendChild(taskEditorDiv);
 
         async function refreshTaskTemplateFromSelection() {
+            syncStateFromControls();
+            updateTasksHeader({
+                methodSel,
+                formState,
+                currentMethodSpan,
+                currentTemplateSourceSpan,
+                taskDirty,
+                taskTemplateSource
+            });
+
             // Do not overwrite if the cell already has a per-plan template
             const raw = String(cell?.getAttribute?.('task_template_json') || '').trim();
             const hasCellTpl = raw.length > 0;
             if (hasCellTpl || taskDirty) return;
 
-            const resolved = await TaskTemplateModel.resolveFor({
-                plantId: formState.plantId,
-                varietyId: formState.varietyId,
-                variantId: formState.variantId
-            });
+            const resolved = await resolveTaskTemplate({              
+                cell,                                                 
+                plantId: formState.plantId,                           
+                methodId: formState.methodId                          
+            });                                                       
 
-            taskTemplate = resolved;
+            taskTemplate = resolved?.template ?? null;            
+            taskTemplateSource = resolved?.source ?? "unknown";   
             taskRules = Array.isArray(taskTemplate?.rules) ? [...taskTemplate.rules] : [];
+
             taskEditorDiv.innerHTML = '';
             renderTasksList();
+            updateTasksHeader({
+                methodSel,
+                formState,
+                currentMethodSpan,
+                currentTemplateSourceSpan,
+                taskDirty,
+                taskTemplateSource
+            });
         }
+
+        syncStateFromControls();
+        updateTasksHeader({
+            methodSel,
+            formState,
+            currentMethodSpan,
+            currentTemplateSourceSpan,
+            taskDirty,
+            taskTemplateSource
+        });
 
         function openTaskEditor(rule, index) {
             taskEditorDiv.innerHTML = "";
@@ -4444,10 +4872,6 @@ Draw.loadPlugin(function (ui) {
             taskEditorDiv.appendChild(btnWrap);
         }
 
-        // Add "Add Task" button
-        const addTaskBtn = mxUtils.button("Add Task", () => openTaskEditor(null, null));
-        addTaskBtn.style.marginTop = "12px";
-        tasksTab.appendChild(addTaskBtn);
 
         // Reset to defaults button
         const resetTasksBtn = mxUtils.button("Reset to defaults", async () => {
@@ -4455,19 +4879,28 @@ Draw.loadPlugin(function (ui) {
                 syncStateFromControls();
 
                 const graph = ui.editor.graph;
-                clearCellTaskTemplateUndoable(graph, cell);   // remove per-plan override
+                clearCellTaskTemplateUndoable(graph, cell); // remove per-plan override
 
-                await loadDefaultsForCurrentSelection();      // variant-based defaults
+                const methodId = String(formState.methodId || "").trim();                          
+                if (methodId) {                                                                    
+                    await TaskTemplateModel.deleteForSelection({                                   
+                        plantId: formState.plantId,                                                
+                        methodId                                                                    
+                    });                                                                            
+                }
+
+                await loadDefaultsForCurrentSelection(); // reload fallback chain (method default if no DB row)
             } catch (e) {
-                mxUtils.alert("Reset tasks error: " + (e?.message || String(e)));
+                showErrorInline("Reset tasks error: " + (e?.message || String(e)));
             }
         });
+
         resetTasksBtn.style.marginTop = "8px";
         tasksTab.appendChild(resetTasksBtn);
 
         // Save default checkbox
         tasksTab.appendChild(
-            row("Save these tasks as default", saveDefaultChk).row
+            row("Save tasks as plant default", saveDefaultChk).row
         );
 
 
@@ -4498,8 +4931,22 @@ Draw.loadPlugin(function (ui) {
             return b;
         }
 
-        const scheduleTabBtn = makeTabButton("Schedule", div);
-        const tasksTabBtn = makeTabButton("Tasks", tasksTab);
+        const scheduleTabBtn = makeTabButton("Schedule", div);               
+
+        const tasksTabBtn = mxUtils.button("Tasks", async () => {
+            await refreshTaskTemplateFromSelection();                                
+            updateTasksHeader({
+                methodSel,
+                formState,
+                currentMethodSpan,
+                currentTemplateSourceSpan,
+                taskDirty,
+                taskTemplateSource
+            });
+            tabsBody.innerHTML = "";
+            tabsBody.appendChild(tasksTab);
+        });
+        tasksTabBtn.style.minWidth = "100px";
 
         tabsHeader.appendChild(scheduleTabBtn);
         tabsHeader.appendChild(tasksTabBtn);
@@ -4523,8 +4970,44 @@ Draw.loadPlugin(function (ui) {
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     // ============================================================================
-    // Task Template Model (Variant-driven + Cell Persistence)
+    // Task Template Model (method-driven + Cell Persistence)
     // ============================================================================
 
     // canonical stage names
@@ -4540,31 +5023,104 @@ Draw.loadPlugin(function (ui) {
         return TASK_STAGE_LABELS[stage] || stage;
     }
 
-    // -------------------- DB access (variant) -----------------------------------
+    // -------------------- DB access (method) -----------------------------------
 
     function safeJsonParse(s, fallback) {
         try { return JSON.parse(s); } catch (_) { return fallback; }
     }
 
-    async function getPlantingVariantById(variantId) {
-        if (!variantId) return null;
+    async function getPlantingMethodById(methodId) {
+        if (!methodId) return null;
         const sql = `
-        SELECT variant_id, method_id, variant_name, tasks_required_json
-        FROM PlantingMethodVariants
-        WHERE variant_id = ?
+        SELECT method_id, method_name, method_category_id, tasks_required_json
+        FROM PlantingMethods
+        WHERE method_id = ?
         LIMIT 1;`;
-        const rows = await queryAll(sql, [String(variantId)]);
+        const rows = await queryAll(sql, [String(methodId)]);
         return rows[0] || null;
     }
 
-    // -------------------- Rule library (single source) --------------------------
+    // -------------------- Rule library --------------------------
 
-    function prepAnchorForBaseMethod(methodId) {
-        return methodId === "direct_sow" ? "SOW" : "TRANSPLANT";
+    async function loadPlantTaskTemplate(plantId, methodId) {
+        if (plantId == null || !methodId) return null;
+        await TaskTemplateModel.ensureTables();
+
+        const sql = `
+        SELECT template_json
+        FROM PlantTaskTemplates
+        WHERE plant_id = ? AND method_id = ?
+        LIMIT 1;`;
+
+        const rows = await queryAll(sql, [Number(plantId), String(methodId)]);
+        const tpl = safeJsonParse(rows?.[0]?.template_json, null);
+        return (tpl && typeof tpl === "object") ? tpl : null;
     }
 
-    function taskRuleLibraryForBaseMethod(methodId) {
-        const prepAnchor = prepAnchorForBaseMethod(methodId);
+    function prettySourceLabel(src) {                                                   
+        const map = {                                                                   
+            cell: "Cell override",                                                      
+            plant: "Plant default",                                                     
+            method_builtin: "Built-in method template",                                 
+            none: "No template",                                                        
+            unknown: "Unknown"                                                          
+        };                                                                              
+        return map[src] || String(src || "unknown");                                    
+    }
+
+    function updateTasksHeader({
+        methodSel,
+        formState,
+        currentMethodSpan,
+        currentTemplateSourceSpan,
+        taskDirty,
+        taskTemplateSource
+    }) {
+        const methodName = (() => {
+            const opt = methodSel?.selectedOptions?.[0];
+            const label = opt ? String(opt.textContent || "").trim() : "";
+            return label || String(formState?.methodId || "").trim() || "(none)";
+        })();
+
+        currentMethodSpan.textContent = `Method: ${methodName}`;
+
+        const dirtyLabel = taskDirty ? " • Dirty" : "";
+        currentTemplateSourceSpan.textContent =
+            `Source: ${prettySourceLabel(taskTemplateSource)}${dirtyLabel}`;
+    }
+
+    async function resolveTaskTemplate({ cell, plantId, methodId }) {                      
+        const raw = String(cell?.getAttribute?.("task_template_json") ?? "").trim();       
+        if (raw.length > 0) {                                                               
+            try {
+                const tpl = JSON.parse(raw);                                                
+                if (tpl && typeof tpl === "object") {
+                    return { template: tpl, source: "cell" };                               
+                }
+            } catch (_) {
+                console.warn("Invalid task_template_json");
+            }
+        }
+
+        const pTpl = await loadPlantTaskTemplate(plantId, methodId);   
+        if (pTpl) {
+            return { template: pTpl, source: "plant" };                                     
+        }
+
+        const methodTpl = await getDefaultTaskTemplateForPlantingMethods(methodId);         
+        if (methodTpl) {
+            return { template: methodTpl, source: "method_builtin" };                       
+        }
+
+        return { template: null, source: "none" };
+    }
+
+    function prepAnchorForBaseMethod(methodCategoryId) {
+        return methodCategoryId === "direct_sow" ? "SOW" : "TRANSPLANT";
+    }
+
+    function taskRuleLibraryForBaseMethod(methodCategoryId) {
+        const prepAnchor = prepAnchorForBaseMethod(methodCategoryId);
 
         return {
             prep: {
@@ -4644,28 +5200,20 @@ Draw.loadPlugin(function (ui) {
         return out;
     }
 
-    // -------------------- Default template from variant --------------------------
+    // -------------------- Default template from method --------------------------
 
-    async function getDefaultTaskTemplateForVariant(variantId) {
-        // Conservative fallback keeps UI working if DB rows are missing
-        const fallback = (() => {
-            const lib = taskRuleLibraryForBaseMethod("transplant");
-            return { version: 1, rules: [lib.prep, lib.transplant, lib.thin, lib.harvest] };
-        })();
+    async function getDefaultTaskTemplateForPlantingMethods(methodId) {                 
+        if (!methodId) return null;                                                     
 
-        if (!variantId) return fallback;
+        const method = await getPlantingMethodById(methodId);                           
+        if (!method) return null;                                                       
 
-        const variant = await getPlantingVariantById(variantId);
-        if (!variant) return fallback;
+        const baseMethodCategoryId = String(method.method_category_id || "").trim();    
+        if (!baseMethodCategoryId) return null;                                         
 
-        const baseMethodId = String(variant.method_id || "transplant");
-        const lib = taskRuleLibraryForBaseMethod(baseMethodId);
+        const lib = taskRuleLibraryForBaseMethod(baseMethodCategoryId);                 
 
-        // tasks_required_json supports:
-        //  - boolean: { "prep": true, "sow": false, ... }
-        //  - object override: { "prep": { "offsetDays": 5 }, ... }
-        const required = safeJsonParse(variant.tasks_required_json, {}) || {};
-
+        const required = safeJsonParse(method.tasks_required_json, {}) || {};           
         const orderedIds = ["prep", "sow", "start", "harden", "transplant", "thin", "harvest"];
 
         const rules = [];
@@ -4678,28 +5226,15 @@ Draw.loadPlugin(function (ui) {
             rules.push(applyTaskOverrides(lib[id], override));
         }
 
-        // Force harvest if variant omitted it
-        if (!rules.some(r => r.id === "harvest")) rules.push(lib.harvest);
-
-        // If variant yielded nothing (bad JSON or all false), fall back
-        if (!rules.length) return fallback;
-
-        return { version: 1, rules };
-    }
-
-    // -------------------- Load from cell or variant fallback ---------------------
-
-    async function loadTaskTemplateFromCell(cell, variantId) {
-        const raw = cell.getAttribute && cell.getAttribute("task_template_json");
-        if (raw) {
-            try {
-                return JSON.parse(raw);
-            } catch (_) {
-                console.warn("Invalid task_template_json");
-            }
+        if (!rules.some(r => r.id === "harvest") && lib.harvest) {                      
+            rules.push(lib.harvest);                                                    
         }
-        return await getDefaultTaskTemplateForVariant(variantId);
+
+        if (!rules.length) return null;                                                 
+
+        return { version: 1, rules };                                                   
     }
+
 
 
 
@@ -4768,7 +5303,7 @@ Draw.loadPlugin(function (ui) {
 
 
     function stampPlanSummary(cell, {
-        plant, city, method, Tbase,
+        plant, city, method, methodCategoryId, methodId, Tbase,                     
         scheduleDates, plants, timelines,
         expectedTotalYield,
         varietyId = null,
@@ -4786,9 +5321,13 @@ Draw.loadPlugin(function (ui) {
         setAttr(cell, 'plant_name', plant.plant_name);
         setAttr(cell, 'plant_abbr', String(plant.abbr || ''));
         setAttr(cell, 'city_name', city.city_name);
-        setAttr(cell, 'method', method);
+
+        setAttr(cell, 'method_category_id', String(methodCategoryId ?? ''));           
+        setAttr(cell, 'method_id', String(methodId ?? ''));                                      
+
         setAttr(cell, 'variety_id', String(varietyId ?? ''));
         setAttr(cell, 'variety_name', String(varietyName || ''));
+
 
         setAttr(cell, 'tbase_c', String(Tbase));
 
@@ -4822,7 +5361,7 @@ Draw.loadPlugin(function (ui) {
         const stageDays = {
             maturityDays: Number.isFinite(Number(plant.days_maturity)) && Number(plant.days_maturity) > 0
                 ? Number(plant.days_maturity)
-                : (budget.mode === "days" ? budget.amount : 0),                               // same intent
+                : (budget.mode === "days" ? budget.amount : 0),                   
             transplantDays: Number.isFinite(Number(plant.days_transplant)) ? Number(plant.days_transplant) : 0,
             germinationDays: Number.isFinite(Number(plant.days_germ)) ? Number(plant.days_germ) : 0,
         };
@@ -4848,8 +5387,6 @@ Draw.loadPlugin(function (ui) {
             return Number.isFinite(n) && n >= 0 ? n : 0;
         })();
 
-        const plantsAlloc = [plantsReq];
-
         const ypp = (() => {
             const v =
                 (typeof plant.yieldPerPlant === 'function'
@@ -4861,23 +5398,22 @@ Draw.loadPlugin(function (ui) {
         })();
 
         // Build tasks from a single planting timeline
-        async function buildTasksForPlan({                              // CHANGED
-            method,
+        async function buildTasksForPlan({
             plant,
             schedule,
             timelines,
             taskTemplate,
-            variantId = null                                           // NEW
+            methodId = null,
+            plantId = null,                                                                       
         }) {
             const tasks = [];
             const plantName = plant?.plant_name || plant?.abbr || "Plant";
 
-            const tpl = (taskTemplate && Array.isArray(taskTemplate.rules)) // NEW
-                ? taskTemplate                                            // NEW
-                : await getDefaultTaskTemplateForVariant(variantId);       // NEW
+            const tpl = (taskTemplate && Array.isArray(taskTemplate.rules))
+                ? taskTemplate
+                : await resolveTaskTemplate({ cell, plantId, methodId });
 
-            const rules = Array.isArray(tpl?.rules) ? tpl.rules : [];      // NEW
-
+            const rules = Array.isArray(tpl?.rules) ? tpl.rules : [];
             // Force single planting: use the first schedule/timeline entry only          
             const sowDate = Array.isArray(schedule) ? schedule[0] : schedule;
             const tl = Array.isArray(timelines) ? timelines[0] : timelines;
@@ -4978,16 +5514,32 @@ Draw.loadPlugin(function (ui) {
             return tasks;
         }
 
-        function emitTasksForPlan({
+        async function emitTasksForPlan({
             method,
             plant,
             cell,
             schedule,
-            timelines
+            timelines,
+            plantId = null,                                                                       
+            varietyId = null,                                                                     
+            methodCategoryId = null,                                                                      
+            methodId = null                                                                      
         }) {
-            const taskTemplate = loadTaskTemplateFromCell(cell, method);
+            const resolved = await resolveTaskTemplate({ cell, plantId, methodId });   
+            const taskTemplate = resolved?.template ?? null;                           
 
-            const tasks = buildTasksForPlan({ method, plant, schedule, timelines, taskTemplate, variantId }); // CHANGED
+            const tasks = await buildTasksForPlan({
+                method,
+                plant,
+                cell,
+                schedule,
+                timelines,
+                taskTemplate,
+                plantId,                                                                          
+                varietyId,                                                                        
+                methodCategoryId,                                                                         
+                methodId                                                                         
+            });
 
             const detail = {
                 tasks,
@@ -5024,11 +5576,13 @@ Draw.loadPlugin(function (ui) {
             stampPlanSummary(cell, {
                 plant,
                 city,
-                method,
+                method,                                                            
+                methodCategoryId: String(inputs?.methodCategoryId ?? cell?.getAttribute?.("method_category_id") ?? ""), 
+                methodId: String(inputs?.methodId ?? cell?.getAttribute?.("method_id") ?? ""), 
+
                 Tbase: env.Tbase,
                 scheduleDates: schedule,
-                plants: plantsAlloc,
-                timelines: timelines,
+                timelines,
                 varietyId: inputs.varietyId,
                 varietyName: inputs.varietyName
             });
@@ -5046,12 +5600,16 @@ Draw.loadPlugin(function (ui) {
             model.endUpdate();
         }
 
-        emitTasksForPlan({
+        await emitTasksForPlan({
             method,
             plant,
             cell,
-            schedule: schedule,
-            timelines: timelines
+            schedule,
+            timelines,
+            plantId: Number(cell?.getAttribute?.("plant_id") ?? inputs?.plant?.plant_id ?? null), 
+            varietyId: inputs?.varietyId ?? null,                                                 
+            methodCategoryId: String(inputs?.methodCategoryId ?? cell?.getAttribute?.("method_category_id") ?? ""), 
+            methodId: String(inputs?.methodId ?? cell?.getAttribute?.("method_id") ?? "")
         });
     }
 
@@ -5134,7 +5692,7 @@ Draw.loadPlugin(function (ui) {
         const todayUTC = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate()));
         const groupCityName = (cell && cell.getAttribute && cell.getAttribute('city_name')) || null;
         const initialCityName = groupCityName || (cities[0].city_name || cities[0]);
-        const methodPreview = (selectedPlant.allowedMethods?.()[0]) || 'direct_sow';
+        const methodPreview = (selectedPlant.AllowedMethodCategories?.()[0]) || 'direct_sow';
 
         const cityInit = await CityClimate.loadByName(initialCityName);
         if (!cityInit) throw new Error(`City not found: ${initialCityName}`);
