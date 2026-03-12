@@ -324,7 +324,7 @@ Draw.loadPlugin(function (ui) {
             }
             if (!cols.length) throw new Error('No fields to create plant.');
 
-            const insertSql = `INSERT INTO Plants (${cols.join(', ')}) VALUES (${qs.join(', ')});`;  
+            const insertSql = `INSERT INTO Plants (${cols.join(', ')}) VALUES (${qs.join(', ')});`;
 
             return await withDbWrite(async (dbId) => {
                 await execRunOnDb(dbId, "BEGIN;");
@@ -867,7 +867,7 @@ Draw.loadPlugin(function (ui) {
                 HW_DAYS,
 
                 // crop & climate
-                BUDGET: budget,                       
+                BUDGET: budget,
                 env,                // {Tmin,ToptLow,ToptHigh,Tmax,Tbase}
                 dailyRates,         // {1..12: gdd/day}
                 monthlyAvg,         // {1..12: mean air temp}
@@ -1126,8 +1126,8 @@ Draw.loadPlugin(function (ui) {
         const city = await CityClimate.loadByName(formState.cityName);
         if (!city) throw new Error('City not found for schedule.');
 
-        const methodCategoryId = String(formState.methodCategoryId || '').trim();            
-        const methodId = String(formState.methodId || '').trim();          
+        const methodCategoryId = String(formState.methodCategoryId || '').trim();
+        const methodId = String(formState.methodId || '').trim();
         const method = String(formState.method || '').trim();                // existing meaning (your legacy alias)
 
         const policy = PolicyFlags.fromPlant(plant, method);
@@ -1150,10 +1150,10 @@ Draw.loadPlugin(function (ui) {
             varietyName
         });
 
-        inputs.methodCategoryId = methodCategoryId;                                         
-        inputs.methodId = methodId;                                       
+        inputs.methodCategoryId = methodCategoryId;
+        inputs.methodId = methodId;
 
-        return { plant, city, method, methodCategoryId, methodId, policy, inputs }; 
+        return { plant, city, method, methodCategoryId, methodId, policy, inputs };
     }
 
     async function computeFeasibilityWindow({
@@ -1559,11 +1559,11 @@ Draw.loadPlugin(function (ui) {
         if (hasVal(spacingY)) {
             setAttr(groupCell, 'spacing_y_cm', spacingY);
         }
-        if (hasVal(s)) {                                                     
+        if (hasVal(s)) {
             setAttr(groupCell, 'spacing_cm', s);
         }
 
-        if (hasVal(vd)) {                                                          
+        if (hasVal(vd)) {
             setAttr(groupCell, 'veg_diameter_cm', vd);
         }
     }
@@ -2214,7 +2214,7 @@ Draw.loadPlugin(function (ui) {
         div.appendChild(title);
 
         // -------------------- DB helpers (local) --------------------
-        async function listActiveMethodCategories() {                                            
+        async function listActiveMethodCategories() {
             const sql = `
               SELECT method_category_id, method_category_name
               FROM PlantingMethodCategories
@@ -2230,7 +2230,7 @@ Draw.loadPlugin(function (ui) {
               WHERE plant_id = ?;`;
             try {
                 const rows = await queryAll(sql, [pid]);
-                return rows.map(r => String(r.method_category_id));                                     
+                return rows.map(r => String(r.method_category_id));
             } catch (_) {
                 // legacy fallback unchanged
                 const row = await PlantModel.loadById(Number(pid));
@@ -2260,7 +2260,7 @@ Draw.loadPlugin(function (ui) {
                     for (const mcid of ids) {
                         await execRunOnDb(
                             dbId,
-                            "INSERT OR IGNORE INTO PlantAllowedMethodCategories (plant_id, method_category_id) VALUES (?, ?);", 
+                            "INSERT OR IGNORE INTO PlantAllowedMethodCategories (plant_id, method_category_id) VALUES (?, ?);",
                             [pidNum, mcid]
                         );
                     }
@@ -2402,32 +2402,32 @@ Draw.loadPlugin(function (ui) {
         const overwinterRow = row('Overwinter OK:', overwinterChk);
         leftCol.appendChild(overwinterRow.row);
 
-        function lifecycleToFixedYears(lifecycle) {                                        
-            if (lifecycle === 'annual') return 1;                                          
-            if (lifecycle === 'biennial') return 2;                                        
+        function lifecycleToFixedYears(lifecycle) {
+            if (lifecycle === 'annual') return 1;
+            if (lifecycle === 'biennial') return 2;
             return null; // perennial is variable                                             
-        }                                                                                  
+        }
 
-        function syncLifecycleFields() {                                                   
-            const lifecycle = typeSel.value;                                               
-            const fixed = lifecycleToFixedYears(lifecycle);                                
+        function syncLifecycleFields() {
+            const lifecycle = typeSel.value;
+            const fixed = lifecycleToFixedYears(lifecycle);
 
-            if (fixed != null) {                                                           
-                lifespanInput.value = String(fixed);                                       
-                lifespanInput.disabled = true;                                             
-                lifespanInput.min = '0';                                                 
-                return;                                                                    
+            if (fixed != null) {
+                lifespanInput.value = String(fixed);
+                lifespanInput.disabled = true;
+                lifespanInput.min = '0';
+                return;
             }
 
             // Perennial: enabled (unless variety-mode disables later) and min 3            
-            lifespanInput.min = '3';                                                       
-            const cur = Number(String(lifespanInput.value || '').trim());                  
-            if (!Number.isFinite(cur) || cur < 3) lifespanInput.value = '3';               
-            lifespanInput.disabled = false;                                                
-        }                                                                                  
+            lifespanInput.min = '3';
+            const cur = Number(String(lifespanInput.value || '').trim());
+            if (!Number.isFinite(cur) || cur < 3) lifespanInput.value = '3';
+            lifespanInput.disabled = false;
+        }
 
-        syncLifecycleFields();                                                             
-        typeSel.addEventListener('change', syncLifecycleFields);                           
+        syncLifecycleFields();
+        typeSel.addEventListener('change', syncLifecycleFields);
 
         // --- Methods (DB-driven checkboxes) ---
         const methodsBox = document.createElement('div');
@@ -2439,14 +2439,14 @@ Draw.loadPlugin(function (ui) {
 
         const methodChecksById = new Map(); // method_category_id -> checkbox                      
 
-        const categories = await listActiveMethodCategories();                                     
+        const categories = await listActiveMethodCategories();
         const allowedInitial = isEdit ? await listAllowedmethodCategoryIdsForPlant(Number(plantId)) : [];
         const allowedInitialSet = new Set(allowedInitial);
 
-        for (const c of categories) {                                                              
-            const chk = makeCheckbox(allowedInitialSet.has(c.method_category_id));                   
-            methodChecksById.set(c.method_category_id, chk);                                         
-            methodsBox.appendChild(row(c.method_category_name + ':', chk).row);                      
+        for (const c of categories) {
+            const chk = makeCheckbox(allowedInitialSet.has(c.method_category_id));
+            methodChecksById.set(c.method_category_id, chk);
+            methodsBox.appendChild(row(c.method_category_name + ':', chk).row);
         }
 
 
@@ -2495,8 +2495,8 @@ Draw.loadPlugin(function (ui) {
             const methods = await fetchMethodsForAllowedMethodCategories(allowed);
             for (const m of methods) {
                 const opt = document.createElement('option');
-                opt.value = m.method_id;                                                               
-                opt.textContent = m.method_name || m.method_id;                                         
+                opt.value = m.method_id;
+                opt.textContent = m.method_name || m.method_id;
                 defaultMethodSel.appendChild(opt);
             }
 
@@ -2769,7 +2769,7 @@ Draw.loadPlugin(function (ui) {
 
         function setPlantControlsEnabled(enabled) {
             const els = [
-                nameInput, abbrInput, typeSel, /* lifespanInput, */ overwinterChk,          
+                nameInput, abbrInput, typeSel, /* lifespanInput, */ overwinterChk,
                 defaultMethodSel, budgetModeSel, gddInput, daysMatInput,
                 daysGermInput, daysTransInput, yieldInput, hwInput,
                 tbaseInput, tminInput, toptLowInput, toptHighInput, tmaxInput,
@@ -2785,9 +2785,9 @@ Draw.loadPlugin(function (ui) {
             for (const chk of methodChecksById.values()) chk.disabled = !enabled;
 
             // Lifespan obeys lifecycle + global enabled flag                               
-            syncLifecycleFields();                                                          
-            const isPerennial = (String(typeSel.value) === 'perennial');                    
-            lifespanInput.disabled = (!enabled) || (!isPerennial);                          
+            syncLifecycleFields();
+            const isPerennial = (String(typeSel.value) === 'perennial');
+            lifespanInput.disabled = (!enabled) || (!isPerennial);
         }
 
         async function refreshAllowedMethodCategoriesUIForPlant(pid) {
@@ -2931,7 +2931,7 @@ Draw.loadPlugin(function (ui) {
                 none.value = '';
                 none.textContent = '';
                 varietySel.appendChild(none);
-                addVarBtn.disabled = true;                    
+                addVarBtn.disabled = true;
 
                 currentVarietyMode = null;
                 currentVarietyId = null;
@@ -3125,15 +3125,15 @@ Draw.loadPlugin(function (ui) {
                 const biennial = (lifecycle === 'biennial') ? 1 : 0;
                 const perennial = (lifecycle === 'perennial') ? 1 : 0;
 
-                let lifespan_years = null;                                                 
+                let lifespan_years = null;
 
-                if (perennial) {                                                           
-                    lifespan_years = readNullableNumber(lifespanInput);                     
-                    if (!(Number.isFinite(Number(lifespan_years)) && Number(lifespan_years) >= 3)) { 
-                        throw new Error('Perennials require lifespan_years >= 3');          
+                if (perennial) {
+                    lifespan_years = readNullableNumber(lifespanInput);
+                    if (!(Number.isFinite(Number(lifespan_years)) && Number(lifespan_years) >= 3)) {
+                        throw new Error('Perennials require lifespan_years >= 3');
                     }
-                } else {                                                                    
-                    lifespan_years = annual ? 1 : 2;                                        
+                } else {
+                    lifespan_years = annual ? 1 : 2;
                 }
 
                 const allowedmethodCategoryIds = getAllowedmethodCategoryIdsFromUI();
@@ -3412,7 +3412,7 @@ Draw.loadPlugin(function (ui) {
         }
 
         const inlineButton = (label, onClick) => {
-            const b = mxUtils.button(label, async () => { clearErrorInline(); await onClick(); }); 
+            const b = mxUtils.button(label, async () => { clearErrorInline(); await onClick(); });
             b.style.marginLeft = '8px';
             return b;
         };
@@ -3540,13 +3540,13 @@ Draw.loadPlugin(function (ui) {
             syncStateFromControls();
             await refreshEffectivePlant();
 
-            await resetMethodOptionsForPlant(formState.plantId, {                                                
-                preferMethodCategoryId: String(formState.methodCategoryId ?? cellMethodCategoryId0 ?? '')           
-            });                                                                                                  
+            await resetMethodOptionsForPlant(formState.plantId, {
+                preferMethodCategoryId: String(formState.methodCategoryId ?? cellMethodCategoryId0 ?? '')
+            });
 
-            await resetMethodOptionsForMethodCategory(methodCategorySel.value, {                
-                preferMethodId: String(formState.methodId ?? effectivePlant?.default_planting_method ?? '') 
-            });                                                                                               
+            await resetMethodOptionsForMethodCategory(methodCategorySel.value, {
+                preferMethodId: String(formState.methodId ?? effectivePlant?.default_planting_method ?? '')
+            });
 
             await recomputeAll('plantChanged');
             await refreshTaskTemplateFromSelection();
@@ -3594,13 +3594,13 @@ Draw.loadPlugin(function (ui) {
 
                 syncStateFromControls();
                 await refreshEffectivePlant();
-                await resetMethodOptionsForPlant(formState.plantId, {                                                
-                    preferMethodCategoryId: String(formState.methodCategoryId ?? cellMethodCategoryId0 ?? '')           
-                });                                                                                                  
+                await resetMethodOptionsForPlant(formState.plantId, {
+                    preferMethodCategoryId: String(formState.methodCategoryId ?? cellMethodCategoryId0 ?? '')
+                });
 
-                await resetMethodOptionsForMethodCategory(methodCategorySel.value, {                                 
-                    preferMethodId: String(formState.methodId ?? effectivePlant?.default_planting_method ?? '')        
-                });                                                                                                                    
+                await resetMethodOptionsForMethodCategory(methodCategorySel.value, {
+                    preferMethodId: String(formState.methodId ?? effectivePlant?.default_planting_method ?? '')
+                });
                 await recomputeAll('varietyChanged');
                 await refreshTaskTemplateFromSelection();
             } catch (e) {
@@ -3635,13 +3635,13 @@ Draw.loadPlugin(function (ui) {
 
                 syncStateFromControls();
                 await refreshEffectivePlant();
-                await resetMethodOptionsForPlant(formState.plantId, {                                                
-                    preferMethodCategoryId: String(formState.methodCategoryId ?? cellMethodCategoryId0 ?? '')           
-                });                                                                                                  
+                await resetMethodOptionsForPlant(formState.plantId, {
+                    preferMethodCategoryId: String(formState.methodCategoryId ?? cellMethodCategoryId0 ?? '')
+                });
 
-                await resetMethodOptionsForMethodCategory(methodCategorySel.value, {                                 
-                    preferMethodId: String(formState.methodId ?? effectivePlant?.default_planting_method ?? '')        
-                });                                                                                                                    
+                await resetMethodOptionsForMethodCategory(methodCategorySel.value, {
+                    preferMethodId: String(formState.methodId ?? effectivePlant?.default_planting_method ?? '')
+                });
                 await recomputeAll('varietyChanged');
                 await refreshTaskTemplateFromSelection();
             } catch (e) {
@@ -3708,72 +3708,72 @@ Draw.loadPlugin(function (ui) {
                 : [];
 
             const opts = (currentAllowedMethodCategories || []).map(mc => ({
-                value: String(mc.method_category_id ?? '').trim(),                                     
-                label: String(mc.method_category_name || mc.method_category_id || '').trim()          
-            })).filter(o => o.value);                                                               
+                value: String(mc.method_category_id ?? '').trim(),
+                label: String(mc.method_category_name || mc.method_category_id || '').trim()
+            })).filter(o => o.value);
 
             // Optional but recommended: allow blank selection
-            const withBlank = [{ value: '', label: '' }].concat(opts);                              
+            const withBlank = [{ value: '', label: '' }].concat(opts);
 
-            const preferred = String(preferMethodCategoryId ?? '').trim();                          
-            const hasPreferred = preferred && withBlank.some(o => o.value === preferred);           
+            const preferred = String(preferMethodCategoryId ?? '').trim();
+            const hasPreferred = preferred && withBlank.some(o => o.value === preferred);
 
-            const desired = hasPreferred ? preferred : (opts[0]?.value ?? '');                      
+            const desired = hasPreferred ? preferred : (opts[0]?.value ?? '');
 
-            setSelectOptions(methodCategorySel, withBlank, desired);                                
+            setSelectOptions(methodCategorySel, withBlank, desired);
         }
 
 
         async function resetMethodOptionsForMethodCategory(methodCategoryId, { preferMethodId = null } = {}) {
-            const mcid = String(methodCategoryId ?? '').trim();                                      
+            const mcid = String(methodCategoryId ?? '').trim();
             currentMethods = mcid
                 ? await PlantModel.listMethodsForMethodCategory(mcid)
                 : [];
 
             const opts = (currentMethods || []).map(m => ({
-                value: String(m.method_id ?? '').trim(),                                               
+                value: String(m.method_id ?? '').trim(),
                 label: String(m.method_name || m.method_id || '').trim()
-            })).filter(o => o.value);                                                                
+            })).filter(o => o.value);
 
             const withBlank = [{ value: '', label: '' }].concat(opts);
 
-            const preferred = String(preferMethodId ?? '').trim();                                   
-            const hasPreferred = preferred && withBlank.some(o => o.value === preferred);            
+            const preferred = String(preferMethodId ?? '').trim();
+            const hasPreferred = preferred && withBlank.some(o => o.value === preferred);
 
-            const desired = hasPreferred ? preferred : (opts[0]?.value ?? '');                       
+            const desired = hasPreferred ? preferred : (opts[0]?.value ?? '');
 
-            setSelectOptions(methodSel, withBlank, desired);                                         
+            setSelectOptions(methodSel, withBlank, desired);
         }
 
 
         // Prefill method category + method from existing cell attrs
-        const cellMethodCategoryId0 = (() => {                                              
-            const raw = cell?.getAttribute?.('method_category_id');                           
-            const s = String(raw ?? '').trim();                                               
-            return s || null;                                                                 
-        })();                                                                               
+        const cellMethodCategoryId0 = (() => {
+            const raw = cell?.getAttribute?.('method_category_id');
+            const s = String(raw ?? '').trim();
+            return s || null;
+        })();
 
-        const cellMethodId0 = (() => {                                                      
-            const raw = cell?.getAttribute?.('method_id')                                
-            const s = String(raw ?? '').trim();                                               
-            return s || null;                                                                 
-        })();                                                                               
+        const cellMethodId0 = (() => {
+            const raw = cell?.getAttribute?.('method_id')
+            const s = String(raw ?? '').trim();
+            return s || null;
+        })();
 
 
         // initialize method category + method for initial plant (prefer persisted per-cell selection)
-        await resetMethodOptionsForPlant(selPlant.plant_id, {                               
-            preferMethodCategoryId: cellMethodCategoryId0                                     
-        });                                                                                 
+        await resetMethodOptionsForPlant(selPlant.plant_id, {
+            preferMethodCategoryId: cellMethodCategoryId0
+        });
 
-        const preferredMethod0 = String(                                                    
-            cellMethodId0                                                                     
-            ?? effectivePlant?.default_planting_method                                         
-            ?? ''                                                                             
-        );                                                                                  
+        const preferredMethod0 = String(
+            cellMethodId0
+            ?? effectivePlant?.default_planting_method
+            ?? ''
+        );
 
-        await resetMethodOptionsForMethodCategory(methodCategorySel.value, {                
-            preferMethodId: preferredMethod0                                                  
-        });                                                                                 
+        await resetMethodOptionsForMethodCategory(methodCategorySel.value, {
+            preferMethodId: preferredMethod0
+        });
 
         // Start/End inputs + auto buttons
         const initialStartISO = earliestFeasibleSowDate.toISOString().slice(0, 10);
@@ -3799,9 +3799,9 @@ Draw.loadPlugin(function (ui) {
         startNoteSpan.textContent = startNote || '';
 
         // --- Harvest window
-        const hwDefault = effectivePlant.defaultHW();                 
+        const hwDefault = effectivePlant.defaultHW();
         const harvestWindowInput = makeNullableNumber(hwDefault ?? null, { min: 0, step: 1 });
-        const minYieldMultInput = makeNumber(0.50, { min: 0 }); minYieldMultInput.step = '0.01'; 
+        const minYieldMultInput = makeNumber(0.50, { min: 0 }); minYieldMultInput.step = '0.01';
 
         // --- Season control (single field) ---
         const seasonStartYear0 = Number(cell.getAttribute?.('season_start_year') ?? (new Date()).getUTCFullYear());
@@ -3819,16 +3819,16 @@ Draw.loadPlugin(function (ui) {
             graph.refresh(cell);
         }
 
-        async function loadDefaultsForCurrentSelection() {                                  
-            const resolved = await resolveTaskTemplate({                                    
-                cell: null,                                                                 
-                plantId: formState.plantId ?? null,                                         
-                methodId: String(formState.methodId ?? "").trim() || null                   
-            });                                                                             
+        async function loadDefaultsForCurrentSelection() {
+            const resolved = await resolveTaskTemplate({
+                cell: null,
+                plantId: formState.plantId ?? null,
+                methodId: String(formState.methodId ?? "").trim() || null
+            });
 
-            taskTemplate = resolved?.template ?? null;                                      
-            taskTemplateSource = resolved?.source ?? "unknown";                             
-            taskRules = Array.isArray(taskTemplate?.rules) ? [...taskTemplate.rules] : [];  
+            taskTemplate = resolved?.template ?? null;
+            taskTemplateSource = resolved?.source ?? "unknown";
+            taskRules = Array.isArray(taskTemplate?.rules) ? [...taskTemplate.rules] : [];
             taskEditorDiv.innerHTML = "";
             taskDirty = false;
             renderTasksList();
@@ -3839,7 +3839,7 @@ Draw.loadPlugin(function (ui) {
                 currentTemplateSourceSpan,
                 taskDirty,
                 taskTemplateSource
-            });                                                          
+            });
         }
 
         const saveDefaultChk = makeCheckbox(false);
@@ -3917,22 +3917,22 @@ Draw.loadPlugin(function (ui) {
 
         // Load varieties and preselect from cell                                     
         await reloadVarietyOptionsForPlant(formState.plantId, formState.varietyId);
-        syncVarietyButtons();                                                
+        syncVarietyButtons();
 
         // Ensure the selected value actually exists; if not, fall back to base plant 
         if (formState.varietyId != null && !String(varietySel.value)) {
             formState.varietyId = null;
         }
 
-        syncStateFromControls();                                             
-        await refreshEffectivePlant();                                      
-        await resetMethodOptionsForPlant(formState.plantId, {                                              
-            preferMethodCategoryId: String(formState.methodCategoryId ?? cellMethodCategoryId0 ?? '')         
-        });                                                                                                  
+        syncStateFromControls();
+        await refreshEffectivePlant();
+        await resetMethodOptionsForPlant(formState.plantId, {
+            preferMethodCategoryId: String(formState.methodCategoryId ?? cellMethodCategoryId0 ?? '')
+        });
 
-        await resetMethodOptionsForMethodCategory(methodCategorySel.value, {                                 
-            preferMethodId: String(formState.methodId ?? cellMethodId0 ?? effectivePlant?.default_planting_method ?? '') 
-        });                                                                                                  
+        await resetMethodOptionsForMethodCategory(methodCategorySel.value, {
+            preferMethodId: String(formState.methodId ?? cellMethodId0 ?? effectivePlant?.default_planting_method ?? '')
+        });
 
 
         const autoEarliestRowObj = row('Earliest feasible sow:', autoEarliestInput);
@@ -4263,13 +4263,13 @@ Draw.loadPlugin(function (ui) {
             await refreshEffectivePlant();
 
 
-            await resetMethodOptionsForPlant(formState.plantId, {                               
-                preferMethodCategoryId: String(formState.methodCategoryId ?? cellMethodCategoryId0 ?? '') 
-            });                                                                                 
+            await resetMethodOptionsForPlant(formState.plantId, {
+                preferMethodCategoryId: String(formState.methodCategoryId ?? cellMethodCategoryId0 ?? '')
+            });
 
-            await resetMethodOptionsForMethodCategory(methodCategorySel.value, {                
-                preferMethodId: String(formState.methodId ?? cellMethodId0 ?? effectivePlant?.default_planting_method ?? '') 
-            });                                                                                 
+            await resetMethodOptionsForMethodCategory(methodCategorySel.value, {
+                preferMethodId: String(formState.methodId ?? cellMethodId0 ?? effectivePlant?.default_planting_method ?? '')
+            });
 
 
             formState.methodCategoryId = methodCategorySel.value;
@@ -4299,13 +4299,13 @@ Draw.loadPlugin(function (ui) {
             syncVarietyButtons();
             syncStateFromControls();
             await refreshEffectivePlant();
-            await resetMethodOptionsForPlant(formState.plantId, {                                                
-                preferMethodCategoryId: String(formState.methodCategoryId ?? cellMethodCategoryId0 ?? '')           
-            });                                                                                                  
+            await resetMethodOptionsForPlant(formState.plantId, {
+                preferMethodCategoryId: String(formState.methodCategoryId ?? cellMethodCategoryId0 ?? '')
+            });
 
-            await resetMethodOptionsForMethodCategory(methodCategorySel.value, {                
-                preferMethodId: String(formState.methodId ?? effectivePlant?.default_planting_method ?? '') 
-            });                                                                                 
+            await resetMethodOptionsForMethodCategory(methodCategorySel.value, {
+                preferMethodId: String(formState.methodId ?? effectivePlant?.default_planting_method ?? '')
+            });
 
             harvestWindowInput.value = (effectivePlant.defaultHW() ?? '');
             formState.harvestWindowDays = (harvestWindowInput.value === '' ? null : Number(harvestWindowInput.value));
@@ -4357,9 +4357,9 @@ Draw.loadPlugin(function (ui) {
         methodCategorySel.addEventListener('change', async () => {
             syncStateFromControls();
 
-            await resetMethodOptionsForMethodCategory(methodCategorySel.value, {                                 
-                preferMethodId: String(formState.methodId ?? effectivePlant?.default_planting_method ?? '')        
-            });                                                                                                                
+            await resetMethodOptionsForMethodCategory(methodCategorySel.value, {
+                preferMethodId: String(formState.methodId ?? effectivePlant?.default_planting_method ?? '')
+            });
 
             syncStateFromControls();
 
@@ -4516,37 +4516,37 @@ Draw.loadPlugin(function (ui) {
                 );
 
                 // Build taskTemplate object from current rules
-                taskTemplate = {
-                    version: 1,
-                    rules: taskRules
-                };
+                taskTemplate = normalizeTaskTemplate({ // CHANGED
+                    version: 2, // CHANGED
+                    rules: taskRules // CHANGED
+                }); // CHANGED
 
                 // Save template if requested
-                if (saveDefaultChk.checked) {                                                     
-                    const methodId = String(formState.methodId || "").trim();                     
-                    if (!methodId) {                                                              
-                        throw new Error('Select a planting method before saving a plant default.'); 
-                    }                                                                             
+                if (saveDefaultChk.checked) {
+                    const methodId = String(formState.methodId || "").trim();
+                    if (!methodId) {
+                        throw new Error('Select a planting method before saving a plant default.');
+                    }
 
-                    await TaskTemplateModel.saveForSelection({                                    
-                        plantId: formState.plantId,                                               
-                        methodId,                                                                 
-                        template: taskTemplate                                                    
-                    });                                                                           
-                }                                                                                 
+                    await TaskTemplateModel.saveForSelection({
+                        plantId: formState.plantId,
+                        methodId,
+                        template: taskTemplate
+                    });
+                }
 
                 const graph = ui.editor.graph;
                 const model = graph.getModel();
 
                 model.beginUpdate();
                 try {
-                    if (taskDirty) {                                                                  
-                        model.execute(                                                                
-                            new mxCellAttributeChange(cell, "task_template_json", JSON.stringify(taskTemplate)) 
-                        );                                                                            
-                    } else {                                                                          
-                        model.execute(new mxCellAttributeChange(cell, "task_template_json", ""));     
-                    }                                                                                 
+                    if (taskDirty) {
+                        model.execute(
+                            new mxCellAttributeChange(cell, "task_template_json", JSON.stringify(taskTemplate))
+                        );
+                    } else {
+                        model.execute(new mxCellAttributeChange(cell, "task_template_json", ""));
+                    }
 
                     model.execute(new mxCellAttributeChange(cell, 'plant_id', String(formState.plantId)));
                     const isBase = (formState.varietyId == null);
@@ -4555,9 +4555,9 @@ Draw.loadPlugin(function (ui) {
                     model.execute(new mxCellAttributeChange(cell, 'variety_name', isBase ? '' : String(inputs.varietyName || '')));
 
                     // persist planting method selection on the cell
-                    model.execute(new mxCellAttributeChange(cell, 'method_category_id', String(formState.methodCategoryId ?? ''))); 
-                    model.execute(new mxCellAttributeChange(cell, 'method_id', String(formState.methodId ?? '')));                 
-                    model.execute(new mxCellAttributeChange(cell, 'method', String(formState.methodId ?? '')));                  
+                    model.execute(new mxCellAttributeChange(cell, 'method_category_id', String(formState.methodCategoryId ?? '')));
+                    model.execute(new mxCellAttributeChange(cell, 'method_id', String(formState.methodId ?? '')));
+                    model.execute(new mxCellAttributeChange(cell, 'method', String(formState.methodId ?? '')));
                 } finally {
                     model.endUpdate();
                 }
@@ -4618,18 +4618,18 @@ Draw.loadPlugin(function (ui) {
         // ============================================================================
 
         // 1. Load existing OR resolve from DB fallback chain
-        let taskTemplateSource = "unknown"; 
+        let taskTemplateSource = "unknown";
 
-        const resolved = await resolveTaskTemplate({              
-            cell,                                                 
-            plantId: formState.plantId,                           
-            methodId: formState.methodId                          
-        });                                                       
+        const resolved = await resolveTaskTemplate({
+            cell,
+            plantId: formState.plantId,
+            methodId: formState.methodId
+        });
 
-        taskTemplate = resolved?.template ?? null;          
-        taskTemplateSource = resolved?.source ?? "unknown"; 
+        taskTemplate = normalizeTaskTemplate(resolved?.template ?? null); // CHANGED
+        taskTemplateSource = resolved?.source ?? "unknown";
 
-        taskRules = Array.isArray(taskTemplate?.rules) ? [...taskTemplate.rules] : [];
+        taskRules = Array.isArray(taskTemplate.rules) ? [...taskTemplate.rules] : []; // CHANGED
 
         // 2. Build the Tasks tab body
         const tasksTab = document.createElement("div");
@@ -4645,19 +4645,19 @@ Draw.loadPlugin(function (ui) {
         currentMethodSpan.style.fontWeight = "600";
         currentMethodSpan.textContent = "Method: (loading…)";
 
-        const currentTemplateSourceSpan = document.createElement("div"); 
-        currentTemplateSourceSpan.style.fontSize = "12px";              
-        currentTemplateSourceSpan.style.opacity = "0.85";               
-        currentTemplateSourceSpan.textContent = "Source: (loading…)";   
+        const currentTemplateSourceSpan = document.createElement("div");
+        currentTemplateSourceSpan.style.fontSize = "12px";
+        currentTemplateSourceSpan.style.opacity = "0.85";
+        currentTemplateSourceSpan.textContent = "Source: (loading…)";
 
-        const leftHeaderCol = document.createElement("div");            
-        leftHeaderCol.style.display = "flex";                           
-        leftHeaderCol.style.flexDirection = "column";                   
-        leftHeaderCol.style.gap = "2px";                                
-        leftHeaderCol.appendChild(currentMethodSpan);                   
-        leftHeaderCol.appendChild(currentTemplateSourceSpan);           
+        const leftHeaderCol = document.createElement("div");
+        leftHeaderCol.style.display = "flex";
+        leftHeaderCol.style.flexDirection = "column";
+        leftHeaderCol.style.gap = "2px";
+        leftHeaderCol.appendChild(currentMethodSpan);
+        leftHeaderCol.appendChild(currentTemplateSourceSpan);
 
-        tasksHeaderRow.appendChild(leftHeaderCol);                     
+        tasksHeaderRow.appendChild(leftHeaderCol);
 
         tasksTab.appendChild(tasksHeaderRow);
 
@@ -4668,6 +4668,29 @@ Draw.loadPlugin(function (ui) {
 
         // List container
         const tasksListDiv = document.createElement("div");
+
+        const restoreBuiltinsBtn = mxUtils.button("Restore built-in tasks", async () => {
+            try {
+                syncStateFromControls();
+
+                const methodTpl = await getDefaultTaskTemplateForPlantingMethods(formState.methodId);
+                const defaultRules = Array.isArray(methodTpl?.rules) ? methodTpl.rules : [];
+
+                taskRules = mergeMissingCanonicalRules(taskRules, defaultRules).map(normalizeTaskRule);
+                taskDirty = true;
+                renderTasksList();
+                updateTasksHeader({
+                    methodSel,
+                    formState,
+                    currentMethodSpan,
+                    currentTemplateSourceSpan,
+                    taskDirty,
+                    taskTemplateSource
+                });
+            } catch (e) {
+                showErrorInline("Restore built-in tasks error: " + (e?.message || String(e)));
+            }
+        });
 
         // Render list
         function renderTasksList() {
@@ -4688,9 +4711,11 @@ Draw.loadPlugin(function (ui) {
                 wrap.style.justifyContent = "space-between";
 
                 const summary = document.createElement("div");
-                summary.textContent =
-                    `${rule.title} • ${rule.durationDays} day(s) • ${rule.offsetDays} ` +
-                    `day(s) ${rule.offsetDirection} ${humanStageLabel(rule.anchorStage)}`;
+                summary.textContent = describeTaskRule(rule);
+
+                if (isCanonicalTaskRule(rule)) {
+                    summary.textContent += " • Built-in";
+                }
 
                 const btnWrap = document.createElement("div");
                 btnWrap.style.display = "flex";
@@ -4698,9 +4723,20 @@ Draw.loadPlugin(function (ui) {
 
                 const editBtn = mxUtils.button("Edit", () => openTaskEditor(rule, idx));
                 const delBtn = mxUtils.button("Delete", () => {
+                
+                    const isBuiltIn = isCanonicalTaskRule(rule);
+                    if (isBuiltIn) {
+                        const ok = confirm("This is a built-in task for the current method. Delete it from this template?");
+                        if (!ok) {
+                            restoreFocus(delBtn);
+                            return;
+                        }
+                    }
+                
                     taskRules.splice(idx, 1);
                     taskDirty = true;
                     renderTasksList();
+                    restoreFocus(addTaskBtn);
                 });
 
                 btnWrap.appendChild(editBtn);
@@ -4734,15 +4770,15 @@ Draw.loadPlugin(function (ui) {
             const hasCellTpl = raw.length > 0;
             if (hasCellTpl || taskDirty) return;
 
-            const resolved = await resolveTaskTemplate({              
-                cell,                                                 
-                plantId: formState.plantId,                           
-                methodId: formState.methodId                          
-            });                                                       
+            const resolved = await resolveTaskTemplate({
+                cell,
+                plantId: formState.plantId,
+                methodId: formState.methodId
+            });
 
-            taskTemplate = resolved?.template ?? null;            
-            taskTemplateSource = resolved?.source ?? "unknown";   
-            taskRules = Array.isArray(taskTemplate?.rules) ? [...taskTemplate.rules] : [];
+            taskTemplate = normalizeTaskTemplate(resolved?.template ?? null); // CHANGED
+            taskTemplateSource = resolved?.source ?? "unknown"; // CHANGED
+            taskRules = Array.isArray(taskTemplate.rules) ? [...taskTemplate.rules] : []; // CHANGED
 
             taskEditorDiv.innerHTML = '';
             renderTasksList();
@@ -4766,101 +4802,211 @@ Draw.loadPlugin(function (ui) {
             taskTemplateSource
         });
 
-        function openTaskEditor(rule, index) {
+        async function openTaskEditor(rule, index) {
             taskEditorDiv.innerHTML = "";
 
             const editing = !!rule;
-            const r = rule
-                ? JSON.parse(JSON.stringify(rule))
-                : {
+            const r = normalizeTaskRule( // CHANGED
+                rule ? JSON.parse(JSON.stringify(rule)) : { // CHANGED
                     id: "rule_" + Date.now(),
                     title: "",
-                    anchorStage: "SOW",
-                    offsetDays: 0,
-                    offsetDirection: "after",
+                    startAnchorStage: "SOW", // CHANGED
+                    startOffsetDays: 0, // CHANGED
+                    startOffsetDirection: "after", // CHANGED
+                    endMode: "fixed_days", // CHANGED
                     durationDays: 1,
-                    repeat: false,
+                    endAnchorStage: null, // CHANGED
+                    endAnchorOffsetDays: 0, // CHANGED
+                    endAnchorOffsetDirection: "after", // CHANGED
+                    repeatMode: "none", // CHANGED
                     repeatEveryDays: 1,
                     repeatUntilMode: "x_times",
-                    repeatUntilValue: 1
-                };
+                    repeatTimes: 1, // CHANGED
+                    repeatUntilAnchorStage: null
+                }
+            );
 
-            // Build form fields
+            const allowedStages = await getAllowedAnchorStagesForMethod(formState.methodId);
+            let stageOptions = allowedStages.map(k => ({
+                value: k,
+                label: TASK_STAGE_LABELS[k] || k
+            }));
+
+            function appendLegacyOptionIfMissing(options, value) {
+                const v = String(value || "").trim();
+                if (!v) return options;
+                if (options.some(o => o.value === v)) return options;
+                return options.concat([{
+                    value: v,
+                    label: `${humanStageLabel(v)} (not available for current method)`
+                }]);
+            }
+
+            const startStageOptions = appendLegacyOptionIfMissing(stageOptions, r.startAnchorStage);
+            const endStageOptions = appendLegacyOptionIfMissing(stageOptions, r.endAnchorStage);
+            const repeatUntilStageOptions = appendLegacyOptionIfMissing(stageOptions, r.repeatUntilAnchorStage);
+
             const titleInput = document.createElement("input");
             titleInput.type = "text";
             titleInput.value = r.title;
             const titleRow = row("Title", titleInput).row;
 
-            const offsetNum = makeNumber(r.offsetDays);
-            const offsetDir = makeSelect([
+            const startOffsetNum = makeNumber(r.startOffsetDays); // CHANGED
+            const startOffsetDir = makeSelect([ // CHANGED
                 { value: "before", label: "before" },
                 { value: "after", label: "after" }
-            ], r.offsetDirection);
-            const anchorSel = makeSelect(
-                Object.keys(TASK_STAGE_LABELS).map(k => ({
-                    value: k,
-                    label: TASK_STAGE_LABELS[k]
-                })),
-                r.anchorStage
-            );
-            const offsetWrap = document.createElement("div");
-            offsetWrap.style.display = "flex";
-            offsetWrap.style.gap = "8px";
-            offsetWrap.appendChild(offsetNum);
-            offsetWrap.appendChild(offsetDir);
-            offsetWrap.appendChild(anchorSel);
-            const offsetRow = row("Start", offsetWrap).row;
+            ], r.startOffsetDirection);
+            const startAnchorSel = makeSelect(startStageOptions, r.startAnchorStage);
 
-            const durationNum = makeNumber(r.durationDays);
+            const startWrap = document.createElement("div");
+            startWrap.style.display = "flex";
+            startWrap.style.gap = "8px";
+            startWrap.appendChild(startOffsetNum);
+            startWrap.appendChild(startOffsetDir);
+            startWrap.appendChild(startAnchorSel);
+            const startRow = row("Start", startWrap).row; // CHANGED
+
+            const endModeSel = makeSelect([ // CHANGED
+                { value: "fixed_days", label: "Fixed duration" },
+                { value: "anchor_range", label: "Until anchor" }
+            ], r.endMode);
+
+            const endModeRow = row("End mode", endModeSel).row; // CHANGED
+
+            const durationNum = makeNumber(r.durationDays ?? 1); // CHANGED
             const durationRow = row("Duration (days)", durationNum).row;
 
-            const repeatChk = makeCheckbox(r.repeat);
-            const repeatEveryNum = makeNumber(r.repeatEveryDays);
-            const repeatTimesNum = makeNumber(r.repeatUntilValue);
-            const repeatRow = row("Repeat", repeatChk).row;
+            const endAnchorOffsetNum = makeNumber(r.endAnchorOffsetDays ?? 0); // CHANGED
+            const endAnchorOffsetDir = makeSelect([ // CHANGED
+                { value: "before", label: "before" },
+                { value: "after", label: "after" }
+            ], r.endAnchorOffsetDirection || "after");
+            const endAnchorSel = makeSelect(
+                endStageOptions,
+                r.endAnchorStage || "HARVEST_END"
+            );
+
+            const endAnchorWrap = document.createElement("div");
+            endAnchorWrap.style.display = "flex";
+            endAnchorWrap.style.gap = "8px";
+            endAnchorWrap.appendChild(endAnchorOffsetNum);
+            endAnchorWrap.appendChild(endAnchorOffsetDir);
+            endAnchorWrap.appendChild(endAnchorSel);
+            const endAnchorRow = row("End anchor", endAnchorWrap).row; // CHANGED
+
+            const repeatModeSel = makeSelect([ // CHANGED
+                { value: "none", label: "Do not repeat" },
+                { value: "interval", label: "Repeat every N days" }
+            ], r.repeatMode);
+            const repeatModeRow = row("Repeat", repeatModeSel).row; // CHANGED
 
             const repeatConfigDiv = document.createElement("div");
             repeatConfigDiv.style.marginLeft = "20px";
-            repeatConfigDiv.style.display = r.repeat ? "" : "none";
 
+            const repeatEveryNum = makeNumber(r.repeatEveryDays);
             const repeatEveryRow = row("Every (days)", repeatEveryNum).row;
+
+            const repeatUntilModeSel = makeSelect([ // CHANGED
+                { value: "x_times", label: "Repeat X total times" },
+                { value: "until_anchor", label: "Repeat until anchor" }
+            ], r.repeatUntilMode);
+            const repeatUntilModeRow = row("Until", repeatUntilModeSel).row; // CHANGED
+
+            const repeatTimesNum = makeNumber(r.repeatTimes ?? 1); // CHANGED
             const repeatTimesRow = row("Times", repeatTimesNum).row;
 
-            repeatConfigDiv.appendChild(repeatEveryRow);
-            repeatConfigDiv.appendChild(repeatTimesRow);
+            const repeatUntilAnchorSel = makeSelect(
+                repeatUntilStageOptions,
+                r.repeatUntilAnchorStage || "HARVEST_END"
+            );
 
-            repeatChk.addEventListener("change", () => {
-                repeatConfigDiv.style.display = repeatChk.checked ? "" : "none";
-            });
+            const repeatUntilAnchorRow = row("Until anchor", repeatUntilAnchorSel).row; // CHANGED
+
+            repeatConfigDiv.appendChild(repeatEveryRow);
+            repeatConfigDiv.appendChild(repeatUntilModeRow);
+            repeatConfigDiv.appendChild(repeatTimesRow);
+            repeatConfigDiv.appendChild(repeatUntilAnchorRow);
+
+            function syncTaskEditorVisibility() { // CHANGED
+                const endMode = endModeSel.value; // CHANGED
+                durationRow.style.display = (endMode === "fixed_days") ? "" : "none"; // CHANGED
+                endAnchorRow.style.display = (endMode === "anchor_range") ? "" : "none"; // CHANGED
+
+                const repeating = repeatModeSel.value === "interval"; // CHANGED
+                repeatConfigDiv.style.display = repeating ? "" : "none"; // CHANGED
+
+                const untilMode = repeatUntilModeSel.value; // CHANGED
+                repeatTimesRow.style.display = (repeating && untilMode === "x_times") ? "" : "none"; // CHANGED
+                repeatUntilAnchorRow.style.display = (repeating && untilMode === "until_anchor") ? "" : "none"; // CHANGED
+            }
+
+            endModeSel.addEventListener("change", syncTaskEditorVisibility); // CHANGED
+            repeatModeSel.addEventListener("change", syncTaskEditorVisibility); // CHANGED
+            repeatUntilModeSel.addEventListener("change", syncTaskEditorVisibility); // CHANGED
 
             taskEditorDiv.appendChild(titleRow);
-            taskEditorDiv.appendChild(offsetRow);
+            taskEditorDiv.appendChild(startRow); // CHANGED
+            taskEditorDiv.appendChild(endModeRow); // CHANGED
             taskEditorDiv.appendChild(durationRow);
-            taskEditorDiv.appendChild(repeatRow);
+            taskEditorDiv.appendChild(endAnchorRow); // CHANGED
+            taskEditorDiv.appendChild(repeatModeRow); // CHANGED
             taskEditorDiv.appendChild(repeatConfigDiv);
+
+            syncTaskEditorVisibility(); // CHANGED
 
             const btnWrap = document.createElement("div");
             btnWrap.style.marginTop = "8px";
             btnWrap.style.display = "flex";
             btnWrap.style.gap = "8px";
 
-            const saveBtn = mxUtils.button("Save", () => {
-                r.title = titleInput.value.trim();
-                r.offsetDays = Number(offsetNum.value);
-                r.offsetDirection = offsetDir.value;
-                r.anchorStage = anchorSel.value;
-                r.durationDays = Number(durationNum.value);
-                r.repeat = repeatChk.checked;
-                r.repeatEveryDays = Number(repeatEveryNum.value);
-                r.repeatUntilMode = "x_times";
-                r.repeatUntilValue = Number(repeatTimesNum.value);
+            const saveBtn = mxUtils.button("Save", async () => {
+                try {
+                    r.title = titleInput.value.trim();
 
-                if (editing) taskRules[index] = r;
-                else taskRules.push(r);
-                taskDirty = true;
+                    r.startOffsetDays = Number(startOffsetNum.value); // CHANGED
+                    r.startOffsetDirection = startOffsetDir.value; // CHANGED
+                    r.startAnchorStage = startAnchorSel.value; // CHANGED
 
-                taskEditorDiv.innerHTML = "";
-                renderTasksList();
+                    r.endMode = endModeSel.value; // CHANGED
+                    r.durationDays = (r.endMode === "fixed_days") ? Number(durationNum.value) : null; // CHANGED
+                    r.endAnchorStage = (r.endMode === "anchor_range") ? endAnchorSel.value : null; // CHANGED
+                    r.endAnchorOffsetDays = (r.endMode === "anchor_range") ? Number(endAnchorOffsetNum.value) : 0; // CHANGED
+                    r.endAnchorOffsetDirection = (r.endMode === "anchor_range") ? endAnchorOffsetDir.value : "after"; // CHANGED
+
+                    r.repeatMode = repeatModeSel.value; // CHANGED
+                    r.repeatEveryDays = Number(repeatEveryNum.value); // CHANGED
+                    r.repeatUntilMode = repeatUntilModeSel.value; // CHANGED
+                    r.repeatTimes = (r.repeatMode === "interval" && r.repeatUntilMode === "x_times")
+                        ? Number(repeatTimesNum.value)
+                        : 1; // CHANGED
+                    r.repeatUntilAnchorStage = (r.repeatMode === "interval" && r.repeatUntilMode === "until_anchor")
+                        ? repeatUntilAnchorSel.value
+                        : null; // CHANGED
+
+                    const allowedStages = await getAllowedAnchorStagesForMethod(formState.methodId);
+                    const normalized = validateTaskRule(r, { allowedStages });
+
+                    if (!editing && isCanonicalTaskId(r.id)) {
+                        throw new Error("Canonical task IDs are reserved.");
+                    }
+
+                    if (editing) taskRules[index] = normalized; // CHANGED
+                    else taskRules.push(normalized); // CHANGED
+                    taskDirty = true;
+
+                    taskEditorDiv.innerHTML = "";
+                    renderTasksList();
+                    updateTasksHeader({ // CHANGED
+                        methodSel,
+                        formState,
+                        currentMethodSpan,
+                        currentTemplateSourceSpan,
+                        taskDirty,
+                        taskTemplateSource
+                    });
+                } catch (e) {
+                    showErrorInline("Save task error: " + (e?.message || String(e))); // CHANGED
+                }
             });
 
             const cancelBtn = mxUtils.button("Cancel", () => {
@@ -4874,19 +5020,19 @@ Draw.loadPlugin(function (ui) {
 
 
         // Reset to defaults button
-        const resetTasksBtn = mxUtils.button("Reset to defaults", async () => {
+        const resetTasksBtn = mxUtils.button("Clear override + plant default", async () => { // CHANGED
             try {
                 syncStateFromControls();
 
                 const graph = ui.editor.graph;
                 clearCellTaskTemplateUndoable(graph, cell); // remove per-plan override
 
-                const methodId = String(formState.methodId || "").trim();                          
-                if (methodId) {                                                                    
-                    await TaskTemplateModel.deleteForSelection({                                   
-                        plantId: formState.plantId,                                                
-                        methodId                                                                    
-                    });                                                                            
+                const methodId = String(formState.methodId || "").trim();
+                if (methodId) {
+                    await TaskTemplateModel.deleteForSelection({
+                        plantId: formState.plantId,
+                        methodId
+                    });
                 }
 
                 await loadDefaultsForCurrentSelection(); // reload fallback chain (method default if no DB row)
@@ -4897,6 +5043,9 @@ Draw.loadPlugin(function (ui) {
 
         resetTasksBtn.style.marginTop = "8px";
         tasksTab.appendChild(resetTasksBtn);
+
+        restoreBuiltinsBtn.style.marginTop = "8px";
+        tasksTab.appendChild(restoreBuiltinsBtn);
 
         // Save default checkbox
         tasksTab.appendChild(
@@ -4931,10 +5080,10 @@ Draw.loadPlugin(function (ui) {
             return b;
         }
 
-        const scheduleTabBtn = makeTabButton("Schedule", div);               
+        const scheduleTabBtn = makeTabButton("Schedule", div);
 
         const tasksTabBtn = mxUtils.button("Tasks", async () => {
-            await refreshTaskTemplateFromSelection();                                
+            await refreshTaskTemplateFromSelection();
             updateTasksHeader({
                 methodSel,
                 formState,
@@ -5019,6 +5168,79 @@ Draw.loadPlugin(function (ui) {
         HARVEST_END: "Harvest end"
     };
 
+    const CANONICAL_TASK_IDS = ["prep", "sow", "start", "harden", "transplant", "thin", "harvest"];
+
+    function isCanonicalTaskId(id) {
+        return CANONICAL_TASK_IDS.includes(String(id || "").trim());
+    }
+
+    function isCanonicalTaskRule(rule) {
+        return isCanonicalTaskId(rule?.id);
+    }
+
+    function mergeMissingCanonicalRules(currentRules, defaultRules) {
+        const current = Array.isArray(currentRules) ? currentRules : [];
+        const defaults = Array.isArray(defaultRules) ? defaultRules : [];
+
+        const existingIds = new Set(
+            current
+                .map(r => String(r?.id || "").trim())
+                .filter(Boolean)
+        );
+
+        const merged = [...current];
+
+        for (const rule of defaults) {
+            const id = String(rule?.id || "").trim();
+            if (!id) continue;
+            if (!isCanonicalTaskId(id)) continue;
+            if (existingIds.has(id)) continue;
+
+            merged.push(normalizeTaskRule(rule));
+        }
+
+        const canonicalIndex = new Map(
+            CANONICAL_TASK_IDS.map((id, idx) => [id, idx])
+        );
+
+        return merged
+            .map((rule, originalIndex) => ({ rule, originalIndex }))
+            .sort((a, b) => {
+                const aId = String(a.rule?.id || "").trim();
+                const bId = String(b.rule?.id || "").trim();
+
+                const aCanonical = canonicalIndex.has(aId);
+                const bCanonical = canonicalIndex.has(bId);
+
+                if (aCanonical && bCanonical) {
+                    return canonicalIndex.get(aId) - canonicalIndex.get(bId);
+                }
+
+                if (aCanonical) return -1;
+                if (bCanonical) return 1;
+
+                return a.originalIndex - b.originalIndex;
+            })
+            .map(x => x.rule);
+    }
+
+    function getAllowedAnchorStagesForMethodCategory(methodCategoryId) {
+        switch (String(methodCategoryId || "").trim()) {
+            case "direct_sow":
+                return ["SOW", "GERM", "HARVEST_START", "HARVEST_END"];
+            case "transplant":
+                return ["SOW", "TRANSPLANT", "HARVEST_START", "HARVEST_END"];
+            default:
+                return ["SOW", "GERM", "TRANSPLANT", "HARVEST_START", "HARVEST_END"];
+        }
+    }
+
+    async function getAllowedAnchorStagesForMethod(methodId) {
+        const method = await getPlantingMethodById(methodId);
+        if (!method) return Object.keys(TASK_STAGE_LABELS);
+        return getAllowedAnchorStagesForMethodCategory(method.method_category_id);
+    }
+
     function humanStageLabel(stage) {
         return TASK_STAGE_LABELS[stage] || stage;
     }
@@ -5027,6 +5249,186 @@ Draw.loadPlugin(function (ui) {
 
     function safeJsonParse(s, fallback) {
         try { return JSON.parse(s); } catch (_) { return fallback; }
+    }
+
+    function normalizeTaskRule(rule) {
+        const r = { ...(rule || {}) }; // CHANGED
+
+        // ---------- v1 -> v2 start field migration ---------- // CHANGED
+        if (r.startAnchorStage == null && r.anchorStage != null) {
+            r.startAnchorStage = r.anchorStage; // CHANGED
+        }
+        if (r.startOffsetDays == null && r.offsetDays != null) {
+            r.startOffsetDays = r.offsetDays; // CHANGED
+        }
+        if (r.startOffsetDirection == null && r.offsetDirection != null) {
+            r.startOffsetDirection = r.offsetDirection; // CHANGED
+        }
+
+        // ---------- defaults for start ---------- // CHANGED
+        r.startAnchorStage = String(r.startAnchorStage || "SOW"); // CHANGED
+        r.startOffsetDays = Number(r.startOffsetDays ?? 0); // CHANGED
+        r.startOffsetDirection = (r.startOffsetDirection === "before") ? "before" : "after"; // CHANGED
+
+        // ---------- end mode ---------- // CHANGED
+        if (!r.endMode) { // CHANGED
+            if (r.id === "harvest") {
+                r.endMode = "anchor_range"; // CHANGED
+            } else {
+                r.endMode = "fixed_days"; // CHANGED
+            }
+        }
+
+        if (r.endMode === "anchor_range") { // CHANGED
+            r.durationDays = null; // CHANGED
+            r.endAnchorStage = String(r.endAnchorStage || "HARVEST_END");
+            r.endAnchorOffsetDays = Number(r.endAnchorOffsetDays ?? 0); // CHANGED
+            r.endAnchorOffsetDirection = (r.endAnchorOffsetDirection === "before") ? "before" : "after"; // CHANGED
+        } else {
+            r.endMode = "fixed_days"; // CHANGED
+            r.durationDays = Number(r.durationDays ?? 1); // CHANGED
+            r.endAnchorStage = r.endAnchorStage ?? null; // CHANGED
+            r.endAnchorOffsetDays = Number(r.endAnchorOffsetDays ?? 0); // CHANGED
+            r.endAnchorOffsetDirection = (r.endAnchorOffsetDirection === "before") ? "before" : "after"; // CHANGED
+        }
+
+        // ---------- repeat migration ---------- // CHANGED
+        if (!r.repeatMode) { // CHANGED
+            r.repeatMode = (r.repeat === true) ? "interval" : "none"; // CHANGED
+        }
+        r.repeatMode = (r.repeatMode === "interval") ? "interval" : "none"; // CHANGED
+        r.repeatEveryDays = Number(r.repeatEveryDays ?? 1); // CHANGED
+        r.repeatUntilMode = (r.repeatUntilMode === "until_anchor") ? "until_anchor" : "x_times"; // CHANGED
+        r.repeatTimes = Number(r.repeatTimes ?? r.repeatUntilValue ?? 1); // CHANGED
+        r.repeatUntilAnchorStage = r.repeatUntilAnchorStage ?? null; // CHANGED
+
+        return r; // CHANGED
+    }
+
+    function normalizeTaskTemplate(template) {
+        const src = (template && typeof template === "object") ? template : {}; // CHANGED
+        const rules = Array.isArray(src.rules) ? src.rules.map(normalizeTaskRule) : []; // CHANGED
+        return { version: 2, rules }; // CHANGED
+    }
+
+    function validateTaskRule(rule, { allowedStages = null } = {}) {
+        const r = normalizeTaskRule(rule);
+
+        if (!String(r.title || "").trim()) throw new Error("Task title is required.");
+        if (!String(r.startAnchorStage || "").trim()) throw new Error("Start anchor is required.");
+        if (!Number.isFinite(r.startOffsetDays) || r.startOffsetDays < 0) {
+            throw new Error("Start offset must be 0 or greater.");
+        }
+
+        if (Array.isArray(allowedStages) && allowedStages.length) {
+            if (!allowedStages.includes(r.startAnchorStage)) {
+                throw new Error("Start anchor is not available for the current method.");
+            }
+        }
+
+        if (r.endMode === "fixed_days") {
+            if (!Number.isFinite(r.durationDays) || r.durationDays < 0) {
+                throw new Error("Duration days must be 0 or greater.");
+            }
+        } else if (r.endMode === "anchor_range") {
+            if (!String(r.endAnchorStage || "").trim()) {
+                throw new Error("End anchor is required for anchor-range tasks.");
+            }
+            if (Array.isArray(allowedStages) && allowedStages.length) {
+                if (!allowedStages.includes(r.endAnchorStage)) {
+                    throw new Error("End anchor is not available for the current method.");
+                }
+            }
+        } else {
+            throw new Error("Invalid end mode.");
+        }
+
+        if (r.repeatMode === "interval") {
+            if (!Number.isFinite(r.repeatEveryDays) || r.repeatEveryDays < 1) {
+                throw new Error("Repeat every days must be at least 1.");
+            }
+
+            if (r.repeatUntilMode === "x_times") {
+                if (!Number.isFinite(r.repeatTimes) || r.repeatTimes < 1) {
+                    throw new Error("Repeat times must be at least 1.");
+                }
+            } else if (r.repeatUntilMode === "until_anchor") {
+                if (!String(r.repeatUntilAnchorStage || "").trim()) {
+                    throw new Error("Repeat-until anchor is required.");
+                }
+                if (Array.isArray(allowedStages) && allowedStages.length) {
+                    if (!allowedStages.includes(r.repeatUntilAnchorStage)) {
+                        throw new Error("Repeat-until anchor is not available for the current method.");
+                    }
+                }
+            } else {
+                throw new Error("Invalid repeat-until mode.");
+            }
+        }
+
+        return r;
+    }
+
+    function describeTaskRule(rule) {
+        const r = normalizeTaskRule(rule);
+
+        function fmtOffset(days, dir, stage) {
+            const n = Number(days ?? 0);
+            const label = humanStageLabel(stage);
+
+            if (!Number.isFinite(n) || n === 0) return label;
+
+            return `${n} day${n === 1 ? "" : "s"} ${dir} ${label}`;
+        }
+
+        const parts = [];
+
+        parts.push(r.title);
+
+        // timing
+        const startTxt = fmtOffset(
+            r.startOffsetDays,
+            r.startOffsetDirection,
+            r.startAnchorStage
+        );
+
+        if (r.endMode === "anchor_range") {
+            const endLabel = humanStageLabel(r.endAnchorStage);
+
+            if (r.startOffsetDays === 0 &&
+                r.endAnchorOffsetDays === 0 &&
+                r.startAnchorStage === "HARVEST_START" &&
+                r.endAnchorStage === "HARVEST_END") {
+
+                parts.push("Harvest window");
+
+            } else {
+                const endTxt = fmtOffset(
+                    r.endAnchorOffsetDays,
+                    r.endAnchorOffsetDirection,
+                    r.endAnchorStage
+                );
+
+                parts.push(`${startTxt} → ${endTxt}`);
+            }
+
+        } else {
+            parts.push(startTxt);
+
+            if (r.durationDays > 1) {
+                parts.push(`${r.durationDays} days`);
+            }
+        }
+
+        if (r.repeatMode === "interval") {
+            const repeatTxt = (r.repeatUntilMode === "x_times")
+                ? `repeat every ${r.repeatEveryDays} days (${r.repeatTimes} times)`
+                : `repeat every ${r.repeatEveryDays} days until ${humanStageLabel(r.repeatUntilAnchorStage)}`;
+
+            parts.push(repeatTxt);
+        }
+
+        return parts.join(" • ");
     }
 
     async function getPlantingMethodById(methodId) {
@@ -5042,30 +5444,15 @@ Draw.loadPlugin(function (ui) {
 
     // -------------------- Rule library --------------------------
 
-    async function loadPlantTaskTemplate(plantId, methodId) {
-        if (plantId == null || !methodId) return null;
-        await TaskTemplateModel.ensureTables();
-
-        const sql = `
-        SELECT template_json
-        FROM PlantTaskTemplates
-        WHERE plant_id = ? AND method_id = ?
-        LIMIT 1;`;
-
-        const rows = await queryAll(sql, [Number(plantId), String(methodId)]);
-        const tpl = safeJsonParse(rows?.[0]?.template_json, null);
-        return (tpl && typeof tpl === "object") ? tpl : null;
-    }
-
-    function prettySourceLabel(src) {                                                   
-        const map = {                                                                   
-            cell: "Cell override",                                                      
-            plant: "Plant default",                                                     
-            method_builtin: "Built-in method template",                                 
-            none: "No template",                                                        
-            unknown: "Unknown"                                                          
-        };                                                                              
-        return map[src] || String(src || "unknown");                                    
+    function prettySourceLabel(src) {
+        const map = {
+            cell: "Cell override",
+            plant: "Plant default",
+            method_builtin: "Built-in method template",
+            none: "No template",
+            unknown: "Unknown"
+        };
+        return map[src] || String(src || "unknown");
     }
 
     function updateTasksHeader({
@@ -5089,27 +5476,27 @@ Draw.loadPlugin(function (ui) {
             `Source: ${prettySourceLabel(taskTemplateSource)}${dirtyLabel}`;
     }
 
-    async function resolveTaskTemplate({ cell, plantId, methodId }) {                      
-        const raw = String(cell?.getAttribute?.("task_template_json") ?? "").trim();       
-        if (raw.length > 0) {                                                               
+    async function resolveTaskTemplate({ cell, plantId, methodId }) {
+        const raw = String(cell?.getAttribute?.("task_template_json") ?? "").trim();
+        if (raw.length > 0) {
             try {
-                const tpl = JSON.parse(raw);                                                
+                const tpl = JSON.parse(raw);
                 if (tpl && typeof tpl === "object") {
-                    return { template: tpl, source: "cell" };                               
+                    return { template: tpl, source: "cell" };
                 }
             } catch (_) {
                 console.warn("Invalid task_template_json");
             }
         }
 
-        const pTpl = await loadPlantTaskTemplate(plantId, methodId);   
+        const pTpl = await TaskTemplateModel.loadPlantTemplate(plantId, methodId);
         if (pTpl) {
-            return { template: pTpl, source: "plant" };                                     
+            return { template: pTpl, source: "plant" };
         }
 
-        const methodTpl = await getDefaultTaskTemplateForPlantingMethods(methodId);         
+        const methodTpl = await getDefaultTaskTemplateForPlantingMethods(methodId);
         if (methodTpl) {
-            return { template: methodTpl, source: "method_builtin" };                       
+            return { template: methodTpl, source: "method_builtin" };
         }
 
         return { template: null, source: "none" };
@@ -5126,98 +5513,157 @@ Draw.loadPlugin(function (ui) {
             prep: {
                 id: "prep",
                 title: "Prep bed for {plant}",
-                anchorStage: prepAnchor,
-                offsetDays: 3,
-                offsetDirection: "before",
+                startAnchorStage: prepAnchor, // CHANGED
+                startOffsetDays: 3, // CHANGED
+                startOffsetDirection: "before", // CHANGED
+                endMode: "fixed_days", // CHANGED
                 durationDays: 3,
-                repeat: false
+                endAnchorStage: null, // CHANGED
+                endAnchorOffsetDays: 0, // CHANGED
+                endAnchorOffsetDirection: "after", // CHANGED
+                repeatMode: "none", // CHANGED
+                repeatEveryDays: 1, // CHANGED
+                repeatUntilMode: "x_times", // CHANGED
+                repeatTimes: 1, // CHANGED
+                repeatUntilAnchorStage: null // CHANGED
             },
             sow: {
                 id: "sow",
                 title: "Sow {plant}",
-                anchorStage: "SOW",
-                offsetDays: 0,
-                offsetDirection: "after",
+                startAnchorStage: "SOW", // CHANGED
+                startOffsetDays: 0, // CHANGED
+                startOffsetDirection: "after", // CHANGED
+                endMode: "fixed_days", // CHANGED
                 durationDays: 7,
-                repeat: false
+                endAnchorStage: null, // CHANGED
+                endAnchorOffsetDays: 0, // CHANGED
+                endAnchorOffsetDirection: "after", // CHANGED
+                repeatMode: "none", // CHANGED
+                repeatEveryDays: 1, // CHANGED
+                repeatUntilMode: "x_times", // CHANGED
+                repeatTimes: 1, // CHANGED
+                repeatUntilAnchorStage: null // CHANGED
             },
             start: {
                 id: "start",
                 title: "Start {plant} indoors",
-                anchorStage: "SOW",
-                offsetDays: 0,
-                offsetDirection: "after",
+                startAnchorStage: "SOW", // CHANGED
+                startOffsetDays: 0, // CHANGED
+                startOffsetDirection: "after", // CHANGED
+                endMode: "fixed_days", // CHANGED
                 durationDays: 0,
-                repeat: false
+                endAnchorStage: null, // CHANGED
+                endAnchorOffsetDays: 0, // CHANGED
+                endAnchorOffsetDirection: "after", // CHANGED
+                repeatMode: "none", // CHANGED
+                repeatEveryDays: 1, // CHANGED
+                repeatUntilMode: "x_times", // CHANGED
+                repeatTimes: 1, // CHANGED
+                repeatUntilAnchorStage: null // CHANGED
             },
             harden: {
                 id: "harden",
                 title: "Harden off {plant}",
-                anchorStage: "TRANSPLANT",
-                offsetDays: 7,
-                offsetDirection: "before",
+                startAnchorStage: "TRANSPLANT", // CHANGED
+                startOffsetDays: 7, // CHANGED
+                startOffsetDirection: "before", // CHANGED
+                endMode: "fixed_days", // CHANGED
                 durationDays: 7,
-                repeat: false
+                endAnchorStage: null, // CHANGED
+                endAnchorOffsetDays: 0, // CHANGED
+                endAnchorOffsetDirection: "after", // CHANGED
+                repeatMode: "none", // CHANGED
+                repeatEveryDays: 1, // CHANGED
+                repeatUntilMode: "x_times", // CHANGED
+                repeatTimes: 1, // CHANGED
+                repeatUntilAnchorStage: null // CHANGED
             },
             transplant: {
                 id: "transplant",
                 title: "Transplant {plant}",
-                anchorStage: "TRANSPLANT",
-                offsetDays: 0,
-                offsetDirection: "after",
+                startAnchorStage: "TRANSPLANT", // CHANGED
+                startOffsetDays: 0, // CHANGED
+                startOffsetDirection: "after", // CHANGED
+                endMode: "fixed_days", // CHANGED
                 durationDays: 7,
-                repeat: false
+                endAnchorStage: null, // CHANGED
+                endAnchorOffsetDays: 0, // CHANGED
+                endAnchorOffsetDirection: "after", // CHANGED
+                repeatMode: "none", // CHANGED
+                repeatEveryDays: 1, // CHANGED
+                repeatUntilMode: "x_times", // CHANGED
+                repeatTimes: 1, // CHANGED
+                repeatUntilAnchorStage: null // CHANGED
             },
             thin: {
                 id: "thin",
                 title: "Thin / check {plant}",
-                anchorStage: "GERM",
-                offsetDays: 7,
-                offsetDirection: "after",
+                startAnchorStage: "GERM", // CHANGED
+                startOffsetDays: 7, // CHANGED
+                startOffsetDirection: "after", // CHANGED
+                endMode: "fixed_days", // CHANGED
                 durationDays: 7,
-                repeat: false
+                endAnchorStage: null, // CHANGED
+                endAnchorOffsetDays: 0, // CHANGED
+                endAnchorOffsetDirection: "after", // CHANGED
+                repeatMode: "none", // CHANGED
+                repeatEveryDays: 1, // CHANGED
+                repeatUntilMode: "x_times", // CHANGED
+                repeatTimes: 1, // CHANGED
+                repeatUntilAnchorStage: null // CHANGED
             },
             harvest: {
                 id: "harvest",
                 title: "Harvest – {plant}",
-                anchorStage: "HARVEST_START",
-                offsetDays: 0,
-                offsetDirection: "after",
-                durationDays: 0, // HARVEST_START → HARVEST_END
-                repeat: false
+                startAnchorStage: "HARVEST_START", // CHANGED
+                startOffsetDays: 0, // CHANGED
+                startOffsetDirection: "after", // CHANGED
+                endMode: "anchor_range", // CHANGED
+                durationDays: null, // CHANGED
+                endAnchorStage: "HARVEST_END", // CHANGED
+                endAnchorOffsetDays: 0, // CHANGED
+                endAnchorOffsetDirection: "after", // CHANGED
+                repeatMode: "none", // CHANGED
+                repeatEveryDays: 1, // CHANGED
+                repeatUntilMode: "x_times", // CHANGED
+                repeatTimes: 1, // CHANGED
+                repeatUntilAnchorStage: null // CHANGED
             }
         };
     }
 
     function applyTaskOverrides(rule, override) {
-        if (!override || typeof override !== "object") return { ...rule };
-
-        const out = { ...rule };
-        const keys = ["title", "anchorStage", "offsetDays", "offsetDirection", "durationDays", "repeat"];
-        for (const k of keys) {
-            if (override[k] !== undefined) out[k] = override[k];
-        }
-        return out;
+        const base = normalizeTaskRule(rule); // CHANGED
+        if (!override || typeof override !== "object") return { ...base }; // CHANGED
+        return normalizeTaskRule({ ...base, ...override }); // CHANGED
     }
 
     // -------------------- Default template from method --------------------------
 
-    async function getDefaultTaskTemplateForPlantingMethods(methodId) {                 
-        if (!methodId) return null;                                                     
+    async function getDefaultTaskTemplateForPlantingMethods(methodId) {
+        if (!methodId) return null;
 
-        const method = await getPlantingMethodById(methodId);                           
-        if (!method) return null;                                                       
+        const method = await getPlantingMethodById(methodId);
+        if (!method) return null;
 
-        const baseMethodCategoryId = String(method.method_category_id || "").trim();    
-        if (!baseMethodCategoryId) return null;                                         
+        const baseMethodCategoryId = String(method.method_category_id || "").trim();
+        if (!baseMethodCategoryId) return null;
 
-        const lib = taskRuleLibraryForBaseMethod(baseMethodCategoryId);                 
+        const lib = taskRuleLibraryForBaseMethod(baseMethodCategoryId);
 
-        const required = safeJsonParse(method.tasks_required_json, {}) || {};           
+        const required = safeJsonParse(method.tasks_required_json, {}) || {};
         const orderedIds = ["prep", "sow", "start", "harden", "transplant", "thin", "harvest"];
 
         const rules = [];
         for (const id of orderedIds) {
+            if (id === "harvest") {
+                const override = (required.harvest && typeof required.harvest === "object")
+                    ? required.harvest
+                    : null;
+                rules.push(applyTaskOverrides(lib.harvest, override));
+                continue;
+            }
+
             const req = required[id];
             if (!req) continue;
             if (!lib[id]) continue;
@@ -5226,13 +5672,9 @@ Draw.loadPlugin(function (ui) {
             rules.push(applyTaskOverrides(lib[id], override));
         }
 
-        if (!rules.some(r => r.id === "harvest") && lib.harvest) {                      
-            rules.push(lib.harvest);                                                    
-        }
+        if (!rules.length) return null;
 
-        if (!rules.length) return null;                                                 
-
-        return { version: 1, rules };                                                   
+        return normalizeTaskTemplate({ version: 2, rules }); // CHANGED
     }
 
 
@@ -5303,7 +5745,7 @@ Draw.loadPlugin(function (ui) {
 
 
     function stampPlanSummary(cell, {
-        plant, city, method, methodCategoryId, methodId, Tbase,                     
+        plant, city, method, methodCategoryId, methodId, Tbase,
         scheduleDates, plants, timelines,
         expectedTotalYield,
         varietyId = null,
@@ -5322,8 +5764,8 @@ Draw.loadPlugin(function (ui) {
         setAttr(cell, 'plant_abbr', String(plant.abbr || ''));
         setAttr(cell, 'city_name', city.city_name);
 
-        setAttr(cell, 'method_category_id', String(methodCategoryId ?? ''));           
-        setAttr(cell, 'method_id', String(methodId ?? ''));                                      
+        setAttr(cell, 'method_category_id', String(methodCategoryId ?? ''));
+        setAttr(cell, 'method_id', String(methodId ?? ''));
 
         setAttr(cell, 'variety_id', String(varietyId ?? ''));
         setAttr(cell, 'variety_name', String(varietyName || ''));
@@ -5361,7 +5803,7 @@ Draw.loadPlugin(function (ui) {
         const stageDays = {
             maturityDays: Number.isFinite(Number(plant.days_maturity)) && Number(plant.days_maturity) > 0
                 ? Number(plant.days_maturity)
-                : (budget.mode === "days" ? budget.amount : 0),                   
+                : (budget.mode === "days" ? budget.amount : 0),
             transplantDays: Number.isFinite(Number(plant.days_transplant)) ? Number(plant.days_transplant) : 0,
             germinationDays: Number.isFinite(Number(plant.days_germ)) ? Number(plant.days_germ) : 0,
         };
@@ -5397,24 +5839,25 @@ Draw.loadPlugin(function (ui) {
             return Number.isFinite(n) && n > 0 ? n : 0;
         })();
 
-        // Build tasks from a single planting timeline
         async function buildTasksForPlan({
             plant,
             schedule,
             timelines,
             taskTemplate,
             methodId = null,
-            plantId = null,                                                                       
+            plantId = null,
         }) {
             const tasks = [];
             const plantName = plant?.plant_name || plant?.abbr || "Plant";
 
-            const tpl = (taskTemplate && Array.isArray(taskTemplate.rules))
-                ? taskTemplate
+            const resolved = (taskTemplate && Array.isArray(taskTemplate.rules))
+                ? { template: taskTemplate }
                 : await resolveTaskTemplate({ cell, plantId, methodId });
 
-            const rules = Array.isArray(tpl?.rules) ? tpl.rules : [];
-            // Force single planting: use the first schedule/timeline entry only          
+            const tpl = normalizeTaskTemplate(resolved?.template ?? null); // CHANGED
+            const rules = Array.isArray(tpl?.rules) ? tpl.rules : []; // CHANGED
+
+            // Single planting only
             const sowDate = Array.isArray(schedule) ? schedule[0] : schedule;
             const tl = Array.isArray(timelines) ? timelines[0] : timelines;
             if (!sowDate || !tl) return tasks;
@@ -5422,7 +5865,7 @@ Draw.loadPlugin(function (ui) {
             function substituteTitle(template, { plantName }) {
                 let t = template || "";
                 t = t.replace(/\{plant\}/g, plantName);
-                t = t.replace(/\{succ\}/g, ""); // remove any legacy {succ} token         
+                t = t.replace(/\{succ\}/g, "");
                 return t;
             }
 
@@ -5436,77 +5879,134 @@ Draw.loadPlugin(function (ui) {
                 };
             }
 
-            const anchors = anchorDatesForTimeline(tl, sowDate);
+            function resolveAnchorISO(anchors, stage) {
+                let anchorISO = anchors[String(stage || "").trim()] || null;
 
-            for (const rule of rules) {
-                const stage = rule.anchorStage || "SOW";
-                let anchorISO = anchors[stage];
-
-                // Optional fallback for missing GERM: use SOW
+                // Optional fallback for missing GERM
                 if (!anchorISO && stage === "GERM") {
                     anchorISO = anchors.SOW || null;
                 }
 
-                if (!anchorISO) continue;
+                return anchorISO;
+            }
 
-                const offsetDays = Number(rule.offsetDays || 0);
-                const dir = rule.offsetDirection === "before" ? -1 : 1;
+            function applyOffset(anchorISO, days, direction) {
+                if (!anchorISO) return null;
+                const n = Number(days ?? 0);
+                const dir = direction === "before" ? -1 : 1;
+                return shiftDays(anchorISO, dir * n);
+            }
 
-                const baseISO = shiftDays(anchorISO, dir * offsetDays);
+            const anchors = anchorDatesForTimeline(tl, sowDate);
 
-                // Determine endISO based on duration and/or HARVEST_END special case
-                let startISO = baseISO;
-                let endISO = baseISO;
+            for (const rawRule of rules) {
+                const r = normalizeTaskRule(rawRule); // CHANGED
 
-                const dur = Number(rule.durationDays || 0);
+                // -------------------- start --------------------
+                const startAnchorISO = resolveAnchorISO(anchors, r.startAnchorStage); // CHANGED
+                if (!startAnchorISO) continue;
 
-                if (dur > 0) {
-                    endISO = shiftDays(baseISO, dur);
+                const startISO = applyOffset(
+                    startAnchorISO,
+                    r.startOffsetDays,
+                    r.startOffsetDirection
+                ); // CHANGED
+                if (!startISO) continue;
+
+                // -------------------- end --------------------
+                let endISO = startISO; // CHANGED
+
+                if (r.endMode === "fixed_days") { // CHANGED
+                    const dur = Number(r.durationDays ?? 0);
+                    endISO = Number.isFinite(dur) && dur >= 0
+                        ? shiftDays(startISO, dur)
+                        : startISO;
+                } else if (r.endMode === "anchor_range") { // CHANGED
+                    const endAnchorISO = resolveAnchorISO(anchors, r.endAnchorStage);
+                    if (!endAnchorISO) continue;
+
+                    endISO = applyOffset(
+                        endAnchorISO,
+                        r.endAnchorOffsetDays,
+                        r.endAnchorOffsetDirection
+                    );
+
+                    if (!endISO) continue;
                 } else {
-                    // Special-case: harvest rule spans HARVEST_START → HARVEST_END if available
-                    if (stage === "HARVEST_START" && anchors.HARVEST_END) {
-                        startISO = baseISO;
-                        endISO = anchors.HARVEST_END;
-                    }
+                    continue;
                 }
 
-                // Handle repeat
-                const repeat = !!rule.repeat;
-                const every = Number(rule.repeatEveryDays || 0);
-                const untilMode = rule.repeatUntilMode || "x_times";
-                const untilVal = Number(rule.repeatUntilValue || 0);
+                // Normalize reversed ranges if needed
+                let rangeStartISO = startISO; // CHANGED
+                let rangeEndISO = endISO; // CHANGED
+                if (rangeEndISO < rangeStartISO) { // CHANGED
+                    const tmp = rangeStartISO;
+                    rangeStartISO = rangeEndISO;
+                    rangeEndISO = tmp;
+                }
 
+                // -------------------- repeat --------------------
                 const occurrences = [];
 
-                if (!repeat || every <= 0 || untilVal <= 0) {
-                    occurrences.push({ startISO, endISO });
-                } else if (untilMode === "x_times") {
-                    let curStart = startISO;
-                    let curEnd = endISO;
-                    for (let k = 0; k < untilVal; k++) {
-                        occurrences.push({ startISO: curStart, endISO: curEnd });
-                        curStart = shiftDays(curStart, every);
-                        curEnd = shiftDays(curEnd, every);
-                    }
+                if (r.repeatMode !== "interval") { // CHANGED
+                    occurrences.push({
+                        startISO: rangeStartISO,
+                        endISO: rangeEndISO
+                    });
                 } else {
-                    occurrences.push({ startISO, endISO });
+                    const every = Number(r.repeatEveryDays ?? 0); // CHANGED
+                    if (!Number.isFinite(every) || every < 1) continue;
+
+                    if (r.repeatUntilMode === "x_times") { // CHANGED
+                        const times = Number(r.repeatTimes ?? 1); // CHANGED
+                        if (!Number.isFinite(times) || times < 1) continue;
+
+                        let curStart = rangeStartISO;
+                        let curEnd = rangeEndISO;
+
+                        for (let k = 0; k < times; k++) {
+                            occurrences.push({
+                                startISO: curStart,
+                                endISO: curEnd
+                            });
+                            curStart = shiftDays(curStart, every);
+                            curEnd = shiftDays(curEnd, every);
+                        }
+                    } else if (r.repeatUntilMode === "until_anchor") { // CHANGED
+                        const untilAnchorISO = resolveAnchorISO(anchors, r.repeatUntilAnchorStage); // CHANGED
+                        if (!untilAnchorISO) continue;
+
+                        let curStart = rangeStartISO;
+                        let curEnd = rangeEndISO;
+
+                        while (curStart <= untilAnchorISO) { // CHANGED
+                            occurrences.push({
+                                startISO: curStart,
+                                endISO: curEnd
+                            });
+                            curStart = shiftDays(curStart, every);
+                            curEnd = shiftDays(curEnd, every);
+                        }
+                    } else {
+                        continue;
+                    }
                 }
 
-                const baseTitle = substituteTitle(rule.title || "", { plantName });
+                // -------------------- emit tasks --------------------
+                const baseTitle = substituteTitle(r.title || "", { plantName });
                 const finalTitle = baseTitle || `Task for ${plantName}`;
 
                 for (const occ of occurrences) {
                     if (!occ.startISO && !occ.endISO) continue;
-                    const s = occ.startISO || occ.endISO;
-                    const e = occ.endISO || occ.startISO;
 
                     tasks.push({
                         title: finalTitle,
-                        startISO: s,
-                        endISO: e,
+                        startISO: occ.startISO || occ.endISO,
+                        endISO: occ.endISO || occ.startISO,
                         plant_name: plantName,
-                        rule_id: rule.id || null,
-                        anchorStage: stage
+                        rule_id: r.id || null,
+                        startAnchorStage: r.startAnchorStage, // CHANGED
+                        endMode: r.endMode // CHANGED
                     });
                 }
             }
@@ -5520,13 +6020,13 @@ Draw.loadPlugin(function (ui) {
             cell,
             schedule,
             timelines,
-            plantId = null,                                                                       
-            varietyId = null,                                                                     
-            methodCategoryId = null,                                                                      
-            methodId = null                                                                      
+            plantId = null,
+            varietyId = null,
+            methodCategoryId = null,
+            methodId = null
         }) {
-            const resolved = await resolveTaskTemplate({ cell, plantId, methodId });   
-            const taskTemplate = resolved?.template ?? null;                           
+            const resolved = await resolveTaskTemplate({ cell, plantId, methodId });
+            const taskTemplate = resolved?.template ?? null;
 
             const tasks = await buildTasksForPlan({
                 method,
@@ -5535,10 +6035,10 @@ Draw.loadPlugin(function (ui) {
                 schedule,
                 timelines,
                 taskTemplate,
-                plantId,                                                                          
-                varietyId,                                                                        
-                methodCategoryId,                                                                         
-                methodId                                                                         
+                plantId,
+                varietyId,
+                methodCategoryId,
+                methodId
             });
 
             const detail = {
@@ -5576,9 +6076,9 @@ Draw.loadPlugin(function (ui) {
             stampPlanSummary(cell, {
                 plant,
                 city,
-                method,                                                            
-                methodCategoryId: String(inputs?.methodCategoryId ?? cell?.getAttribute?.("method_category_id") ?? ""), 
-                methodId: String(inputs?.methodId ?? cell?.getAttribute?.("method_id") ?? ""), 
+                method,
+                methodCategoryId: String(inputs?.methodCategoryId ?? cell?.getAttribute?.("method_category_id") ?? ""),
+                methodId: String(inputs?.methodId ?? cell?.getAttribute?.("method_id") ?? ""),
 
                 Tbase: env.Tbase,
                 scheduleDates: schedule,
@@ -5606,9 +6106,9 @@ Draw.loadPlugin(function (ui) {
             cell,
             schedule,
             timelines,
-            plantId: Number(cell?.getAttribute?.("plant_id") ?? inputs?.plant?.plant_id ?? null), 
-            varietyId: inputs?.varietyId ?? null,                                                 
-            methodCategoryId: String(inputs?.methodCategoryId ?? cell?.getAttribute?.("method_category_id") ?? ""), 
+            plantId: Number(cell?.getAttribute?.("plant_id") ?? inputs?.plant?.plant_id ?? null),
+            varietyId: inputs?.varietyId ?? null,
+            methodCategoryId: String(inputs?.methodCategoryId ?? cell?.getAttribute?.("method_category_id") ?? ""),
             methodId: String(inputs?.methodId ?? cell?.getAttribute?.("method_id") ?? "")
         });
     }
