@@ -1201,7 +1201,7 @@ Draw.loadPlugin(function (ui) {
         return {
             plant,
             city,
-            method: resolvedBehavior.methodId,
+            planningMode: resolvedBehavior.methodId,
             methodCategoryId: resolvedBehavior.methodCategoryId,
             methodId: resolvedBehavior.methodId,
             resolvedBehavior,
@@ -1242,7 +1242,8 @@ Draw.loadPlugin(function (ui) {
 
     function firstNonSoilStart(planner, startD) {
         const C = planner.ctx;
-        let d = new Date(Math.max(startD.getTime(), C.scanStart.getTime()));        for (; d <= C.scanEndHard; d = planner.addDays(d, 1)) {
+        let d = new Date(Math.max(startD.getTime(), C.scanStart.getTime()));        
+        for (; d <= C.scanEndHard; d = planner.addDays(d, 1)) {
             const gateDate = getGateDateForCandidate(planner, d); // CHANGED
             if (!C.useSoilTempGate || planner.soilGateOK(gateDate)) return d; // CHANGED
         }
