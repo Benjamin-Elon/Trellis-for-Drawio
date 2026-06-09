@@ -627,6 +627,141 @@ test('task replacement creates only the latest supplied task set', () => {
     ]);
 });
 
+test('new task cards store scheduler dates as active and baseline dates', () => {
+    const attrs = taskHooks.buildInitialCardDateAttributes('2026-04-10', '2026-04-13');
+    assert.equal(attrs.start, '2026-04-10');
+    assert.equal(attrs.end, '2026-04-13');
+    assert.equal(attrs.base_start, '2026-04-10');
+    assert.equal(attrs.base_end, '2026-04-13');
+    assert.equal(Object.hasOwn(attrs, 'date_override'), false);
+});
+
+test('manual card date shifts preserve calendar duration across edge cases', () => {
+    const cases = [
+        {
+            name: 'same-day',
+            source: { start: '2026-04-10', end: '2026-04-10' },
+            nextStart: '2026-05-01',
+            expectedEnd: '2026-05-01'
+        },
+        {
+            name: 'multi-day month boundary',
+            source: { start: '2026-01-29', end: '2026-02-03' },
+            nextStart: '2026-02-26',
+            expectedEnd: '2026-03-03'
+        },
+        {
+            name: 'year boundary',
+            source: { start: '2026-12-29', end: '2027-01-03' },
+            nextStart: '2027-12-29',
+            expectedEnd: '2028-01-03'
+        },
+        {
+            name: 'leap day',
+            source: { start: '2028-02-27', end: '2028-03-01' },
+            nextStart: '2028-02-28',
+            expectedEnd: '2028-03-02'
+        },
+        {
+            name: 'backward shift',
+            source: { start: '2026-06-10', end: '2026-06-17' },
+            nextStart: '2026-05-20',
+            expectedEnd: '2026-05-27'
+        },
+        {
+            name: 'DST-adjacent',
+            source: { start: '2026-03-07', end: '2026-03-09' },
+            nextStart: '2026-10-31',
+            expectedEnd: '2026-11-02'
+        }
+    ];
+
+    for (const entry of cases) {
+        const patch = taskHooks.buildCardDateOverridePatch(entry.source, entry.nextStart);
+        assert.ok(patch && patch.changed, entry.name);
+        assert.equal(patch.attributes.start, entry.nextStart, entry.name);
+        assert.equal(patch.attributes.end, entry.expectedEnd, entry.name);
+        assert.equal(patch.attributes.date_override, '1', entry.name);
+    }
+});
+
+test('legacy card edit captures a reset baseline and reset removes only the override', () => {
+    const legacy = { start: '2026-04-10', end: '2026-04-13' };
+    const override = taskHooks.buildCardDateOverridePatch(legacy, '2026-05-20');
+
+    assert.equal(override.attributes.base_start, '2026-04-10');
+    assert.equal(override.attributes.base_end, '2026-04-13');
+    assert.equal(override.attributes.start, '2026-05-20');
+    assert.equal(override.attributes.end, '2026-05-23');
+
+    const reset = taskHooks.buildCardDateResetPatch(override.attributes);
+    assert.equal(reset.start, '2026-04-10');
+    assert.equal(reset.end, '2026-04-13');
+    assert.equal(reset.date_override, null);
+    assert.equal(Object.hasOwn(reset, 'base_start'), false);
+    assert.equal(Object.hasOwn(reset, 'base_end'), false);
+});
+
+test('unchanged and invalid card dates do not produce override patches', () => {
+    assert.deepEqual(
+        { ...taskHooks.buildCardDateOverridePatch({ start: '2026-04-10', end: '2026-04-13' }, '2026-04-10') },
+        { changed: false }
+    );
+    assert.equal(taskHooks.buildCardDateOverridePatch({ start: '', end: '2026-04-13' }, '2026-05-01'), null);
+    assert.equal(taskHooks.buildCardDateOverridePatch({ start: '2026-04-10', end: '' }, '2026-05-01'), null);
+    assert.equal(taskHooks.buildCardDateOverridePatch({ start: '2026-04-13', end: '2026-04-10' }, '2026-05-01'), null);
+    assert.equal(taskHooks.buildCardDateOverridePatch({ start: '2026-02-31', end: '2026-03-02' }, '2026-05-01'), null);
+    assert.equal(taskHooks.buildCardDateOverridePatch({ start: '2026-04-10', end: '2026-04-13' }, 'invalid'), null);
+    assert.equal(taskHooks.buildCardDateResetPatch({ base_start: '2026-05-02', base_end: '2026-05-01' }), null);
+});
+
+test('card date menu eligibility includes work lanes and excludes completed lanes', () => {
+    const editable = [
+        'UPCOMING_FUTURE',
+        'UPCOMING_YEAR',
+        'UPCOMING_MONTH',
+        'UPCOMING_WEEK',
+        'TODO_STAGED',
+        'TODO',
+        'DOING'
+    ];
+    const immutable = ['DONE', 'DONE_WEEK', 'DONE_MONTH', 'DONE_YEAR', 'ARCHIVED', '', null];
+
+    editable.forEach(lane => assert.equal(taskHooks.isEditableCardDateLane(lane), true, lane));
+    immutable.forEach(lane => assert.equal(taskHooks.isEditableCardDateLane(lane), false, String(lane)));
+});
+
+test('scheduler regeneration creates a fresh baseline without preserving an override', () => {
+    const overridden = taskHooks.buildCardDateOverridePatch(
+        {
+            base_start: '2026-04-10',
+            base_end: '2026-04-13',
+            start: '2026-05-20',
+            end: '2026-05-23',
+            date_override: '1'
+        },
+        '2026-06-01'
+    );
+    assert.equal(overridden.attributes.date_override, '1');
+
+    const regenerated = taskHooks.buildInitialCardDateAttributes('2027-04-08', '2027-04-11');
+    assert.equal(regenerated.start, '2027-04-08');
+    assert.equal(regenerated.end, '2027-04-11');
+    assert.equal(regenerated.base_start, '2027-04-08');
+    assert.equal(regenerated.base_end, '2027-04-11');
+    assert.equal(Object.hasOwn(regenerated, 'date_override'), false);
+});
+
+test('manual date actions are wired to one value change, reflow, and edited badge rendering', () => {
+    const source = fs.readFileSync(taskManagerPath, 'utf8');
+    assert.match(source, /model\.setValue\(card,\s*cloneCardValueWithAttributes\(card,\s*attributes\)\)/);
+    assert.match(source, /scanAndReflowBoard\(board,\s*\{\s*insideUpdate:\s*true\s*\}\)/);
+    assert.match(source, /renderBadge\('Dates',\s*'Edited'\)/);
+    assert.match(source, /menu\.addItem\('Edit Card Dates\.\.\.'/);
+    assert.match(source, /menu\.addItem\('Reset Card Dates'/);
+    assert.match(source, /const PROTECTED_WORK_LANES = new Set\(\['TODO',\s*'DOING'\]\)/);
+});
+
 test('save path passes the in-memory task template and stops after anchor failure', () => {
     const source = fs.readFileSync(schedulerPath, 'utf8');
     assert.match(source, /taskTemplate:\s*options\.taskTemplate\s*\?\?\s*null/);

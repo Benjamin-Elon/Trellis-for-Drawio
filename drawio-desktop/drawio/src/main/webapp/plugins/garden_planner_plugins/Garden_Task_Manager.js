@@ -10,15 +10,140 @@ function normalizeTaskReplacementDetail(detail) { // FIX: centralize the schedul
     };
 }
 
-function applyImmediateTaskReplacement({ targetGroupId, tasks, removeTasks, createTasks }) { // FIX: make empty replacement testable
-    removeTasks(targetGroupId);
+function applyImmediateTaskReplacement({ targetGroupId, tasks, removeTasks, createTasks }) {
+    removeTasks(targetGroupId, { reflow: tasks.length === 0 }); // CHANGE
     if (tasks.length) createTasks(tasks, targetGroupId, { reflow: true });
+}
+
+const EDITABLE_CARD_DATE_LANES = new Set([ // NEW: completed lanes intentionally remain immutable in version one
+    'UPCOMING_FUTURE',
+    'UPCOMING_YEAR',
+    'UPCOMING_MONTH',
+    'UPCOMING_WEEK',
+    'TODO_STAGED',
+    'TODO',
+    'DOING'
+]);
+
+function parseTaskCalendarISO(iso) { // NEW: strict calendar parsing shared by runtime code and tests
+    const match = String(iso || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!match) return null;
+
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    const utcDate = new Date(Date.UTC(year, month - 1, day));
+
+    if (
+        utcDate.getUTCFullYear() !== year ||
+        utcDate.getUTCMonth() !== month - 1 ||
+        utcDate.getUTCDate() !== day
+    ) {
+        return null;
+    }
+
+    return {
+        year,
+        month,
+        day,
+        dayNumber: Math.floor(utcDate.getTime() / 86400000)
+    };
+}
+
+function shiftTaskCalendarISO(iso, dayDelta) { // NEW: UTC calendar arithmetic avoids DST-length assumptions
+    const parsed = parseTaskCalendarISO(iso);
+    const delta = Number(dayDelta);
+    if (!parsed || !Number.isInteger(delta)) return null;
+
+    const shifted = new Date(Date.UTC(parsed.year, parsed.month - 1, parsed.day + delta));
+    const year = shifted.getUTCFullYear();
+    const month = String(shifted.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(shifted.getUTCDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+}
+
+function readTaskDateAttribute(source, key) { // NEW: supports XML cells and plain objects in reliability tests
+    if (source && typeof source.getAttribute === 'function') return source.getAttribute(key);
+    return source && Object.prototype.hasOwnProperty.call(source, key) ? source[key] : null;
+}
+
+function getTaskDateRange(source, startKey = 'start', endKey = 'end') { // NEW
+    const startISO = String(readTaskDateAttribute(source, startKey) || '').trim();
+    const endISO = String(readTaskDateAttribute(source, endKey) || '').trim();
+    const start = parseTaskCalendarISO(startISO);
+    const end = parseTaskCalendarISO(endISO);
+    if (!start || !end || end.dayNumber < start.dayNumber) return null;
+
+    return {
+        startISO,
+        endISO,
+        durationDays: end.dayNumber - start.dayNumber
+    };
+}
+
+function buildInitialCardDateAttributes(startISO, endISO) { // NEW: scheduler output becomes the reset baseline
+    const range = getTaskDateRange({ start: startISO, end: endISO });
+    if (!range) return null;
+
+    return {
+        base_start: range.startISO,
+        base_end: range.endISO,
+        start: range.startISO,
+        end: range.endISO
+    };
+}
+
+function buildCardDateOverridePatch(source, newStartISO) { // NEW: pure patch builder keeps mutation orchestration small
+    const current = getTaskDateRange(source);
+    const nextStart = parseTaskCalendarISO(newStartISO);
+    if (!current || !nextStart) return null;
+    if (current.startISO === String(newStartISO).trim()) return { changed: false };
+
+    const nextEndISO = shiftTaskCalendarISO(String(newStartISO).trim(), current.durationDays);
+    if (!nextEndISO) return null;
+
+    // Legacy cards capture their current valid dates as the baseline on first edit. // NEW
+    const storedBaseline = getTaskDateRange(source, 'base_start', 'base_end');
+    const baseline = storedBaseline || current;
+
+    return {
+        changed: true,
+        attributes: {
+            base_start: baseline.startISO,
+            base_end: baseline.endISO,
+            start: String(newStartISO).trim(),
+            end: nextEndISO,
+            date_override: '1'
+        }
+    };
+}
+
+function buildCardDateResetPatch(source) { // NEW
+    const baseline = getTaskDateRange(source, 'base_start', 'base_end');
+    if (!baseline) return null;
+
+    return {
+        start: baseline.startISO,
+        end: baseline.endISO,
+        date_override: null
+    };
+}
+
+function isEditableCardDateLane(laneKey) { // NEW
+    return EDITABLE_CARD_DATE_LANES.has(String(laneKey || ''));
 }
 
 if (typeof globalThis !== 'undefined' && globalThis.__TRELLIS_TASK_MANAGER_TEST__) { // FIX: no runtime exposure unless tests opt in
     globalThis.__TRELLIS_TASK_MANAGER_TEST_HOOKS__ = {
         normalizeTaskReplacementDetail,
-        applyImmediateTaskReplacement
+        applyImmediateTaskReplacement,
+        parseTaskCalendarISO, // NEW
+        shiftTaskCalendarISO, // NEW
+        getTaskDateRange, // NEW
+        buildInitialCardDateAttributes, // NEW
+        buildCardDateOverridePatch, // NEW
+        buildCardDateResetPatch, // NEW
+        isEditableCardDateLane // NEW
     };
 }
 
@@ -41,6 +166,7 @@ Draw.loadPlugin(function (ui) {
 
     // Lane fills
     const LANE_FILL = [
+        '#DDD6FE', // UPCOMING (future) // NEW
         '#C7D2FE', // UPCOMING (year)
         '#BAE6FD', // UPCOMING (month)
         '#BBF7D0', // UPCOMING (week)
@@ -60,6 +186,7 @@ Draw.loadPlugin(function (ui) {
     const LINK_ATTR = 'linkedTo';
 
     const LANES = [
+        { key: 'UPCOMING_FUTURE', label: 'UPCOMING (future)' }, // NEW
         { key: 'UPCOMING_YEAR', label: 'UPCOMING (year)' },
         { key: 'UPCOMING_MONTH', label: 'UPCOMING (month)' },
         { key: 'UPCOMING_WEEK', label: 'UPCOMING (week)' },
@@ -138,7 +265,7 @@ Draw.loadPlugin(function (ui) {
     function ensureBoardTemplateIn(containerVertex, opts) {                                  // CHANGE
         const parent = containerVertex || graph.getDefaultParent();
         let { main } = findBoardsIn(parent);
-    
+
         const insideUpdate = !!(opts && opts.insideUpdate);                                  // NEW
         if (!insideUpdate) model.beginUpdate();                                              // NEW
         try {                                                                                // CHANGE
@@ -155,7 +282,7 @@ Draw.loadPlugin(function (ui) {
         } finally {                                                                          // CHANGE
             if (!insideUpdate) model.endUpdate();                                            // NEW
         }                                                                                     // CHANGE
-    }    
+    }
 
     function createSecondaryBoardIn(parent) {
         const board = createVertex('Kanban', BOARD_GEOM.x, BOARD_GEOM.y, BOARD_GEOM.w, BOARD_GEOM.h, BOARD_STYLE);
@@ -169,46 +296,75 @@ Draw.loadPlugin(function (ui) {
     function ensureLanes(board) {
         const existingByKey = {};
         const count = model.getChildCount(board);
+
         for (let i = 0; i < count; i++) {
             const ch = model.getChildAt(board, i);
             if (!model.isVertex(ch)) continue;
+
             const k = getAttr(ch, 'lane_key');
             if (k) existingByKey[k] = ch;
         }
-        let x = 10, y = 28;
+
+        let x = 10;
+        const y = 28;
+
         LANES.forEach((lane, idx) => {
             const fill = LANE_FILL[idx % LANE_FILL.length];
             const style = LANE_STYLE_BASE + 'fillColor=' + fill + ';strokeColor=' + fill + ';';
+
             let laneCell = existingByKey[lane.key];
+
             if (!laneCell) {
                 laneCell = createVertex(lane.label, x, y, LANE_W, LANE_H, style);
-                model.add(board, laneCell, model.getChildCount(board));
-                setAttrNoUndo(laneCell, 'lane_key', lane.key);
-                setAttrNoUndo(laneCell, 'status', lane.label);
+                model.add(board, laneCell, idx); // CHANGE: insert in defined lane order
+                setAttrNoUndo(laneCell, 'lane_key', lane.key, true); // CHANGE
+                setAttrNoUndo(laneCell, 'status', lane.label, true); // CHANGE
             } else {
                 laneCell.setStyle(style);
                 ensureXmlValue(laneCell).setAttribute('label', lane.label);
-                setAttrNoUndo(laneCell, 'status', lane.label);
+                setAttrNoUndo(laneCell, 'status', lane.label, true);
+
+                // Keep existing boards visually aligned with the current LANES array. // NEW
+                const geo = laneCell.getGeometry() ? laneCell.getGeometry().clone() : new mxGeometry(x, y, LANE_W, LANE_H);
+                geo.x = x;       // NEW
+                geo.y = y;       // NEW
+                geo.width = LANE_W;   // NEW
+                geo.height = LANE_H;  // NEW
+                model.setGeometry(laneCell, geo); // NEW
+
+                // Keep child order aligned with LANES order. // NEW
+                if (model.getParent(laneCell) === board) {
+                    model.add(board, laneCell, idx); // NEW
+                }
             }
+
+            graph.refresh(laneCell); // NEW
             x += LANE_W + LANE_GAP;
         });
+
         const totalW = 10 + (LANES.length * LANE_W) + ((LANES.length - 1) * LANE_GAP) + 10;
         const geo = board.getGeometry().clone();
         geo.width = Math.max(totalW, BOARD_GEOM.w);
         geo.height = BOARD_GEOM.h;
         model.setGeometry(board, geo);
+
+        graph.refresh(board); // NEW
     }
 
-    function lanesMap(board) {
-        const lanes = {};
-        const n = model.getChildCount(board);
-        for (let i = 0; i < n; i++) {
-            const ch = model.getChildAt(board, i);
-            if (!model.isVertex(ch)) continue;
-            const k = getAttr(ch, 'lane_key');
-            if (k) lanes[k] = ch;
+    function lanesMap(board) { // FIX: build lane_key -> lane cell lookup for a board
+        const out = {}; // FIX
+        if (!board) return out; // FIX
+
+        const n = model.getChildCount(board); // FIX
+        for (let i = 0; i < n; i++) { // FIX
+            const ch = model.getChildAt(board, i); // FIX
+            if (!ch || !model.isVertex(ch)) continue; // FIX
+
+            const laneKey = getAttr(ch, 'lane_key'); // FIX
+            if (laneKey) out[laneKey] = ch; // FIX
         }
-        return lanes;
+
+        return out; // FIX
     }
 
     // tiler group completed helpers
@@ -254,7 +410,7 @@ Draw.loadPlugin(function (ui) {
 
 
     // Lane Helpers
-    const PROTECTED_WORK_LANES = new Set(['TODO_STAGED', 'TODO', 'DOING']);
+    const PROTECTED_WORK_LANES = new Set(['TODO', 'DOING']);
 
     function isDoneLikeLane(laneKey) {
         return laneKey === 'DONE' || laneKey === 'DONE_WEEK' ||
@@ -263,48 +419,125 @@ Draw.loadPlugin(function (ui) {
     }
 
     function isUpcomingLane(lk) {
-        return lk === 'UPCOMING_YEAR' || lk === 'UPCOMING_MONTH' || lk === 'UPCOMING_WEEK';
+        return lk === 'UPCOMING_FUTURE' || // NEW
+            lk === 'UPCOMING_YEAR' ||
+            lk === 'UPCOMING_MONTH' ||
+            lk === 'UPCOMING_WEEK';
     }
 
     function isWorkLane(laneKey) {
-        return laneKey === 'UPCOMING_YEAR' || laneKey === 'UPCOMING_MONTH' ||
-            laneKey === 'UPCOMING_WEEK' || laneKey === 'TODO_STAGED' ||
-            laneKey === 'TODO' || laneKey === 'DOING';
+        return laneKey === 'UPCOMING_FUTURE' || // NEW
+            laneKey === 'UPCOMING_YEAR' ||
+            laneKey === 'UPCOMING_MONTH' ||
+            laneKey === 'UPCOMING_WEEK' ||
+            laneKey === 'TODO_STAGED' ||
+            laneKey === 'TODO' ||
+            laneKey === 'DOING';
     }
 
     // -------------------- Time helpers --------------------
     const MS_DAY = 86400000;
-    function parseISO(iso) {
-        if (!iso) return null;
-        const [y, m, d] = iso.split('-').map(Number);
-        if (!y || !m || !d) return null;
-        return new Date(Date.UTC(y, m - 1, d));
+
+    function parseLocalISO(iso) { // CHANGE: task dates are local calendar days
+        const parsed = parseTaskCalendarISO(iso); // CHANGE: share strict validation with manual shifting
+        return parsed ? new Date(parsed.year, parsed.month - 1, parsed.day) : null; // CHANGE
     }
-    function startOfUTCDay(d) {
-        return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+
+    function startOfLocalDay(d) { // CHANGE
+        return new Date(d.getFullYear(), d.getMonth(), d.getDate());
     }
+
+    function formatLocalISO(d) { // CHANGE
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        return `${y}-${m}-${day}`;
+    }
+
     function todayISO() {
-        const t = startOfUTCDay(new Date());
-        const y = t.getUTCFullYear(), m = String(t.getUTCMonth() + 1).padStart(2, '0'), d = String(t.getUTCDate()).padStart(2, '0');
-        return `${y}-${m}-${d}`;
+        return formatLocalISO(startOfLocalDay(new Date())); // CHANGE
     }
-    function daysUntilUTC(dateISO) {
-        const dt = parseISO(dateISO);
+
+    function daysUntil(dateISO) { // CHANGE
+        const dt = parseLocalISO(dateISO);
         if (!dt) return null;
-        const today = startOfUTCDay(new Date());
-        return Math.floor((dt - today) / MS_DAY);
+        const today = startOfLocalDay(new Date());
+        return Math.round((dt - today) / MS_DAY); // CHANGE: local day delta
     }
-    function daysSinceUTC(dateISO) {
-        const dt = parseISO(dateISO);
+
+    function daysSince(dateISO) { // CHANGE
+        const dt = parseLocalISO(dateISO);
         if (!dt) return null;
-        const today = startOfUTCDay(new Date());
-        return Math.floor((today - dt) / MS_DAY);
+        const today = startOfLocalDay(new Date());
+        return Math.round((today - dt) / MS_DAY); // CHANGE: local day delta
     }
-    function daysBetweenUTC(aISO, bISO) {
-        const a = parseISO(aISO), b = parseISO(bISO);
+
+    function daysBetween(aISO, bISO) { // CHANGE: returns a - b in local calendar days
+        const a = parseLocalISO(aISO);
+        const b = parseLocalISO(bISO);
         if (!a || !b) return null;
-        return Math.floor((a - b) / MS_DAY);
+        return Math.round((a - b) / MS_DAY);
     }
+
+    function hasCardDateOverride(card) { // NEW
+        return getAttr(card, 'date_override') === '1';
+    }
+
+    function canEditCardDates(card) { // NEW: version one excludes every completed or archived lane
+        if (!card || !isKanbanCard(card)) return false;
+        if (!findBoardAncestor(card)) return false;
+        if (!isEditableCardDateLane(laneKeyOfCard(card))) return false;
+        return getTaskDateRange(card.value) != null;
+    }
+
+    function cloneCardValueWithAttributes(card, attributes) { // NEW: prepare one undoable value replacement
+        const current = card && card.value;
+        let clone = null;
+
+        if (current && typeof current.cloneNode === 'function') {
+            clone = current.cloneNode(true);
+        } else {
+            const doc = mxUtils.createXmlDocument();
+            clone = doc.createElement('object');
+            clone.setAttribute('label', typeof current === 'string' ? current : '');
+        }
+
+        Object.entries(attributes || {}).forEach(([key, value]) => {
+            if (value == null) clone.removeAttribute(key);
+            else clone.setAttribute(key, String(value));
+        });
+
+        return clone;
+    }
+
+    function commitCardDatePatch(card, attributes) { // NEW: value update and resulting reflow share one undo transaction
+        const board = findBoardAncestor(card);
+        if (!board) return false;
+
+        model.beginUpdate();
+        try {
+            model.setValue(card, cloneCardValueWithAttributes(card, attributes)); // NEW
+            scanAndReflowBoard(board, { insideUpdate: true }); // NEW
+        } finally {
+            model.endUpdate();
+        }
+
+        return true;
+    }
+
+    function applyCardDateOverride(card, newStartISO) { // NEW
+        if (!canEditCardDates(card)) return false;
+        const patch = buildCardDateOverridePatch(card.value, newStartISO);
+        if (!patch || patch.changed === false) return false;
+        return commitCardDatePatch(card, patch.attributes);
+    }
+
+    function resetCardDates(card) { // NEW
+        if (!canEditCardDates(card) || !hasCardDateOverride(card)) return false;
+        const patch = buildCardDateResetPatch(card.value);
+        return patch ? commitCardDatePatch(card, patch) : false;
+    }
+
     function fmtSigned(n) {
         if (n == null) return '';
         if (n > 0) return '+' + n;
@@ -313,12 +546,12 @@ Draw.loadPlugin(function (ui) {
 
     // -------------------- Classification --------------------
     function decideUpcomingLaneKey(startISO) {
-        const du = daysUntilUTC(startISO);
+        const du = daysUntil(startISO);
         if (du == null || du <= 0) return 'TODO_STAGED';
         if (du <= 7) return 'UPCOMING_WEEK';
         if (du <= 30) return 'UPCOMING_MONTH';
         if (du <= 365) return 'UPCOMING_YEAR';
-        return 'TODO_STAGED';
+        return 'UPCOMING_FUTURE'; // CHANGE
     }
 
     function classifyDoneLane(ageDays) {
@@ -332,17 +565,17 @@ Draw.loadPlugin(function (ui) {
 
     // -------------------- Badge helpers --------------------                                           
     function computeDaysToStart(startISO) {
-        const n = daysUntilUTC(startISO);
+        const n = daysUntil(startISO);
         return (n == null) ? null : n;
     }
     function computeDaysLeft(endISO) {
-        const n = daysUntilUTC(endISO);
+        const n = daysUntil(endISO);
         return (n == null) ? null : n;
     }
     function computeCompletedDelta(endISO, compISO) {
         if (!endISO) return null;
         const comp = compISO || todayISO();
-        const delta = daysBetweenUTC(endISO, comp);  // end - completed                                  
+        const delta = daysBetween(endISO, comp);  // end - completed
         if (delta == null) return null;
         if (delta === 0) return { text: 'On Time', numeric: 0 };
         if (delta > 0) return { text: delta + ' Days Early', numeric: delta };
@@ -379,7 +612,7 @@ Draw.loadPlugin(function (ui) {
 
     // -------------------- Sorting helpers --------------------                                             
     function tsFromISO(iso) {
-        const d = parseISO(iso);
+        const d = parseLocalISO(iso);
         return d ? d.getTime() : null;
     }
 
@@ -401,7 +634,7 @@ Draw.loadPlugin(function (ui) {
         return Number.POSITIVE_INFINITY;
     }
 
-    function sortLaneCards(lane, laneKey) {
+    function sortLaneCards(lane, laneKey, opts) {
         // Collect cards                                                                                    
         const items = [];
         const n = model.getChildCount(lane);
@@ -428,14 +661,16 @@ Draw.loadPlugin(function (ui) {
         const sorted = items.slice().sort(cmp);
 
         // Reinsert in desired order                                                                        
-        model.beginUpdate();
+        const insideUpdate = opts && opts.insideUpdate; // NEW
+        if (!insideUpdate) model.beginUpdate(); // CHANGE
         try {
             for (let i = 0; i < sorted.length; i++) {
                 const c = sorted[i].cell;
-                // Place at index i among lane children                                                     
                 model.add(lane, c, i);
             }
-        } finally { model.endUpdate(); }
+        } finally {
+            if (!insideUpdate) model.endUpdate(); // CHANGE
+        }
 
         // Return sorted card cells for paging                                                   
         return sorted.map(entry => entry.cell);
@@ -572,15 +807,14 @@ Draw.loadPlugin(function (ui) {
         }
     }
 
-    // Simple page-navigation helper; overlays will call this                                    
     function changeLanePage(lane, laneKey, delta) {
         if (!lane) return;
         const current = getLanePageIndex(lane);
         setLanePageIndex(lane, current + delta);
 
-        const cards = getLaneCardsInOrder(lane);                                    // use existing lane order
-        applyLanePaging(lane, laneKey, cards);                                      // page only this lane
-        ensureLanePagingControls(lane, laneKey, cards.length);                      // update overlays for this lane
+        const cards = getLaneCardsInOrder(lane);
+        applyLanePaging(lane, laneKey, cards);
+        ensureLanePagingControls(lane, laneKey, countRenderable(cards)); // CHANGE
     }
 
 
@@ -598,34 +832,31 @@ Draw.loadPlugin(function (ui) {
     }
 
 
-    function resortAndPageLane(lane, laneKey) {
-        const sortedCards = sortLaneCards(lane, laneKey) || [];
+    function resortAndPageLane(lane, laneKey, opts) {
+        const sortedCards = sortLaneCards(lane, laneKey, opts) || [];
         applyLanePaging(lane, laneKey, sortedCards);
-        ensureLanePagingControls(lane, laneKey, sortedCards.length);
+        ensureLanePagingControls(lane, laneKey, countRenderable(sortedCards)); // CHANGE
     }
 
 
     // Paging controls (overlays) for each lane                                                  
-    function ensureLanePagingControls(lane, laneKey, totalCards) {
-        if (!lane || totalCards == null) return;
+    function ensureLanePagingControls(lane, laneKey, renderableTotal) { // CHANGE
+        if (!lane || renderableTotal == null) return;
 
         const pageSize = computeLanePageSize(lane);
-        if (totalCards <= pageSize) {
-            // No paging needed: clear overlays and reset page index                             
+        if (renderableTotal <= pageSize) { // CHANGE
             graph.removeCellOverlays(lane);
             setLanePageIndex(lane, 0);
             return;
         }
 
         let pageIndex = getLanePageIndex(lane);
-        const maxPageIndex = Math.max(0, Math.ceil(totalCards / pageSize) - 1);
-        pageIndex = clampLanePageIndex(pageIndex, totalCards, pageSize);
+        const maxPageIndex = Math.max(0, Math.ceil(renderableTotal / pageSize) - 1); // CHANGE
+        pageIndex = clampLanePageIndex(pageIndex, renderableTotal, pageSize); // CHANGE
         setLanePageIndex(lane, pageIndex);
 
-        // Clear any existing overlays for this lane                                             
         graph.removeCellOverlays(lane);
 
-        // Up overlay (top-right) – only if not on first page                                    
         if (pageIndex > 0) {
             const upImage = new mxImage(ICON_PAGE_UP, 14, 14);
             const upOverlay = new mxCellOverlay(upImage, 'Page Up');
@@ -640,7 +871,6 @@ Draw.loadPlugin(function (ui) {
             graph.addCellOverlay(lane, upOverlay);
         }
 
-        // Down overlay (bottom-right) – only if not on last page                                
         if (pageIndex < maxPageIndex) {
             const downImage = new mxImage(ICON_PAGE_DOWN, 14, 14);
             const downOverlay = new mxCellOverlay(downImage, 'Page Down');
@@ -667,9 +897,10 @@ Draw.loadPlugin(function (ui) {
 
         const linkCount = getLinkCount(card);
         const linkBadge = (linkCount > 1) ? renderBadge('Links', linkCount) : '';
+        const editedDateBadge = hasCardDateOverride(card) ? renderBadge('Dates', 'Edited') : ''; // NEW
 
-        const badgesBlock = (badgesHtml || linkBadge)
-            ? ('<br/>' + badgesHtml + linkBadge)
+        const badgesBlock = (badgesHtml || editedDateBadge || linkBadge) // CHANGE
+            ? ('<br/>' + badgesHtml + editedDateBadge + linkBadge) // CHANGE
             : '';
 
         const html = title + badgesBlock;
@@ -712,54 +943,60 @@ Draw.loadPlugin(function (ui) {
 
 
     // Delete old / unlink tasks
-    function removeTasksLinkedOnlyTo(targetGroupId) {
-        if (!targetGroupId) return;
+    function removeTasksLinkedOnlyTo(targetGroupId, opts) { // CHANGE
+        if (!targetGroupId) return []; // CHANGE
 
         const grp = model.getCell(targetGroupId);
-        if (!grp) return;
+        if (!grp) return []; // CHANGE
 
-        // All cells currently linked FROM this group
         const linkedCells = getLinkedCellsOf(grp) || [];
-        if (!linkedCells.length) return;
+        if (!linkedCells.length) return []; // CHANGE
 
-        // Mutable link set for the group itself
+        const affectedBoards = new Map(); // NEW
         const groupLinkSet = getLinkSet(grp);
 
         model.beginUpdate();
         try {
             for (const c of linkedCells) {
-                // Only operate on Kanban cards
                 if (!isKanbanCard(c)) continue;
 
-                // All IDs linked TO this card
                 const linkSet = getLinkSet(c);
                 if (!linkSet || !linkSet.has(targetGroupId)) continue;
 
+                const board = findBoardAncestor(c); // NEW
+                if (board) affectedBoards.set(board.id, board); // NEW
+
                 if (linkSet.size === 1) {
-                    // Case 1: card is linked ONLY to this group → delete card
-                    groupLinkSet.delete(c.id);      // unlink from group side
+                    groupLinkSet.delete(c.id);
                     model.remove(c);
                 } else {
-                    // Case 2: card is linked to this group AND others → just unlink this group
-                    linkSet.delete(targetGroupId);  // unlink group on card side
-                    setLinkSet(c, linkSet);         // writes back + refreshes label
+                    linkSet.delete(targetGroupId);
+                    setLinkSet(c, linkSet);
 
-                    groupLinkSet.delete(c.id);      // unlink card on group side
+                    groupLinkSet.delete(c.id);
                 }
             }
 
-            // Write back updated group link set once
             setLinkSet(grp, groupLinkSet);
 
         } finally {
             model.endUpdate();
         }
+
+        const boards = Array.from(affectedBoards.values()); // NEW
+
+        const shouldReflow = !opts || opts.reflow !== false; // NEW
+        if (shouldReflow) { // NEW
+            boards.forEach(board => scanAndReflowBoard(board)); // NEW
+        } // NEW
+
+        return boards; // NEW
     }
 
 
 
     // -------------------- Task creation --------------------
-    async function createTasks(tasks, targetGroupId, opts) {
+    function createTasks(tasks, targetGroupId, opts) {
         if (!Array.isArray(tasks) || tasks.length === 0) return [];
 
         const reflow = !opts || opts.reflow !== false;
@@ -827,8 +1064,15 @@ Draw.loadPlugin(function (ui) {
         setAttrNoUndo(card, 'kanban_card', '1', /*suppressRefresh*/ !!suppressRefresh);
         setAttrNoUndo(card, 'title', title || 'Task', !!suppressRefresh);
         if (notes) setAttrNoUndo(card, 'notes', notes, !!suppressRefresh);
-        if (startISO) setAttrNoUndo(card, 'start', startISO, !!suppressRefresh);
-        if (endISO) setAttrNoUndo(card, 'end', endISO, !!suppressRefresh);
+        const dateAttributes = buildInitialCardDateAttributes(startISO, endISO); // NEW
+        if (dateAttributes) { // NEW
+            Object.entries(dateAttributes).forEach(([key, value]) => { // NEW
+                setAttrNoUndo(card, key, value, !!suppressRefresh); // NEW
+            }); // NEW
+        } else { // NEW: retain legacy tolerance for incomplete externally supplied tasks
+            if (startISO) setAttrNoUndo(card, 'start', startISO, !!suppressRefresh); // CHANGE
+            if (endISO) setAttrNoUndo(card, 'end', endISO, !!suppressRefresh); // CHANGE
+        }
         const laneStatus = getAttr(parentLane, 'status') || parentLane.value || '';
         setAttrNoUndo(card, 'status', laneStatus, !!suppressRefresh);
         setAttrNoUndo(card, 'badge', '', !!suppressRefresh);
@@ -869,6 +1113,62 @@ Draw.loadPlugin(function (ui) {
 
 
     // -------------------- Reflow logic --------------------
+
+    function findBoardAncestor(cell) { // NEW
+        let cur = cell; // NEW
+        while (cur) { // NEW
+            const key = getAttr(cur, 'board_key'); // NEW
+            if (key === BOARD_KEY || key === 'MAIN_KANBAN_BOARD') return cur; // NEW
+            cur = model.getParent(cur); // NEW
+        } // NEW
+        return null; // NEW
+    } // NEW
+
+    function markDirtyLane(dirtyLanes, lane) { // NEW
+        if (!dirtyLanes || !lane) return;
+        const laneKey = getAttr(lane, 'lane_key');
+        if (!laneKey) return;
+        dirtyLanes.set(lane.id, { lane, laneKey });
+    }
+
+    function markDirtyCardLane(dirtyLanes, card) { // NEW
+        if (!card) return;
+        markDirtyLane(dirtyLanes, model.getParent(card));
+    }
+
+    function snapshotLaneCards(lane) { // NEW
+        const out = [];
+        if (!lane) return out;
+
+        const n = model.getChildCount(lane);
+        for (let i = 0; i < n; i++) {
+            const c = model.getChildAt(lane, i);
+            if (model.isVertex(c) && isKanbanCard(c)) {
+                out.push(c);
+            }
+        }
+
+        return out;
+    }
+
+    function snapshotBoardCardsByLane(lanes) { // NEW
+        const snapshots = [];
+
+        for (const laneDef of LANES) {
+            const laneKey = laneDef.key;
+            const lane = lanes[laneKey];
+            if (!lane) continue;
+
+            snapshots.push({
+                lane,
+                laneKey,
+                cards: snapshotLaneCards(lane)
+            });
+        }
+
+        return snapshots;
+    }
+
     function boardLanes(board) { return lanesMap(board); }
 
     function putInLane(card, lanes, laneKey, suppressRefresh) {
@@ -905,7 +1205,7 @@ Draw.loadPlugin(function (ui) {
             comp = todayISO();
             setAttrNoUndo(card, 'completed', comp, true);
         }
-        const age = daysSinceUTC(comp);
+        const age = daysSince(comp);
         const target = classifyDoneLane(age);
         return putInLane(card, lanes, target, true);
     }
@@ -923,55 +1223,88 @@ Draw.loadPlugin(function (ui) {
     // 3) Scan logic: skip auto-move for protected lanes; still refresh badges     
     function scanAndReflowBoard(board, opts) {
         if (!board) return;
+
         const lanes = boardLanes(board);
         const insideUpdate = opts && opts.insideUpdate;
+        const dirtyLanes = new Map(); // CHANGE
         let boardDirty = false;
+
+        const snapshots = snapshotBoardCardsByLane(lanes); // CHANGE: stable snapshot before mutation
 
         if (!insideUpdate) model.beginUpdate();
         try {
-            for (const key in lanes) {
-                const lane = lanes[key];
-                const n = model.getChildCount(lane);
-                let laneDirty = false;
+            for (const snap of snapshots) {
+                const sourceLane = snap.lane;
+                const sourceLaneKey = snap.laneKey;
 
-                for (let i = 0; i < n; i++) {
-                    const c = model.getChildAt(lane, i);
-                    if (!model.isVertex(c) || getAttr(c, 'kanban_card') !== '1') continue;
+                for (const c of snap.cards) {
+                    if (!c || !model.isVertex(c) || !isKanbanCard(c)) continue;
 
-                    if (isYearHiddenCard(c)) {                                                         // CHANGE
-                        enforceYearHiddenVisibility(c);                                                // NEW
-                        continue;                                                                      // existing
+                    const beforeParent = model.getParent(c); // NEW
+
+                    if (isYearHiddenCard(c)) {
+                        if (enforceYearHiddenVisibility(c)) {
+                            markDirtyLane(dirtyLanes, beforeParent); // CHANGE
+                            boardDirty = true;
+                        }
+                        continue;
                     }
 
-                    if (isDoneLikeLane(key)) {
-                        if (reclassifyDone(c, lanes)) laneDirty = true;
+                    if (sourceLaneKey === 'ARCHIVED') {
+                        if (updateBadgeForLane(c, 'ARCHIVED', true)) {
+                            markDirtyLane(dirtyLanes, beforeParent); // CHANGE
+                            boardDirty = true;
+                        }
                         continue;
                     }
-                    if (key === 'ARCHIVED') {
-                        if (updateBadgeForLane(c, 'ARCHIVED', true)) laneDirty = true;
+
+                    if (isDoneLikeLane(sourceLaneKey)) {
+                        if (reclassifyDone(c, lanes)) {
+                            markDirtyLane(dirtyLanes, beforeParent); // CHANGE
+                            markDirtyCardLane(dirtyLanes, c);        // CHANGE: target lane after move
+                            boardDirty = true;
+                        }
                         continue;
                     }
-                    if (PROTECTED_WORK_LANES.has(key)) {
-                        if (updateBadgeForLane(c, key, true)) laneDirty = true;
+
+                    if (PROTECTED_WORK_LANES.has(sourceLaneKey)) {
+                        if (updateBadgeForLane(c, sourceLaneKey, true)) {
+                            markDirtyLane(dirtyLanes, beforeParent); // CHANGE
+                            boardDirty = true;
+                        }
                         continue;
                     }
-                    if (isUpcomingLane(key)) {
-                        if (reclassifyUpcoming(c, lanes)) laneDirty = true;
+
+                    if (isUpcomingLane(sourceLaneKey) || sourceLaneKey === 'TODO_STAGED') { // CHANGE
+                        if (reclassifyUpcoming(c, lanes)) {
+                            markDirtyLane(dirtyLanes, beforeParent);
+                            markDirtyCardLane(dirtyLanes, c);        // target lane after move
+                            boardDirty = true;
+                        }
                         continue;
                     }
-                    if (updateBadgeForLane(c, key, true)) laneDirty = true;
+
+                    if (updateBadgeForLane(c, sourceLaneKey, true)) {
+                        markDirtyLane(dirtyLanes, beforeParent); // CHANGE
+                        boardDirty = true;
+                    }
                 }
+            }
 
-                if (laneDirty) {
-                    // Classification or badges changed → re-sort and page
-                    resortAndPageLane(lane, key);
-                    boardDirty = true;
-                } else {
-                    // Nothing structurally changed, but enforce paging anyway
-                    const cards = getLaneCardsInOrder(lane);
-                    applyLanePaging(lane, key, cards);
-                    ensureLanePagingControls(lane, key, cards.length);
-                }
+            // Sort/page only after all movements are complete. // CHANGE
+            for (const { lane, laneKey } of dirtyLanes.values()) {
+                resortAndPageLane(lane, laneKey, { insideUpdate: true }); // CHANGE
+            }
+
+            // Clean paging for untouched lanes without depending on child iteration order. // CHANGE
+            for (const laneDef of LANES) {
+                const laneKey = laneDef.key;
+                const lane = lanes[laneKey];
+                if (!lane || dirtyLanes.has(lane.id)) continue;
+
+                const cards = getLaneCardsInOrder(lane);
+                applyLanePaging(lane, laneKey, cards);
+                ensureLanePagingControls(lane, laneKey, countRenderable(cards)); // CHANGE
             }
 
             if (boardDirty) {
@@ -1002,7 +1335,9 @@ Draw.loadPlugin(function (ui) {
         try {
             targets.forEach(parent => {
                 const { main, secondary } = findBoardsIn(parent);
-                [main, ...secondary].filter(Boolean).forEach(scanAndReflowBoard);
+                [main, ...secondary].filter(Boolean).forEach(function (board) { // CHANGE
+                    scanAndReflowBoard(board, { insideUpdate: true }); // CHANGE
+                });
             });
         } finally {
             if (!insideUpdate) model.endUpdate();
@@ -1032,18 +1367,20 @@ Draw.loadPlugin(function (ui) {
         });
     }
 
-    function updateGroupRenderState(group) {                                              // CHANGE
+    function updateGroupRenderState(group, opts) {                                             // CHANGE
         if (!group || !isTilerGroup(group)) return;                                       // CHANGE
         const cards = getLinkedCellsOf(group).filter(isKanbanCard);                       // CHANGE
 
         if (cards.length === 0) {
-            // no linked cards left -> delete the group                                   
             const edges = graph.getEdges(group, null, true, true, true) || [];
-            model.beginUpdate();
+            const insideUpdate = opts && opts.insideUpdate; // NEW
+            if (!insideUpdate) model.beginUpdate(); // CHANGE
             try {
                 edges.forEach(e => model.remove(e));
                 model.remove(group);
-            } finally { model.endUpdate(); }
+            } finally {
+                if (!insideUpdate) model.endUpdate(); // CHANGE
+            }
             return;
         }
 
@@ -1053,12 +1390,13 @@ Draw.loadPlugin(function (ui) {
 
         if (allDone === wasDone) return;                                                  // NEW (no change)
 
-        model.beginUpdate();                                                              // NEW
+        const insideUpdate = opts && opts.insideUpdate; // NEW
+        if (!insideUpdate) model.beginUpdate(); // CHANGE
         try {
-            setTilerGroupCompleted(group, allDone);                                       // NEW
-            applyCompletedStyleToGroup(group, allDone);                                   // NEW
+            setTilerGroupCompleted(group, allDone);
+            applyCompletedStyleToGroup(group, allDone);
         } finally {
-            model.endUpdate();                                                            // NEW
+            if (!insideUpdate) model.endUpdate(); // CHANGE
         }
 
         graph.refresh(group);                                                             // CHANGE
@@ -1084,15 +1422,73 @@ Draw.loadPlugin(function (ui) {
 
 
     // -------------------- Auto-status, badges, and DONE autopromotion --------------------
-    model.addListener(mxEvent.CHANGE, function (_sender, evt) {
-        const edit = evt.getProperty('edit');
-        if (!edit || !edit.changes) return;
-        for (const ch of edit.changes) {
-            if (ch instanceof mxChildChange) {
-                const cell = ch.child;
-                if (!cell || !model.isVertex(cell) || !isKanbanCard(cell)) continue;
-                if (isYearHiddenCard(cell)) continue;                                              // NEW
+    let pendingRepairCards = new Set(); // NEW
+    let repairTimer = null; // NEW
 
+    function collectChangedKanbanCards(edit) {
+        const out = new Set();
+        if (!edit || !edit.changes) return out;
+
+        for (const ch of edit.changes) {
+            let cell = null;
+
+            if (ch instanceof mxChildChange) {
+                cell = ch.child;
+
+                const previousParent = ch.previous; // NEW
+                const currentParent = model.getParent(cell); // NEW
+
+                const previousLaneKey = previousParent ? getAttr(previousParent, 'lane_key') : null; // NEW
+                const currentLaneKey = currentParent ? getAttr(currentParent, 'lane_key') : null; // NEW
+
+                if (previousLaneKey === currentLaneKey) {
+                    continue; // NEW: skip same-lane reorder/drag noise
+                }
+            } else if (ch instanceof mxValueChange) {
+                cell = ch.cell;
+            } else if (ch instanceof mxStyleChange) {
+                cell = ch.cell;
+            } else if (ch instanceof mxGeometryChange) {
+                continue; // CHANGE: geometry drag changes should not trigger board repair
+            }
+
+            if (!cell || !model.isVertex(cell) || !isKanbanCard(cell)) continue;
+            if (isYearHiddenCard(cell)) continue;
+
+            out.add(cell);
+        }
+
+        return out;
+    }
+
+    function scheduleKanbanRepair(cards) { // NEW
+        if (!cards || cards.size === 0) return;
+
+        cards.forEach(card => pendingRepairCards.add(card));
+
+        if (repairTimer != null) return;
+
+        repairTimer = setTimeout(function () {
+            repairTimer = null;
+
+            const cardsToRepair = Array.from(pendingRepairCards);
+            pendingRepairCards.clear();
+
+            repairChangedCards(cardsToRepair);
+        }, 0);
+    }
+
+    function repairChangedCards(cards) { // NEW
+        if (!cards || cards.length === 0) return;
+
+        const dirtyLanes = new Map();
+        const touchedGroups = new Set();
+
+        model.beginUpdate();
+        try {
+            for (const cell of cards) {
+                if (!cell || !model.isVertex(cell) || !isKanbanCard(cell)) continue;
+                if (isYearHiddenCard(cell)) continue;
 
                 const parent = model.getParent(cell);
                 if (!parent) continue;
@@ -1100,34 +1496,60 @@ Draw.loadPlugin(function (ui) {
                 const laneKey = getAttr(parent, 'lane_key');
                 if (!laneKey) continue;
 
-                // Keep %status% and badge in sync
-                const laneStatus = getAttr(parent, 'status') || parent.value || '';
-                setAttrNoUndo(cell, 'status', laneStatus);
-                updateBadgeForLane(cell, laneKey);
+                markDirtyLane(dirtyLanes, parent); // NEW
 
-                // If entering any DONE-like lane...
+                const laneStatus = getAttr(parent, 'status') || parent.value || '';
+                setAttrNoUndo(cell, 'status', laneStatus, true); // CHANGE
+                updateBadgeForLane(cell, laneKey, true); // CHANGE
+
                 if (isDoneLikeLane(laneKey)) {
-                    if (!getAttr(cell, 'completed')) setAttrNoUndo(cell, 'completed', todayISO());
+                    if (!getAttr(cell, 'completed')) {
+                        setAttrNoUndo(cell, 'completed', todayISO(), true); // CHANGE
+                    }
+
                     const board = model.getParent(parent);
                     const lanes = boardLanes(board);
-                    reclassifyDone(cell, lanes);
-                    updateRenderForGroupsLinkedTo(cell);                                            // moved before continue
+                    const beforeParent = model.getParent(cell);
+
+                    if (reclassifyDone(cell, lanes)) {
+                        markDirtyLane(dirtyLanes, beforeParent); // NEW
+                        markDirtyCardLane(dirtyLanes, cell);     // NEW
+                    }
+
+                    getLinkedCellsOf(cell).filter(isTilerGroup).forEach(g => touchedGroups.add(g.id)); // NEW
                     continue;
                 }
 
-                // If entering a work lane from completed/archived, remove completed
                 if (isWorkLane(laneKey) && getAttr(cell, 'completed') != null) {
-                    setAttrNoUndo(cell, 'completed', null);
-                    updateBadgeForLane(cell, laneKey);
-                    updateRenderForGroupsLinkedTo(cell);                                           // evaluate after badge reset
+                    setAttrNoUndo(cell, 'completed', null, true); // CHANGE
+                    updateBadgeForLane(cell, laneKey, true); // CHANGE
+
+                    getLinkedCellsOf(cell).filter(isTilerGroup).forEach(g => touchedGroups.add(g.id)); // NEW
                     continue;
                 }
 
-                // Fallback: still evaluate groups
-                updateRenderForGroupsLinkedTo(cell);
+                getLinkedCellsOf(cell).filter(isTilerGroup).forEach(g => touchedGroups.add(g.id)); // NEW
             }
-            // no-op for non-child changes
+
+            for (const { lane, laneKey } of dirtyLanes.values()) {
+                resortAndPageLane(lane, laneKey, { insideUpdate: true }); // CHANGE
+            }
+
+            touchedGroups.forEach(id => {
+                const group = model.getCell(id);
+                if (!group) return;
+                updateGroupRenderState(group, { insideUpdate: true }); // CHANGE
+            });
+
+        } finally {
+            model.endUpdate();
         }
+    }
+
+    model.addListener(mxEvent.CHANGE, function (_sender, evt) {
+        const edit = evt.getProperty('edit');
+        const cards = collectChangedKanbanCards(edit); // CHANGE
+        scheduleKanbanRepair(cards); // CHANGE: defer mutation out of CHANGE event
     });
 
 
@@ -1303,28 +1725,170 @@ Draw.loadPlugin(function (ui) {
         return out;
     }
 
+    function showEditCardDatesDialog(card) { // NEW
+        if (!canEditCardDates(card)) return;
+
+        const currentRange = getTaskDateRange(card.value);
+        if (!currentRange) return;
+
+        const div = document.createElement('div');
+        div.style.padding = '12px';
+        div.style.boxSizing = 'border-box';
+        div.style.fontFamily = 'Arial, sans-serif';
+
+        const heading = document.createElement('div');
+        heading.textContent = 'Edit Card Dates';
+        heading.style.fontSize = '16px';
+        heading.style.fontWeight = 'bold';
+        heading.style.marginBottom = '12px';
+        div.appendChild(heading);
+
+        function addRow(labelText, input) { // NEW
+            const row = document.createElement('div');
+            row.style.display = 'flex';
+            row.style.alignItems = 'center';
+            row.style.gap = '10px';
+            row.style.marginBottom = '10px';
+
+            const label = document.createElement('label');
+            label.textContent = labelText;
+            label.style.width = '85px';
+            label.style.flex = '0 0 85px';
+            input.style.flex = '1';
+
+            row.appendChild(label);
+            row.appendChild(input);
+            div.appendChild(row);
+        }
+
+        const titleInput = document.createElement('input');
+        titleInput.type = 'text';
+        titleInput.readOnly = true;
+        titleInput.value = getAttr(card, 'title') || 'Task';
+        addRow('Title:', titleInput);
+
+        const startInput = document.createElement('input');
+        startInput.type = 'date';
+        startInput.required = true;
+        startInput.value = currentRange.startISO;
+        addRow('Start date:', startInput);
+
+        const endInput = document.createElement('input');
+        endInput.type = 'date';
+        endInput.readOnly = true;
+        endInput.value = currentRange.endISO;
+        addRow('End date:', endInput);
+
+        const error = document.createElement('div');
+        error.style.color = '#b91c1c';
+        error.style.minHeight = '18px';
+        error.style.fontSize = '12px';
+        error.style.marginBottom = '8px';
+        div.appendChild(error);
+
+        function updateComputedEnd() { // NEW
+            const nextEnd = shiftTaskCalendarISO(startInput.value, currentRange.durationDays);
+            endInput.value = nextEnd || '';
+            error.textContent = nextEnd ? '' : 'Enter a valid start date.';
+            return nextEnd;
+        }
+
+        startInput.addEventListener('input', updateComputedEnd);
+
+        const buttons = document.createElement('div');
+        buttons.style.display = 'flex';
+        buttons.style.justifyContent = 'flex-end';
+        buttons.style.gap = '8px';
+
+        const cancelButton = mxUtils.button('Cancel', function () {
+            ui.hideDialog();
+        });
+        const saveButton = mxUtils.button('Save', function () {
+            const nextEnd = updateComputedEnd();
+            if (!nextEnd) {
+                startInput.focus();
+                return;
+            }
+
+            if (startInput.value === currentRange.startISO) { // NEW: unchanged submission is a no-op
+                ui.hideDialog();
+                return;
+            }
+
+            if (!canEditCardDates(card)) { // NEW: guard against lane changes while the modal is open
+                error.textContent = 'This card is no longer eligible for date editing.';
+                return;
+            }
+
+            if (!applyCardDateOverride(card, startInput.value)) {
+                error.textContent = 'The card dates could not be updated.';
+                return;
+            }
+
+            ui.hideDialog();
+        });
+
+        buttons.appendChild(cancelButton);
+        buttons.appendChild(saveButton);
+        div.appendChild(buttons);
+
+        mxEvent.addListener(div, 'keydown', function (evt) {
+            if (evt.key === 'Enter') saveButton.click();
+            if (evt.key === 'Escape') ui.hideDialog();
+        });
+
+        ui.showDialog(div, 420, 260, true, true);
+        startInput.focus();
+    }
+
     // -------------------- Menu hook --------------------
     (function addMenuHook() {
         const pmh = graph.popupMenuHandler;
         const prev = pmh.factoryMethod;
         pmh.factoryMethod = function (menu, cell, evt) {
             if (typeof prev === 'function') prev.apply(this, arguments);
-            menu.addSeparator();
+            const card = cell && model.isVertex(cell) && isKanbanCard(cell) ? cell : null; // NEW
+
+            if (card && canEditCardDates(card)) { // NEW
+                menu.addSeparator(); // NEW
+                menu.addItem('Edit Card Dates...', null, function () { // NEW
+                    showEditCardDatesDialog(card); // NEW
+                }); // NEW
+
+                if (hasCardDateOverride(card)) { // NEW
+                    menu.addItem('Reset Card Dates', null, function () { // NEW
+                        resetCardDates(card); // NEW
+                    }); // NEW
+                } // NEW
+            } // NEW
+
+            const gm = cell && model.isVertex(cell) && isGardenModule(cell) ? cell : null;           // CHANGE
+            if (!gm) return;                                                                         // CHANGE
+
+            menu.addSeparator();                                                                     // CHANGE
             menu.addItem('Add Kanban Board', null, function () {
-                const gm = findGardenModuleAncestor(cell) || null;                                   // CHANGE
-                model.beginUpdate();                                                                 // CHANGE
-                try {                                                                                // NEW
-                    ensureBoardTemplateIn(gm, { insideUpdate: true });                                // NEW
-                } finally {                                                                          // NEW
-                    model.endUpdate();                                                               // NEW
-                }                                                                                    // NEW
+                model.beginUpdate();
+                try {
+                    ensureBoardTemplateIn(gm, { insideUpdate: true });
+                } finally {
+                    model.endUpdate();
+                }
             });
-            
         };
     })();
 
-    // -------------------- Succession buffer (global per recompute) --------------------
-    let successionBuffer = null; // { totalSucc, chunks, clearedGroups, seenSuccIndexes }  
+    // -------------------- Succession buffers keyed per recompute --------------------
+    const successionBuffers = new Map(); // CHANGE: key -> { totalSucc, chunks, clearedGroups, seenSuccIndexes }
+
+    function getSuccessionBatchKey(detail, targetGroupId, totalSucc) { // NEW
+        const batchId = detail && detail.batchId != null
+            ? String(detail.batchId).trim()
+            : '';
+
+        if (batchId) return batchId; // NEW: prefer scheduler-provided batch id
+
+        return String(targetGroupId || '') + ':' + String(totalSucc || ''); // NEW: fallback
+    }
 
     // -------------------- Event bridge from scheduler --------------------                
     function handleTasksCreatedEvent(ev) {
@@ -1372,42 +1936,68 @@ Draw.loadPlugin(function (ui) {
                 return;
             }
 
-            // -------------------- Global buffered-per-run path -------------------- 
+            // -------------------- Keyed buffered-per-batch path --------------------
 
-            // Initialize or reset buffer if none or totalSucc changed             
-            if (!successionBuffer || successionBuffer.totalSucc !== totalSucc) {
-                console.log('[Kanban] init/reset global succession buffer', {
-                    totalSuccOld: successionBuffer ? successionBuffer.totalSucc : null,
-                    totalSuccNew: totalSucc
+            const bufferKey = getSuccessionBatchKey(detail, targetGroupId, totalSucc); // CHANGE
+
+            let buf = successionBuffers.get(bufferKey);
+            if (!buf) {
+                console.log('[Kanban] init keyed succession buffer', { // CHANGE
+                    bufferKey,
+                    totalSucc
                 });
-                successionBuffer = {
+
+                buf = {
                     totalSucc: totalSucc,
                     chunks: [],
                     clearedGroups: new Set(),
                     seenSuccIndexes: new Set()
                 };
+
+                successionBuffers.set(bufferKey, buf); // CHANGE
             }
 
-            const buf = successionBuffer;
+            if (buf.totalSucc !== totalSucc) { // NEW: defensive reset on malformed reused key
+                console.warn('[Kanban] resetting succession buffer due to totalSucc mismatch', {
+                    bufferKey,
+                    oldTotalSucc: buf.totalSucc,
+                    newTotalSucc: totalSucc
+                });
 
-            // Clear old tasks exactly once per group for this run                 
+                buf = {
+                    totalSucc: totalSucc,
+                    chunks: [],
+                    clearedGroups: new Set(),
+                    seenSuccIndexes: new Set()
+                };
+
+                successionBuffers.set(bufferKey, buf);
+            }
+
+            // Clear old tasks exactly once per group for this batch.
             if (!buf.clearedGroups.has(targetGroupId)) {
                 console.log('[Kanban] clearing old tasks for group', {
+                    bufferKey,
                     targetGroupId
                 });
+
                 removeTasksLinkedOnlyTo(targetGroupId);
                 buf.clearedGroups.add(targetGroupId);
             }
 
             const beforeChunks = buf.chunks.length;
             buf.chunks.push({ succIndex, targetGroupId, tasks });
+
             if (succIndex != null) {
                 buf.seenSuccIndexes.add(succIndex);
             }
 
-            console.log('[Kanban] global buffer updated', {
-                beforeChunks, afterChunks: buf.chunks.length,
-                pushedSuccIndex: succIndex, pushedTasks: tasks.length,
+            console.log('[Kanban] keyed buffer updated', {
+                bufferKey,
+                beforeChunks,
+                afterChunks: buf.chunks.length,
+                pushedSuccIndex: succIndex,
+                pushedTasks: tasks.length,
                 seenSuccIndexes: Array.from(buf.seenSuccIndexes)
             });
 
@@ -1416,16 +2006,9 @@ Draw.loadPlugin(function (ui) {
                 buf.seenSuccIndexes.size >= buf.totalSucc
             );
 
-            console.log('[Kanban] succession progress', {
-                succIndex, totalSucc, haveAllSucc
-            });
-
             if (!haveAllSucc) {
-                // Wait for remaining successions in this run                      
                 return;
             }
-
-            // -------------------- Flush: we have all successions -------------------- 
 
             const chunksSorted = buf.chunks.slice().sort((a, b) => {
                 const ai = (a.succIndex != null ? a.succIndex : 0);
@@ -1433,7 +2016,6 @@ Draw.loadPlugin(function (ui) {
                 return ai - bi;
             });
 
-            // Group merged tasks by targetGroupId                                  
             const perGroup = new Map();
             for (const chunk of chunksSorted) {
                 const gid = chunk.targetGroupId;
@@ -1441,26 +2023,22 @@ Draw.loadPlugin(function (ui) {
                 perGroup.get(gid).push.apply(perGroup.get(gid), chunk.tasks);
             }
 
-            // For logging: total merged tasks                                      
             let mergedTotal = 0;
             perGroup.forEach(arr => { mergedTotal += arr.length; });
 
-            console.log('[Kanban] flushing global succession buffer', {
+            console.log('[Kanban] flushing keyed succession buffer', {
+                bufferKey,
                 totalSucc: buf.totalSucc,
                 totalChunks: buf.chunks.length,
                 groups: Array.from(perGroup.keys()),
                 mergedTaskCount: mergedTotal
             });
 
-            // Clear buffer                                                         
-            successionBuffer = null;
+            successionBuffers.delete(bufferKey); // CHANGE: flush only this completed batch
 
-            // Create tasks per group. Allow first group to trigger reflow;        
-            // subsequent groups ride on same board reflow to avoid repeats.       
             let first = true;
             for (const [gid, taskList] of perGroup.entries()) {
-                if (!taskList || taskList.length === 0) continue;
-                createTasks(taskList, gid, { reflow: first });
+                createTasks(taskList || [], gid, { reflow: first }); // CHANGE: allow empty group replacement
                 first = false;
             }
         }, 0);
@@ -1502,8 +2080,8 @@ Draw.loadPlugin(function (ui) {
                 } finally {                                                                  // NEW
                     model.endUpdate();                                                       // NEW
                 }                                                                            // NEW
-                graph.refresh(moduleCell);   
-                graph.fireEvent(new mxEventObject("usl:requestApplyModuleMargins","cell",moduleCell));// NEW
+                graph.refresh(moduleCell);
+                graph.fireEvent(new mxEventObject("usl:requestApplyModuleMargins", "cell", moduleCell));// NEW
                 // NEW
             }, 0);                                                                           // NEW
         });                                                                                  // NEW
