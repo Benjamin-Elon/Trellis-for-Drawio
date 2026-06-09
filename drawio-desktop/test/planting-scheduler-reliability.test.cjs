@@ -149,12 +149,76 @@ function makeInputs({
     });
 }
 
+function makeAutoWindowParams({
+    plant = makePlant(),
+    city = makeCity(),
+    methodCategoryId = 'direct_sow',
+    methodId = 'direct_sow.field',
+    year = 2026,
+    harvestWindowDays = 7
+} = {}) {
+    const env = plant.cropTempEnvelope();
+    return {
+        methodCategoryId,
+        methodId,
+        budget: plant.firstHarvestBudget(),
+        HW_DAYS: harvestWindowDays,
+        dailyRatesMap: city.dailyRates(env.Tbase, year),
+        monthlyAvgTemp: city.monthlyMeans(),
+        Tbase: env.Tbase,
+        cropTemp: env,
+        scanStart: new Date(`${year}-01-01T00:00:00Z`),
+        scanEndHard: new Date(`${year}-12-31T00:00:00Z`),
+        soilGateThresholdC: null,
+        soilGateConsecutiveDays: 3,
+        startCoolingThresholdC: null,
+        useSpringFrostGate: false,
+        lastSpringFrostDOY: 1,
+        daysTransplant: Number(plant.days_transplant || 0),
+        overwinterAllowed: plant.overwinter_ok === 1
+    };
+}
+
+function makeAttributeCell(initial = {}) {
+    const attrs = new Map(Object.entries(initial).map(([key, value]) => [key, String(value)]));
+    const value = {
+        hasAttribute: key => attrs.has(key),
+        getAttribute: key => attrs.has(key) ? attrs.get(key) : null,
+        setAttribute: (key, nextValue) => attrs.set(key, String(nextValue)),
+        removeAttribute: key => attrs.delete(key)
+    };
+    return {
+        value,
+        getAttribute: value.getAttribute,
+        attrs
+    };
+}
+
 test('annual direct sow computes maturity and harvest window', () => {
     const result = hooks.computeScheduleResult(makeInputs());
+    assert.equal(result.kind, 'annual');
+    assert.equal(result.harvestEndSemantics, 'exclusive');
     assert.equal(result.rows.length, 1);
     assert.equal(result.rows[0].sow, '2026-04-01');
     assert.equal(result.rows[0].harvStart, '2026-05-01');
     assert.equal(result.rows[0].harvEnd, '2026-05-08');
+});
+
+test('no feasible annual window returns null derived dates', () => {
+    const plant = makePlant({
+        tmin_c: 50,
+        topt_low_c: 52,
+        topt_high_c: 55,
+        tmax_c: 60
+    });
+    const result = hooks.computeAutoStartEndWindowForward(makeAutoWindowParams({ plant }));
+    assert.equal(result.feasible, false);
+    assert.equal(result.harvestEndSemantics, 'exclusive');
+    assert.equal(result.earliestFeasibleSowDate, null);
+    assert.equal(result.earliestHarvestStartDate, null);
+    assert.equal(result.earliestHarvestEndDate, null);
+    assert.equal(result.lastFeasibleSowDate, null);
+    assert.equal(result.climateEndDate, null);
 });
 
 test('indoor transplant applies transplant lead time', () => {
@@ -167,6 +231,21 @@ test('indoor transplant applies transplant lead time', () => {
     }));
     assert.equal(result.rows[0].trans, '2026-04-22');
     assert.equal(result.timelines[0].transplant.toISOString().slice(0, 10), '2026-04-22');
+});
+
+test('indoor transplant gate outside scan end is rejected', () => {
+    const plant = makePlant({ days_transplant: 20 });
+    const planner = new hooks.Planner(makeInputs({
+        plant,
+        planningMode: 'transplant_indoor',
+        methodCategoryId: 'transplant',
+        methodId: 'transplant.indoor',
+        startISO: '2026-12-20',
+        seasonEndISO: '2026-12-31'
+    }));
+    const feasibility = planner.isSowFeasible(new Date('2026-12-20T00:00:00Z'));
+    assert.equal(feasibility.ok, false);
+    assert.equal(feasibility.reason, 'gate_outside_scan_window');
 });
 
 test('cooling trigger ignores January cold and finds autumn crossing', () => {
@@ -241,10 +320,74 @@ test('lifespan-only perennial saves without maturity dates', () => {
         startISO: '2026-04-15',
         seasonEndISO: '2029-12-31'
     }));
+    assert.equal(result.kind, 'perennial');
+    assert.equal(result.lifespanStartISO, '2026-04-15');
     assert.equal(result.lifespanEndISO, '2029-12-31');
+    assert.equal(result.timelines[0].germ, null);
+    assert.equal(result.timelines[0].transplant, null);
     assert.equal(result.timelines[0].maturity, null);
     assert.equal(result.timelines[0].harvestStart, null);
     assert.equal(result.rows[0].harvEnd, '');
+});
+
+test('perennial save patch contains lifespan dates and clears annual stages', () => {
+    const plant = makePlant({
+        plant_name: 'Asparagus',
+        annual: 0,
+        perennial: 1,
+        lifespan_years: 3,
+        days_maturity: null,
+        gdd_to_maturity: null
+    });
+    const inputs = makeInputs({
+        plant,
+        startISO: '2026-04-15',
+        seasonEndISO: '2029-12-31'
+    });
+    const result = hooks.computeScheduleResult(inputs);
+    const patch = hooks.buildScheduleAttributePatch(inputs, result);
+    assert.equal(patch.sow_date, '2026-04-15');
+    assert.equal(patch.lifespan_start, '2026-04-15');
+    assert.equal(patch.lifespan_end, '2029-12-31');
+    assert.equal(patch.germ_date, '');
+    assert.equal(patch.transplant_date, '');
+    assert.equal(patch.maturity_date, '');
+    assert.equal(patch.harvest_start, '');
+    assert.equal(patch.harvest_end, '');
+    assert.equal(patch.days_maturity, '');
+    assert.equal(patch.gdd_to_maturity, '');
+});
+
+test('persisted start is distinct from a session edit and is not auto-overwritten', () => {
+    const persisted = hooks.resolveStartAfterWindow({
+        currentStartISO: '2026-05-10',
+        autoStartISO: '2026-04-01',
+        feasible: true,
+        forceWriteStart: false,
+        hasPersistedSchedule: true,
+        userEditedStartThisSession: false
+    });
+    assert.equal(persisted, '2026-05-10');
+
+    const replacedForYearChange = hooks.resolveStartAfterWindow({
+        currentStartISO: persisted,
+        autoStartISO: '2027-04-03',
+        feasible: true,
+        forceWriteStart: true,
+        hasPersistedSchedule: true,
+        userEditedStartThisSession: false
+    });
+    assert.equal(replacedForYearChange, '2027-04-03');
+
+    const preservedWithoutWindow = hooks.resolveStartAfterWindow({
+        currentStartISO: '2026-05-10',
+        autoStartISO: null,
+        feasible: false,
+        forceWriteStart: true,
+        hasPersistedSchedule: true,
+        userEditedStartThisSession: false
+    });
+    assert.equal(preservedWithoutWindow, '2026-05-10');
 });
 
 test('perennial lifecycle is detected before requesting a maturity budget', () => {
@@ -267,6 +410,28 @@ test('perennial lifecycle is detected before requesting a maturity budget', () =
     assert.equal(budgetRequested, false);
 });
 
+test('perennial result does not initialize GDD rates', () => {
+    const plant = makePlant({
+        annual: 0,
+        perennial: 1,
+        lifespan_years: 4,
+        days_maturity: null,
+        gdd_to_maturity: null
+    });
+    const city = makeCity();
+    city.dailyRates = () => {
+        throw new Error('daily GDD rates should not be requested');
+    };
+    const result = hooks.computeScheduleResult(makeInputs({
+        plant,
+        city,
+        startISO: '2026-03-20',
+        seasonEndISO: '2030-12-31'
+    }));
+    assert.equal(result.kind, 'perennial');
+    assert.equal(result.lifespanEndISO, '2030-12-31');
+});
+
 test('variety overrides change maturity and harvest window', () => {
     const base = makePlant();
     const overriddenRow = hooks.applyPlantOverrides(base, {
@@ -282,6 +447,16 @@ test('variety overrides change maturity and harvest window', () => {
     assert.equal(baseResult.rows[0].harvStart, '2026-05-01');
     assert.equal(varietyResult.rows[0].harvStart, '2026-05-16');
     assert.equal(varietyResult.rows[0].harvEnd, '2026-05-26');
+});
+
+test('zero-day harvest window has equal exclusive start and end', () => {
+    const inputs = makeInputs({ harvestWindowDays: 0 });
+    const result = hooks.computeScheduleResult(inputs);
+    const patch = hooks.buildScheduleAttributePatch(inputs, result);
+    assert.equal(result.harvestEndSemantics, 'exclusive');
+    assert.equal(result.rows[0].harvStart, result.rows[0].harvEnd);
+    assert.equal(patch.lifespan_start, '');
+    assert.equal(patch.lifespan_end, '');
 });
 
 test('invalid saved and default methods fall through to a valid allowed method', async () => {
@@ -342,6 +517,67 @@ test('method lookup failures retain the canonical hard fallback', async () => {
         hooks.PlantModel.getMethodById = originalGet;
         hooks.PlantModel.listAllowedMethodCategoriesForPlant = originalCategories;
     }
+});
+
+test('mixed-case method records and attributes normalize to canonical IDs', async () => {
+    const originalGet = hooks.PlantModel.getMethodById;
+    hooks.PlantModel.getMethodById = async () => ({
+        method_category_id: 'DiReCt_SoW',
+        method_id: 'DiReCt_SoW.FiElD'
+    });
+    try {
+        const cell = {
+            getAttribute(name) {
+                if (name === 'method_category_id') return ' DIRECT_SOW ';
+                if (name === 'method_id') return ' Direct_Sow.Field ';
+                return '';
+            }
+        };
+        const selected = await hooks.resolveInitialMethodSelection(
+            cell,
+            makePlant({ default_planting_method: ' DIRECT_SOW.FIELD ' })
+        );
+        assert.equal(selected.methodCategoryId, 'direct_sow');
+        assert.equal(selected.methodId, 'direct_sow.field');
+        assert.equal(hooks.normId(' TrAnSpLaNt.InDoOr '), 'transplant.indoor');
+    } finally {
+        hooks.PlantModel.getMethodById = originalGet;
+    }
+});
+
+test('database persistence failure restores snapshotted graph attributes', async () => {
+    const cell = makeAttributeCell({ sow_date: '2026-04-01', method_id: 'direct_sow.field' });
+    const patch = { sow_date: '2026-05-01', method_id: 'transplant.indoor', lifespan_end: '2029-12-31' };
+    const snapshot = hooks.snapshotCellAttributes(cell, Object.keys(patch));
+    await assert.rejects(
+        hooks.runCompensatedSaveSteps({
+            applyGraphPatch: () => hooks.applyCellAttributePatch(cell, patch),
+            persist: async () => { throw new Error('db failed'); },
+            emitTasks: async () => {},
+            restoreGraphPatch: () => hooks.restoreCellAttributeSnapshot(cell, snapshot)
+        }),
+        /db failed/
+    );
+    assert.equal(cell.getAttribute('sow_date'), '2026-04-01');
+    assert.equal(cell.getAttribute('method_id'), 'direct_sow.field');
+    assert.equal(cell.value.hasAttribute('lifespan_end'), false);
+});
+
+test('task dispatch failure restores snapshotted graph attributes', async () => {
+    const cell = makeAttributeCell({ harvest_end: '2026-06-01' });
+    const patch = { harvest_end: '2026-07-01', lifespan_start: '' };
+    const snapshot = hooks.snapshotCellAttributes(cell, Object.keys(patch));
+    await assert.rejects(
+        hooks.runCompensatedSaveSteps({
+            applyGraphPatch: () => hooks.applyCellAttributePatch(cell, patch),
+            persist: async () => {},
+            emitTasks: async () => { throw new Error('task dispatch failed'); },
+            restoreGraphPatch: () => hooks.restoreCellAttributeSnapshot(cell, snapshot)
+        }),
+        /task dispatch failed/
+    );
+    assert.equal(cell.getAttribute('harvest_end'), '2026-06-01');
+    assert.equal(cell.value.hasAttribute('lifespan_start'), false);
 });
 
 test('async UI boundary reports labeled rejection', async () => {

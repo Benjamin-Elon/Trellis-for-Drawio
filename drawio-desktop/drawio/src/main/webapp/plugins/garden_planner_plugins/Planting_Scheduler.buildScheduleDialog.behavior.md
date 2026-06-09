@@ -39,7 +39,8 @@ Source under characterization:
 | `options.lastHarvestDate` | Initial season and harvest end |
 | `options.startNote` | Initial sow-date guidance |
 | `options.initialCityName` | Preferred city |
-| `options.hasStoredSchedule` | Initializes the first-sow dirty flag |
+| `options.hasPersistedSchedule` | Records whether a valid stored start exists |
+| `options.initialWindowFeasible` | Initializes explicit annual feasibility state |
 
 The caller computes the initial feasibility dates before opening the dialog. A
 stored sow date and stored harvest end can override those initial values.
@@ -99,6 +100,7 @@ For perennial plants:
 - Feasibility-window rows are hidden.
 - Timeline is hidden.
 - Harvest rows are hidden.
+- Explain Sowing Range is hidden.
 - Lifespan end is editable.
 
 For non-perennial plants:
@@ -155,7 +157,8 @@ does not fully synchronize every editable control.
 
 | State | Responsibility |
 | --- | --- |
-| `firstSowDirty` | Protects stored or user-entered sow dates from some auto writes |
+| `hasPersistedSchedule` | Identifies a valid graph-loaded start until an automatic replacement |
+| `userEditedStartThisSession` | Identifies an explicit start edit in the open dialog |
 | `taskTemplate` | Current normalized task template |
 | `taskRules` | Editable task rules |
 | `taskTemplateSource` | Cell, plant, method, none, or unknown |
@@ -211,7 +214,7 @@ For perennials, `recomputeAll()`:
 1. Computes lifespan end from the planting date and lifespan years.
 2. Writes the end into the DOM and `formState`.
 3. Clears first harvest.
-4. Uses lifespan end as last harvest and last schedule end.
+4. Keeps harvest values null and uses lifespan end only as the schedule end.
 5. Updates harvest display, bounds, and timeline.
 6. Returns before the reason switch.
 
@@ -276,7 +279,7 @@ The returned promise is not awaited by the handler.
 
 ### First sow/planting date input
 
-1. Set `firstSowDirty`.
+1. Set `userEditedStartThisSession`.
 2. Synchronize controls into `formState`.
 3. For perennials, recompute lifespan end and update the note.
 4. For non-perennials, launch `recomputeAll('startChanged')`.
@@ -415,6 +418,8 @@ The graph save path can mutate:
 - `maturity_date`
 - `harvest_start`
 - `harvest_end`
+- `lifespan_start`
+- `lifespan_end`
 - `plant_yield`
 - `yield_unit`
 - plant-spacing attributes written by `applyPlantSpacingToGroup()`
@@ -424,8 +429,9 @@ Additional save effects:
 - Retiles and refreshes the group.
 - May save or delete a plant-and-method task-template database row.
 - Dispatches the `tasksCreated` window event.
-- Attempts to undo graph changes when graph mutation or task-default persistence
-  fails.
+- Snapshots every attribute in the schedule patch and restores the snapshot when
+  graph mutation, task-default persistence, or task emission fails.
+- Retiles only after persistence and task emission succeed.
 
 ## Known Concurrency Surface
 
@@ -459,7 +465,7 @@ Unless a behavior change is separately approved:
 2. Preserve perennial label, visibility, date, and disabled-state behavior.
 3. Preserve plant and variety default selection behavior.
 4. Preserve method preference and fallback ordering.
-5. Preserve `firstSowDirty` semantics.
+5. Preserve persisted-start and session-edit intent as separate state.
 6. Preserve cell-template precedence over plant and method task templates.
 7. Preserve dirty task rules across selection refreshes.
 8. Preserve preview validation and error messages.
@@ -873,5 +879,58 @@ awaited work and before committing state or DOM.
 The Save button delegates directly to `coordinate()`.
 
 Graph mutation still precedes task-default persistence. A persistence failure
-uses the existing graph-edit rollback path. Once graph mutation begins, the
-operation completes or rolls back rather than being canceled.
+uses the explicit attribute snapshot restoration path. Once graph mutation
+begins, the operation completes or compensates rather than being canceled.
+
+## Reliability Contracts
+
+### Auto-window results
+
+`computeAutoStartEndWindowForward()` returns:
+
+- `feasible: true` with concrete feasibility and harvest dates.
+- `feasible: false` with every derived date set to `null`.
+- `harvestEndSemantics: "exclusive"` in both cases.
+
+The dialog renders `No feasible window.` for an infeasible annual window. It
+does not place scan-start or scan-end fallback dates into editable schedule
+state. A persisted or session-edited start remains visible for correction, but
+Preview and Save reject the infeasible schedule.
+
+### Harvest end
+
+Annual `harvestEnd` is an exclusive boundary. A seven-day window beginning
+May 1 ends May 8, representing `[May 1, May 8)`. A zero-day window has equal
+start and end dates.
+
+### Lifecycle result shapes
+
+Schedule computation returns a discriminated result:
+
+- `kind: "annual"` includes maturity and harvest stages.
+- `kind: "perennial"` includes `lifespanStartISO` and `lifespanEndISO`.
+
+Perennial timelines retain only the planting date. Germination, transplant,
+maturity, and harvest values are null. Perennial persistence writes
+`sow_date`, `lifespan_start`, and `lifespan_end` while clearing annual stage
+attributes. Annual persistence clears stale lifespan attributes.
+
+### Identifier normalization
+
+`normId()` trims and lowercases method-category and method identifiers. DB
+rows, lookup inputs, defaults, selector values, task-template keys, graph
+attributes, and schedule inputs use the normalized form. Case-insensitive SQL
+lookups prefer an already-lowercase row when invalid case-only duplicates
+exist.
+
+### Graph compensation
+
+Save builds one explicit attribute patch and snapshots the prior presence and
+value of every patched attribute. Failures during graph mutation, deferred DB
+persistence, or task emission restore that snapshot in a new graph-model
+transaction. Attributes that were originally absent are removed rather than
+restored as empty strings.
+
+Retiling occurs only after required persistence and task emission succeed.
+Compensation cannot undo a committed DB write or side effects already performed
+by external task-event listeners.
