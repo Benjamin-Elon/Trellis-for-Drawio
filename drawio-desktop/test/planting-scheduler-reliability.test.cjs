@@ -824,6 +824,114 @@ test('task replacement creates only the latest supplied task set', () => {
     ]);
 });
 
+test('repeat series identity normalizes links and text without using dates', () => { // NEW
+    const first = { // NEW
+        linkedTo: ' group-b, group-a,group-b ', // NEW
+        plant_name: '  Tomato ', // NEW
+        method: ' FIELD ', // NEW
+        title: ' Water Plants ', // NEW
+        start: '2026-04-01' // NEW
+    }; // NEW
+    const second = { ...first, linkedTo: 'group-a,group-b', start: '2026-08-01' }; // NEW
+    const parsed = JSON.parse(taskHooks.buildRepeatSeriesKey(first)); // NEW
+
+    assert.equal(taskHooks.buildRepeatSeriesKey(first), taskHooks.buildRepeatSeriesKey(second)); // NEW
+    assert.equal(parsed[0].join(','), 'group-a,group-b'); // NEW
+    assert.equal(parsed.slice(1).join('|'), 'tomato|field|water plants'); // NEW
+    assert.equal(taskHooks.buildRepeatSeriesKey({ ...first, linkedTo: ' ' }), null); // NEW
+}); // NEW
+
+test('collapsed repeat planning keeps one representative per lane and excludes hidden years', () => { // NEW
+    const key = 'series'; // NEW
+    const plan = taskHooks.planRepeatSeriesVisibility([ // NEW
+        { id: 'a', seriesKey: key, laneKey: 'TODO', startISO: '2026-04-01', endISO: '2026-04-01' }, // NEW
+        { id: 'b', seriesKey: key, laneKey: 'TODO', startISO: '2026-04-08', endISO: '2026-04-08' }, // NEW
+        { id: 'c', seriesKey: key, laneKey: 'DOING', startISO: '2026-04-15', endISO: '2026-04-15' }, // NEW
+        { id: 'hidden-year', seriesKey: key, laneKey: 'TODO', startISO: '2025-01-01', yearHidden: true } // NEW
+    ]); // NEW
+    const byId = new Map(plan.map(item => [item.id, item])); // NEW
+
+    assert.equal(byId.get('a').repeatHidden, false); // NEW
+    assert.equal(byId.get('a').repeatBadge, '1/3 +1'); // NEW
+    assert.equal(byId.get('b').repeatHidden, true); // NEW
+    assert.equal(byId.get('b').repeatBadge, ''); // NEW
+    assert.equal(byId.get('c').repeatHidden, false); // NEW
+    assert.equal(byId.get('c').repeatBadge, '3/3'); // NEW
+    assert.equal(byId.get('hidden-year').repeating, false); // NEW
+}); // NEW
+
+test('expanded repeat planning shows every eligible occurrence when any series card is expanded', () => { // NEW
+    const plan = taskHooks.planRepeatSeriesVisibility([ // NEW
+        { id: 'a', seriesKey: 'series', laneKey: 'TODO', startISO: '2026-04-01' }, // NEW
+        { id: 'b', seriesKey: 'series', laneKey: 'TODO', startISO: '2026-04-08' }, // NEW
+        { id: 'hidden-year', seriesKey: 'series', laneKey: 'TODO', startISO: '2025-01-01', yearHidden: true, expanded: true } // NEW
+    ]); // NEW
+    const byId = new Map(plan.map(item => [item.id, item])); // NEW
+
+    assert.equal(byId.get('a').repeatHidden, false); // NEW
+    assert.equal(byId.get('a').repeatBadge, '1/2'); // NEW
+    assert.equal(byId.get('b').repeatHidden, false); // NEW
+    assert.equal(byId.get('b').repeatBadge, '2/2'); // NEW
+    assert.equal(byId.get('hidden-year').repeatBadge, ''); // NEW
+}); // NEW
+
+test('repeat planning clears stale state and uses deterministic malformed-date fallbacks', () => { // NEW
+    const single = taskHooks.planRepeatSeriesVisibility([ // NEW
+        { id: 'only', seriesKey: 'single', laneKey: 'DONE', startISO: 'bad-date', expanded: true } // NEW
+    ])[0]; // NEW
+    assert.equal(single.repeatHidden, false); // NEW
+    assert.equal(single.repeatBadge, ''); // NEW
+
+    const ordered = [ // NEW
+        { id: 'z-invalid', startISO: 'invalid', endISO: '2026-04-02' }, // NEW
+        { id: 'b', startISO: '2026-04-01', endISO: '2026-04-03' }, // NEW
+        { id: 'a', startISO: '2026-04-01', endISO: '2026-04-02' } // NEW
+    ].sort(taskHooks.compareRepeatOccurrenceRecords); // NEW
+    assert.equal(ordered.map(item => item.id).join(','), 'a,b,z-invalid'); // NEW
+}); // NEW
+
+test('repeat planning reveals the next source-lane card after a representative moves', () => { // NEW
+    const key = 'move-series'; // NEW
+    const before = taskHooks.planRepeatSeriesVisibility([ // NEW
+        { id: 'a', seriesKey: key, laneKey: 'TODO', startISO: '2026-04-01' }, // NEW
+        { id: 'b', seriesKey: key, laneKey: 'TODO', startISO: '2026-04-08' }, // NEW
+        { id: 'c', seriesKey: key, laneKey: 'DOING', startISO: '2026-04-15' } // NEW
+    ]); // NEW
+    assert.equal(before.find(item => item.id === 'b').repeatHidden, true); // NEW
+
+    const after = taskHooks.planRepeatSeriesVisibility([ // NEW
+        { id: 'a', seriesKey: key, laneKey: 'DOING', startISO: '2026-04-01' }, // NEW
+        { id: 'b', seriesKey: key, laneKey: 'TODO', startISO: '2026-04-08' }, // NEW
+        { id: 'c', seriesKey: key, laneKey: 'DOING', startISO: '2026-04-15' } // NEW
+    ]); // NEW
+    const byId = new Map(after.map(item => [item.id, item])); // NEW
+    assert.equal(byId.get('b').repeatHidden, false); // NEW
+    assert.equal(byId.get('b').repeatBadge, '2/3'); // NEW
+    assert.equal(byId.get('c').repeatHidden, true); // NEW
+}); // NEW
+
+test('done-lane repeats collapse and both hidden flags are excluded from rendering', () => { // NEW
+    const donePlan = taskHooks.planRepeatSeriesVisibility([ // NEW
+        { id: 'done-a', seriesKey: 'done-series', laneKey: 'DONE', startISO: '2026-04-01' }, // NEW
+        { id: 'done-b', seriesKey: 'done-series', laneKey: 'DONE', startISO: '2026-04-02' } // NEW
+    ]); // NEW
+    assert.equal(donePlan.find(item => item.id === 'done-a').repeatBadge, '1/2 +1'); // NEW
+    assert.equal(donePlan.find(item => item.id === 'done-b').repeatHidden, true); // NEW
+    assert.equal(taskHooks.isCardVisibilityEligible({}), true); // NEW
+    assert.equal(taskHooks.isCardVisibilityEligible({ repeat_hidden: '1' }), false); // NEW
+    assert.equal(taskHooks.isCardVisibilityEligible({ year_hidden: '1' }), false); // NEW
+}); // NEW
+
+test('completion logic remains independent from renderability', () => { // NEW
+    const source = fs.readFileSync(taskManagerPath, 'utf8'); // NEW
+    const start = source.indexOf('function allLinkedCardsDone'); // NEW
+    const end = source.indexOf('function updateGroupRenderState', start); // NEW
+    const completionSource = source.slice(start, end); // NEW
+
+    assert.match(completionSource, /\.filter\(isKanbanCard\)/); // NEW
+    assert.doesNotMatch(completionSource, /isRenderableKanbanCard|isCardVisibilityEligible/); // NEW
+}); // NEW
+
 test('new task cards store scheduler dates as active and baseline dates', () => {
     const attrs = taskHooks.buildInitialCardDateAttributes('2026-04-10', '2026-04-13');
     assert.equal(attrs.start, '2026-04-10');
@@ -991,7 +1099,7 @@ test('card note patches set or clear only card_note and leave scheduler notes un
 test('card note badge is escaped and ordered between timing and edited-date badges', () => {
     const source = fs.readFileSync(taskManagerPath, 'utf8');
     assert.match(source, /const noteBadge = renderBadge\('Note',\s*getCardNote\(card\)\)/);
-    assert.match(source, /badgesHtml \+ noteBadge \+ editedDateBadge \+ linkBadge/);
+    assert.match(source, /badgesHtml \+ repeatBadge \+ noteBadge \+ editedDateBadge \+ linkBadge/); // CHANGE
     assert.match(source, /mxUtils\.htmlEntities\(String\(text\)\)/);
 });
 

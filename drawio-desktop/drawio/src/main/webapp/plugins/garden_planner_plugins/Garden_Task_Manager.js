@@ -151,6 +151,121 @@ function buildCardDateResetPatch(source) { // NEW
     };
 }
 
+function normalizeRepeatIdentityText(value) { // NEW: repeat identity uses stable case-insensitive text fields
+    return String(value == null ? '' : value).trim().toLowerCase(); // NEW
+} // NEW
+
+function normalizeRepeatLinkedIds(value) { // NEW: link order must not split otherwise identical repeat series
+    return Array.from(new Set(String(value == null ? '' : value) // NEW
+        .split(',') // NEW
+        .map(id => id.trim()) // NEW
+        .filter(Boolean))) // NEW
+        .sort(); // NEW
+} // NEW
+
+function buildRepeatSeriesKey(source) { // NEW: dates intentionally do not participate in repeat identity
+    const linkedIds = normalizeRepeatLinkedIds(readAttributeValue(source, 'linkedTo')); // NEW
+    if (linkedIds.length === 0) return null; // NEW: unlinked cards cannot form a reliable series
+
+    return JSON.stringify([ // NEW: structured encoding prevents delimiter collisions
+        linkedIds, // NEW
+        normalizeRepeatIdentityText(readAttributeValue(source, 'plant_name')), // NEW
+        normalizeRepeatIdentityText(readAttributeValue(source, 'method')), // NEW
+        normalizeRepeatIdentityText(readAttributeValue(source, 'title')) // NEW
+    ]); // NEW
+} // NEW
+
+function compareRepeatCalendarValues(left, right) { // NEW: valid dates sort before missing or malformed dates
+    const leftDate = parseTaskCalendarISO(left); // NEW
+    const rightDate = parseTaskCalendarISO(right); // NEW
+    if (leftDate && rightDate) return leftDate.dayNumber - rightDate.dayNumber; // NEW
+    if (leftDate) return -1; // NEW
+    if (rightDate) return 1; // NEW
+    return 0; // NEW
+} // NEW
+
+function compareRepeatOccurrenceRecords(left, right) { // NEW: deterministic representative and badge ordering
+    return compareRepeatCalendarValues(left && left.startISO, right && right.startISO) || // NEW
+        compareRepeatCalendarValues(left && left.endISO, right && right.endISO) || // NEW
+        String(left && left.id || '').localeCompare(String(right && right.id || '')); // NEW
+} // NEW
+
+function isCardVisibilityEligible(source) { // NEW: paging and lane counts share the same derived visibility rule
+    return readAttributeValue(source, 'year_hidden') !== '1' && // NEW
+        readAttributeValue(source, 'repeat_hidden') !== '1'; // NEW
+} // NEW
+
+function planRepeatSeriesVisibility(records) { // NEW: pure planner keeps board mutation orchestration small
+    const input = Array.isArray(records) ? records : []; // NEW
+    const plannedById = new Map(); // NEW
+    const groupsByKey = new Map(); // NEW
+
+    input.forEach(record => { // NEW
+        const id = String(record && record.id || ''); // NEW
+        plannedById.set(id, { // NEW: defaults also clear stale derived repeat state
+            id, // NEW
+            repeating: false, // NEW
+            repeatHidden: false, // NEW
+            repeatBadge: '' // NEW
+        }); // NEW
+
+        const key = record && record.seriesKey; // NEW
+        if (!key) return; // NEW
+        if (!groupsByKey.has(key)) groupsByKey.set(key, []); // NEW
+        groupsByKey.get(key).push(record); // NEW
+    }); // NEW
+
+    groupsByKey.forEach(group => { // NEW
+        const eligible = group // NEW
+            .filter(record => !(record && record.yearHidden)) // NEW
+            .slice() // NEW
+            .sort(compareRepeatOccurrenceRecords); // NEW
+        if (eligible.length < 2) return; // NEW: one eligible occurrence is not rendered as a repeat series
+
+        const expanded = group.some(record => !!(record && record.expanded)); // NEW
+        const indexById = new Map(); // NEW
+        eligible.forEach((record, index) => indexById.set(String(record.id || ''), index)); // NEW
+
+        if (expanded) { // NEW
+            eligible.forEach(record => { // NEW
+                const id = String(record.id || ''); // NEW
+                plannedById.set(id, { // NEW
+                    id, // NEW
+                    repeating: true, // NEW
+                    repeatHidden: false, // NEW
+                    repeatBadge: `${indexById.get(id) + 1}/${eligible.length}` // NEW
+                }); // NEW
+            }); // NEW
+            return; // NEW
+        } // NEW
+
+        const recordsByLane = new Map(); // NEW
+        eligible.forEach(record => { // NEW
+            const laneKey = String(record.laneKey || ''); // NEW
+            if (!recordsByLane.has(laneKey)) recordsByLane.set(laneKey, []); // NEW
+            recordsByLane.get(laneKey).push(record); // NEW
+        }); // NEW
+
+        recordsByLane.forEach(laneRecords => { // NEW
+            const orderedLaneRecords = laneRecords.slice().sort(compareRepeatOccurrenceRecords); // NEW
+            orderedLaneRecords.forEach((record, laneIndex) => { // NEW
+                const id = String(record.id || ''); // NEW
+                const hiddenInLane = orderedLaneRecords.length - 1; // NEW
+                plannedById.set(id, { // NEW
+                    id, // NEW
+                    repeating: true, // NEW
+                    repeatHidden: laneIndex > 0, // NEW
+                    repeatBadge: laneIndex === 0 // NEW
+                        ? `${indexById.get(id) + 1}/${eligible.length}${hiddenInLane > 0 ? ` +${hiddenInLane}` : ''}` // NEW
+                        : '' // NEW
+                }); // NEW
+            }); // NEW
+        }); // NEW
+    }); // NEW
+
+    return input.map(record => plannedById.get(String(record && record.id || ''))); // NEW
+} // NEW
+
 function isEditableCardDateLane(laneKey) { // NEW
     return EDITABLE_CARD_DATE_LANES.has(String(laneKey || ''));
 }
@@ -167,7 +282,13 @@ if (typeof globalThis !== 'undefined' && globalThis.__TRELLIS_TASK_MANAGER_TEST_
         buildCardDateResetPatch, // NEW
         isEditableCardDateLane, // NEW
         normalizeCardNote, // NEW
-        buildCardNotePatch // NEW
+        buildCardNotePatch, // NEW
+        normalizeRepeatIdentityText, // NEW
+        normalizeRepeatLinkedIds, // NEW
+        buildRepeatSeriesKey, // NEW
+        compareRepeatOccurrenceRecords, // NEW
+        isCardVisibilityEligible, // NEW
+        planRepeatSeriesVisibility // NEW
     };
 }
 
@@ -208,6 +329,9 @@ Draw.loadPlugin(function (ui) {
     const LANE_W = 220, LANE_H = 680, LANE_GAP = 16;
 
     const LINK_ATTR = 'linkedTo';
+    const REPEAT_HIDDEN_ATTR = 'repeat_hidden'; // NEW
+    const REPEAT_EXPANDED_ATTR = 'repeat_expanded'; // NEW
+    const REPEAT_BADGE_ATTR = 'repeat_badge'; // NEW
 
     const LANES = [
         { key: 'UPCOMING_FUTURE', label: 'UPCOMING (future)' }, // NEW
@@ -784,7 +908,7 @@ Draw.loadPlugin(function (ui) {
 
     function countRenderable(cards) {                                                  // NEW
         let n = 0;                                                                     // NEW
-        for (const c of (cards || [])) if (!isYearHiddenCard(c)) n++;                  // NEW
+        for (const c of (cards || [])) if (isRenderableKanbanCard(c)) n++;             // CHANGE
         return n;                                                                       // NEW
     }
 
@@ -823,7 +947,7 @@ Draw.loadPlugin(function (ui) {
         for (let i = 0; i < total; i++) {
             const card = sortedCards[i];
 
-            if (isYearHiddenCard(card)) continue;                                          // keep hidden; don't page // CHANGE
+            if (!isRenderableKanbanCard(card)) continue;                                   // CHANGE: derived hidden cards never consume page slots
 
             const visible = (pageIdx >= start && pageIdx < end);                           // CHANGE
             pageIdx++;
@@ -945,9 +1069,10 @@ Draw.loadPlugin(function (ui) {
         const linkBadge = (linkCount > 1) ? renderBadge('Links', linkCount) : '';
         const noteBadge = renderBadge('Note', getCardNote(card)); // NEW
         const editedDateBadge = hasCardDateOverride(card) ? renderBadge('Dates', 'Edited') : ''; // NEW
+        const repeatBadge = renderBadge('Repeat', getAttr(card, REPEAT_BADGE_ATTR)); // NEW
 
-        const badgesBlock = (badgesHtml || noteBadge || editedDateBadge || linkBadge) // CHANGE
-            ? ('<br/>' + badgesHtml + noteBadge + editedDateBadge + linkBadge) // CHANGE
+        const badgesBlock = (badgesHtml || repeatBadge || noteBadge || editedDateBadge || linkBadge) // CHANGE
+            ? ('<br/>' + badgesHtml + repeatBadge + noteBadge + editedDateBadge + linkBadge) // CHANGE
             : '';
 
         const html = title + badgesBlock;
@@ -1091,7 +1216,11 @@ Draw.loadPlugin(function (ui) {
         }
 
         if (out.length) {
-            const last = model.getCell(out[out.length - 1].cellId);
+            const last = out // CHANGE: never select a newly collapsed or paged-out repeat occurrence
+                .slice() // NEW
+                .reverse() // NEW
+                .map(entry => model.getCell(entry.cellId)) // NEW
+                .find(cell => cell && isRenderableKanbanCard(cell) && (!model.isVisible || model.isVisible(cell))); // NEW
             if (last) {
                 graph.setSelectionCell(last);
                 graph.scrollCellToVisible(last, true);
@@ -1212,6 +1341,74 @@ Draw.loadPlugin(function (ui) {
 
         return snapshots;
     }
+
+    function getBoardRepeatRecords(board) { // NEW: collect current lanes only after all automatic moves finish
+        const records = []; // NEW
+        const lanes = boardLanes(board); // NEW
+
+        snapshotBoardCardsByLane(lanes).forEach(snapshot => { // NEW
+            snapshot.cards.forEach(card => { // NEW
+                records.push({ // NEW
+                    id: card.id, // NEW
+                    card, // NEW
+                    laneKey: snapshot.laneKey, // NEW
+                    seriesKey: buildRepeatSeriesKey(card.value), // NEW
+                    startISO: getAttr(card, 'start'), // NEW
+                    endISO: getAttr(card, 'end'), // NEW
+                    yearHidden: isYearHiddenCard(card), // NEW
+                    expanded: getAttr(card, REPEAT_EXPANDED_ATTR) === '1' // NEW
+                }); // NEW
+            }); // NEW
+        }); // NEW
+
+        return records; // NEW
+    } // NEW
+
+    function setDerivedCardAttribute(card, key, value) { // NEW: derived attributes do not create separate undo steps
+        const current = getAttr(card, key); // NEW
+        const next = value == null || value === '' ? null : String(value); // NEW
+        if ((current == null ? null : String(current)) === next) return false; // NEW
+        setAttrNoUndo(card, key, next, true); // NEW
+        return true; // NEW
+    } // NEW
+
+    function enforceRepeatHiddenVisibility(card) { // NEW
+        if (!isRepeatHiddenCard(card)) return false; // NEW
+        const cur = model.isVisible ? model.isVisible(card) : true; // NEW
+        if (cur === false) return false; // NEW
+        model.setVisible(card, false); // NEW
+        graph.refresh(card); // NEW
+        return true; // NEW
+    } // NEW
+
+    function rebuildRepeatVisibility(board, dirtyLanes) { // NEW: apply one pure visibility plan per board scan
+        const records = getBoardRepeatRecords(board); // NEW
+        const plan = planRepeatSeriesVisibility(records); // NEW
+        const cardsById = new Map(records.map(record => [String(record.id || ''), record.card])); // NEW
+        let changed = false; // NEW
+
+        plan.forEach(item => { // NEW
+            if (!item) return; // NEW
+            const card = cardsById.get(String(item.id || '')); // NEW
+            if (!card) return; // NEW
+
+            const hiddenChanged = setDerivedCardAttribute( // NEW
+                card, // NEW
+                REPEAT_HIDDEN_ATTR, // NEW
+                item.repeatHidden ? '1' : null // NEW
+            ); // NEW
+            const badgeChanged = setDerivedCardAttribute(card, REPEAT_BADGE_ATTR, item.repeatBadge || null); // NEW
+            const visibilityChanged = item.repeatHidden ? enforceRepeatHiddenVisibility(card) : false; // NEW
+
+            if (badgeChanged) refreshCardLabel(card, true); // NEW
+            if (hiddenChanged || badgeChanged || visibilityChanged) { // NEW
+                markDirtyCardLane(dirtyLanes, card); // NEW
+                changed = true; // NEW
+            } // NEW
+        }); // NEW
+
+        return changed; // NEW
+    } // NEW
 
     function boardLanes(board) { return lanesMap(board); }
 
@@ -1334,6 +1531,10 @@ Draw.loadPlugin(function (ui) {
                     }
                 }
             }
+
+            if (rebuildRepeatVisibility(board, dirtyLanes)) { // NEW
+                boardDirty = true; // NEW
+            } // NEW
 
             // Sort/page only after all movements are complete. // CHANGE
             for (const { lane, laneKey } of dirtyLanes.values()) {
@@ -1458,8 +1659,12 @@ Draw.loadPlugin(function (ui) {
         return getAttr(card, 'year_hidden') === '1';                                  // NEW
     }                                                                                 // NEW
 
+    function isRepeatHiddenCard(card) {                                               // NEW
+        return getAttr(card, REPEAT_HIDDEN_ATTR) === '1';                             // NEW
+    }                                                                                 // NEW
+
     function isRenderableKanbanCard(card) {                                           // NEW
-        return isKanbanCard(card) && !isYearHiddenCard(card);                         // NEW
+        return isKanbanCard(card) && isCardVisibilityEligible(card.value);            // CHANGE
     }                                                                                 // NEW
 
 
@@ -1467,26 +1672,27 @@ Draw.loadPlugin(function (ui) {
 
     // -------------------- Auto-status, badges, and DONE autopromotion --------------------
     let pendingRepairCards = new Set(); // NEW
+    let pendingRepairBoards = new Set(); // NEW
     let repairTimer = null; // NEW
 
     function collectChangedKanbanCards(edit) {
         const out = new Set();
-        if (!edit || !edit.changes) return out;
+        const boards = new Set(); // NEW
+        if (!edit || !edit.changes) return { cards: out, boards }; // CHANGE
 
         for (const ch of edit.changes) {
             let cell = null;
+            let previousParent = null; // NEW
+            let currentParent = null; // NEW
 
             if (ch instanceof mxChildChange) {
                 cell = ch.child;
 
-                const previousParent = ch.previous; // NEW
-                const currentParent = model.getParent(cell); // NEW
+                previousParent = ch.previous; // CHANGE
+                currentParent = model.getParent(cell); // CHANGE
 
-                const previousLaneKey = previousParent ? getAttr(previousParent, 'lane_key') : null; // NEW
-                const currentLaneKey = currentParent ? getAttr(currentParent, 'lane_key') : null; // NEW
-
-                if (previousLaneKey === currentLaneKey) {
-                    continue; // NEW: skip same-lane reorder/drag noise
+                if (previousParent === currentParent) { // CHANGE
+                    continue; // CHANGE: skip same-lane reorder while retaining cross-board moves to equivalent lanes
                 }
             } else if (ch instanceof mxValueChange) {
                 cell = ch.cell;
@@ -1497,18 +1703,25 @@ Draw.loadPlugin(function (ui) {
             }
 
             if (!cell || !model.isVertex(cell) || !isKanbanCard(cell)) continue;
-            if (isYearHiddenCard(cell)) continue;
 
-            out.add(cell);
+            const previousBoard = previousParent ? findBoardAncestor(previousParent) : null; // NEW
+            const currentBoard = findBoardAncestor(currentParent || cell); // NEW
+            if (previousBoard) boards.add(previousBoard); // NEW
+            if (currentBoard) boards.add(currentBoard); // NEW
+            if (isYearHiddenCard(cell)) continue; // CHANGE: rescan its board without applying lane-status repair
+            out.add(cell); // CHANGE
         }
 
-        return out;
+        return { cards: out, boards }; // CHANGE
     }
 
-    function scheduleKanbanRepair(cards) { // NEW
-        if (!cards || cards.size === 0) return;
+    function scheduleKanbanRepair(cards, boards) { // CHANGE
+        const hasCards = cards && cards.size > 0; // NEW
+        const hasBoards = boards && boards.size > 0; // NEW
+        if (!hasCards && !hasBoards) return; // CHANGE
 
-        cards.forEach(card => pendingRepairCards.add(card));
+        if (hasCards) cards.forEach(card => pendingRepairCards.add(card)); // CHANGE
+        if (hasBoards) boards.forEach(board => pendingRepairBoards.add(board)); // NEW
 
         if (repairTimer != null) return;
 
@@ -1516,21 +1729,26 @@ Draw.loadPlugin(function (ui) {
             repairTimer = null;
 
             const cardsToRepair = Array.from(pendingRepairCards);
+            const boardsToRepair = Array.from(pendingRepairBoards); // NEW
             pendingRepairCards.clear();
+            pendingRepairBoards.clear(); // NEW
 
-            repairChangedCards(cardsToRepair);
+            repairChangedCards(cardsToRepair, boardsToRepair); // CHANGE
         }, 0);
     }
 
-    function repairChangedCards(cards) { // NEW
-        if (!cards || cards.length === 0) return;
+    function repairChangedCards(cards, boards) { // CHANGE
+        if ((!cards || cards.length === 0) && (!boards || boards.length === 0)) return; // CHANGE
 
-        const dirtyLanes = new Map();
+        const affectedBoards = new Map(); // NEW
         const touchedGroups = new Set();
+        (boards || []).forEach(board => { // NEW
+            if (board && board.id) affectedBoards.set(board.id, board); // NEW
+        }); // NEW
 
         model.beginUpdate();
         try {
-            for (const cell of cards) {
+            for (const cell of (cards || [])) { // CHANGE
                 if (!cell || !model.isVertex(cell) || !isKanbanCard(cell)) continue;
                 if (isYearHiddenCard(cell)) continue;
 
@@ -1540,7 +1758,8 @@ Draw.loadPlugin(function (ui) {
                 const laneKey = getAttr(parent, 'lane_key');
                 if (!laneKey) continue;
 
-                markDirtyLane(dirtyLanes, parent); // NEW
+                const currentBoard = findBoardAncestor(parent); // NEW
+                if (currentBoard && currentBoard.id) affectedBoards.set(currentBoard.id, currentBoard); // NEW
 
                 const laneStatus = getAttr(parent, 'status') || parent.value || '';
                 setAttrNoUndo(cell, 'status', laneStatus, true); // CHANGE
@@ -1556,8 +1775,10 @@ Draw.loadPlugin(function (ui) {
                     const beforeParent = model.getParent(cell);
 
                     if (reclassifyDone(cell, lanes)) {
-                        markDirtyLane(dirtyLanes, beforeParent); // NEW
-                        markDirtyCardLane(dirtyLanes, cell);     // NEW
+                        const beforeBoard = findBoardAncestor(beforeParent); // CHANGE
+                        const afterBoard = findBoardAncestor(cell); // NEW
+                        if (beforeBoard && beforeBoard.id) affectedBoards.set(beforeBoard.id, beforeBoard); // NEW
+                        if (afterBoard && afterBoard.id) affectedBoards.set(afterBoard.id, afterBoard); // NEW
                     }
 
                     getLinkedCellsOf(cell).filter(isTilerGroup).forEach(g => touchedGroups.add(g.id)); // NEW
@@ -1575,9 +1796,7 @@ Draw.loadPlugin(function (ui) {
                 getLinkedCellsOf(cell).filter(isTilerGroup).forEach(g => touchedGroups.add(g.id)); // NEW
             }
 
-            for (const { lane, laneKey } of dirtyLanes.values()) {
-                resortAndPageLane(lane, laneKey, { insideUpdate: true }); // CHANGE
-            }
+            affectedBoards.forEach(board => scanAndReflowBoard(board, { insideUpdate: true })); // NEW
 
             touchedGroups.forEach(id => {
                 const group = model.getCell(id);
@@ -1592,8 +1811,8 @@ Draw.loadPlugin(function (ui) {
 
     model.addListener(mxEvent.CHANGE, function (_sender, evt) {
         const edit = evt.getProperty('edit');
-        const cards = collectChangedKanbanCards(edit); // CHANGE
-        scheduleKanbanRepair(cards); // CHANGE: defer mutation out of CHANGE event
+        const changes = collectChangedKanbanCards(edit); // CHANGE
+        scheduleKanbanRepair(changes.cards, changes.boards); // CHANGE: defer mutation out of CHANGE event
     });
 
 
@@ -1928,6 +2147,44 @@ Draw.loadPlugin(function (ui) {
         noteInput.focus(); // CHANGE
     }
 
+    function getRepeatSeriesContext(card) { // NEW: resolve menu state from the current board, including year-hidden matches
+        const board = findBoardAncestor(card); // NEW
+        const seriesKey = card ? buildRepeatSeriesKey(card.value) : null; // NEW
+        if (!board || !seriesKey) return null; // NEW
+
+        const matchingRecords = getBoardRepeatRecords(board) // NEW
+            .filter(record => record.seriesKey === seriesKey); // NEW
+        const eligibleRecords = matchingRecords.filter(record => !record.yearHidden); // NEW
+        if (eligibleRecords.length < 2) return null; // NEW
+
+        return { // NEW
+            board, // NEW
+            cards: matchingRecords.map(record => record.card), // NEW
+            expanded: matchingRecords.some(record => record.expanded) // NEW
+        }; // NEW
+    } // NEW
+
+    function setRepeatSeriesExpanded(card, expanded) { // NEW: persist one expansion choice across every matching occurrence
+        const context = getRepeatSeriesContext(card); // NEW
+        if (!context) return false; // NEW
+
+        model.beginUpdate(); // NEW
+        try { // NEW
+            context.cards.forEach(seriesCard => { // NEW
+                const current = getAttr(seriesCard, REPEAT_EXPANDED_ATTR) === '1'; // NEW
+                if (current === expanded) return; // NEW
+                model.setValue(seriesCard, cloneCardValueWithAttributes(seriesCard, { // NEW
+                    [REPEAT_EXPANDED_ATTR]: expanded ? '1' : null // NEW
+                })); // NEW
+            }); // NEW
+            scanAndReflowBoard(context.board, { insideUpdate: true }); // NEW
+        } finally { // NEW
+            model.endUpdate(); // NEW
+        } // NEW
+
+        return true; // NEW
+    } // NEW
+
     // -------------------- Menu hook --------------------
     (function addMenuHook() {
         const pmh = graph.popupMenuHandler;
@@ -1952,6 +2209,17 @@ Draw.loadPlugin(function (ui) {
                     menu.addItem('Reset Card Dates', null, function () { // NEW
                         resetCardDates(card); // NEW
                     }); // NEW
+                } // NEW
+
+                const repeatContext = getRepeatSeriesContext(card); // NEW
+                if (repeatContext) { // NEW
+                    menu.addItem( // NEW
+                        repeatContext.expanded ? 'Collapse Repeating Tasks' : 'Expand Repeating Tasks', // NEW
+                        null, // NEW
+                        function () { // NEW
+                            setRepeatSeriesExpanded(card, !repeatContext.expanded); // NEW
+                        } // NEW
+                    ); // NEW
                 } // NEW
             } // NEW
 
