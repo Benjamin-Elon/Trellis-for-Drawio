@@ -9,9 +9,13 @@
     "node": ">=20"
   },
   "scripts": {
+    "test": "npm run test:plugins",
+    "test:plugins": "node --test ./test/planting-scheduler-reliability.test.cjs ./test/year-planner.test.cjs ./test/year-planner-dom.test.cjs",
     "start": "electron .",
     "sync": "node ./sync.cjs",
-    "test:year-planner": "node --test ./test/year-planner.test.cjs",
+    "test:year-planner": "node --test ./test/year-planner.test.cjs ./test/year-planner-dom.test.cjs",
+    "test:year-planner:model": "node --test ./test/year-planner.test.cjs",
+    "test:year-planner:dom": "node --test ./test/year-planner-dom.test.cjs",
     "release-win": "electron-builder --config electron-builder-win.json --publish always",
     "release-win32": "electron-builder --config electron-builder-win32.json --publish always",
     "release-win-arm64": "electron-builder --config electron-builder-win-arm64.json --publish always",
@@ -57,6 +61,7 @@
     "dotenv": "^16.6.1",
     "electron": "^38.7.0",
     "electron-builder": "^26.0.20",
+    "jsdom": "^26.1.0",
     "sumchecker": "^3.0.1"
   },
   "directories": {

@@ -1,0 +1,255 @@
+const fs = require("node:fs");
+const path = require("node:path");
+const vm = require("node:vm");
+const { JSDOM } = require("jsdom");
+
+const PLUGIN_PATH = path.join(
+    __dirname,
+    "..",
+    "..",
+    "drawio",
+    "src",
+    "main",
+    "webapp",
+    "plugins",
+    "garden_planner_plugins",
+    "Year_planner.js"
+);
+const PLUGIN_SOURCE = fs.readFileSync(PLUGIN_PATH, "utf8");
+
+/** Minimal mxCell-compatible object used by repository and diagram-reader tests. */
+class TestCell {
+    constructor(id, attributes = {}) {
+        this.id = id;
+        this.children = [];
+        this.attributes = new Map(Object.entries(attributes).map(([key, value]) => [key, String(value)]));
+    }
+
+    getId() {
+        return this.id;
+    }
+
+    getAttribute(key) {
+        return this.attributes.has(key) ? this.attributes.get(key) : null;
+    }
+}
+
+function htmlEntities(value) {
+    return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+}
+
+function createCanvasContext() {
+    return {
+        beginPath() {},
+        clearRect() {},
+        fillText() {},
+        lineTo() {},
+        moveTo() {},
+        setLineDash() {},
+        stroke() {}
+    };
+}
+
+/**
+ * Loads the production plugin into jsdom with deterministic graph and database adapters.
+ * The returned helpers drive actual DOM events while keeping all persistence in memory.
+ */
+function createYearPlannerHarness(options = {}) {
+    const dom = new JSDOM("<!doctype html><html><body></body></html>", {
+        url: "http://localhost/"
+    });
+    const { window } = dom;
+    const { document } = window;
+    const root = new TestCell("root");
+    const moduleCell = new TestCell("module", { label: "Test Garden" });
+    root.children.push(moduleCell);
+    const cells = new Map([[root.id, root], [moduleCell.id, moduleCell]]);
+    const graphListeners = new Map();
+    const confirmations = [];
+
+    window.__USL_YEAR_PLANNER_TEST_HOOK__ = true;
+    window.HTMLCanvasElement.prototype.getContext = () => createCanvasContext();
+    window.URL.createObjectURL = () => "blob:test";
+    window.URL.revokeObjectURL = () => {};
+
+    const model = {
+        beginUpdate() {},
+        endUpdate() {},
+        getRoot: () => root,
+        getCell: id => cells.get(String(id)) || null,
+        getChildCount: cell => cell.children.length,
+        getChildAt: (cell, index) => cell.children[index]
+    };
+    const graph = {
+        getModel: () => model,
+        setAttributeForCell(cell, key, value) {
+            if (value == null) cell.attributes.delete(key);
+            else cell.attributes.set(key, String(value));
+        },
+        refresh() {},
+        addListener(eventName, handler) {
+            const handlers = graphListeners.get(eventName) || [];
+            handlers.push(handler);
+            graphListeners.set(eventName, handlers);
+        },
+        removeListener(handler) {
+            for (const [eventName, handlers] of graphListeners) {
+                graphListeners.set(eventName, handlers.filter(candidate => candidate !== handler));
+            }
+        },
+        fireEvent(event) {
+            for (const handler of (graphListeners.get(event.name) || [])) handler(graph, event);
+        }
+    };
+
+    class TestMxEventObject {
+        constructor(name, ...properties) {
+            this.name = name;
+            this.properties = new Map();
+            for (let index = 0; index < properties.length; index += 2) {
+                this.properties.set(properties[index], properties[index + 1]);
+            }
+        }
+
+        getProperty(key) {
+            return this.properties.get(key);
+        }
+    }
+
+    const context = vm.createContext({
+        Blob: window.Blob,
+        CustomEvent: window.CustomEvent,
+        Date,
+        Event: window.Event,
+        JSON,
+        Map,
+        Math,
+        MouseEvent: window.MouseEvent,
+        Number,
+        Object,
+        Option: window.Option,
+        Promise,
+        Set,
+        String,
+        URL: window.URL,
+        clearTimeout,
+        confirm(message) {
+            confirmations.push(String(message));
+            return options.confirmResult !== false;
+        },
+        console,
+        document,
+        mxEventObject: TestMxEventObject,
+        mxUtils: { htmlEntities },
+        prompt() {
+            throw new Error("Native prompt must not be used by the Year Planner.");
+        },
+        setTimeout,
+        window,
+        Draw: {
+            loadPlugin(callback) {
+                callback({ editor: { graph } });
+            }
+        }
+    });
+
+    vm.runInContext(PLUGIN_SOURCE, context, { filename: PLUGIN_PATH });
+    const api = window.__uslYearPlannerTestApi;
+    const plants = options.plants || [{
+        plant_id: 1,
+        plant_name: "Tomato",
+        yield_per_plant_kg: 1,
+        default_planting_method: "direct_sow.field"
+    }];
+
+    api.DbClient.getPlantsBasicCached = async () => plants;
+    api.DbClient.invalidatePlantsBasicCache = () => {};
+    api.DbClient.queryVarietiesByPlantId = async () => options.varieties || [];
+    api.DbClient.queryPlantingMethodsForPlantId = async () => options.methods || [{
+        method_id: "direct_sow.field",
+        method_name: "Direct sow",
+        method_category_id: "direct_sow"
+    }];
+
+    function addCell(parent, cell) {
+        parent.children.push(cell);
+        cells.set(cell.id, cell);
+        return cell;
+    }
+
+    async function settle(delayMs = 0) {
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+        await Promise.resolve();
+    }
+
+    async function openModal(year = 2026) {
+        const session = api.YearPlanModalController.open(moduleCell, year);
+        await settle();
+        return session;
+    }
+
+    function findButton(label) {
+        return Array.from(document.querySelectorAll("button"))
+            .find(button => button.textContent.trim() === label) || null;
+    }
+
+    function setControlValue(control, value, eventType = "input") {
+        control.value = String(value);
+        control.dispatchEvent(new window.Event(eventType, { bubbles: true }));
+    }
+
+    return {
+        api,
+        addCell,
+        confirmations,
+        document,
+        dom,
+        findButton,
+        graph,
+        moduleCell,
+        openModal,
+        root,
+        setControlValue,
+        settle,
+        TestCell,
+        window
+    };
+}
+
+/** Creates a valid crop suitable for modal interaction tests. */
+function makePlanCrop(overrides = {}) {
+    return {
+        id: "crop_1",
+        plantId: "1",
+        plant: "Tomato",
+        varietyId: null,
+        variety: "",
+        method: "direct_sow.field",
+        harvestStart: "2026-06-01",
+        harvestEnd: "2026-09-30",
+        useActualHarvest: false,
+        syncharvest: false,
+        shelfLifeDays: 0,
+        baseKgPerPlant: 1,
+        kgPerPlant: 1,
+        kgPerPlantMode: "auto",
+        actualPlants: 0,
+        germRate: 0.8,
+        packages: [{ unit: "kg", baseType: "kg", baseQty: 1, price: null }],
+        market: [],
+        ...overrides
+    };
+}
+
+module.exports = {
+    createYearPlannerHarness,
+    makePlanCrop,
+    PLUGIN_PATH,
+    PLUGIN_SOURCE,
+    TestCell
+};

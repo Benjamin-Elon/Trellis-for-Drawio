@@ -849,16 +849,10 @@ Draw.loadPlugin(function (ui) {
             return errors; // NEW
         } // NEW
 
-        function validate(plan) { // CHANGE
-            const errors = [];
-            const crops = (plan && plan.crops) || [];
-            for (const crop of crops) errors.push(...validateCrop(crop)); // CHANGE
-
-            const duplicate = findFirstDuplicateCrop(plan); // NEW
-            if (duplicate) errors.push("Duplicate crop rows found. Each plant/variety may appear only once per year plan."); // NEW
-
-            if (plan && plan.csa && plan.csa.enabled) {
-                if (!Number.isFinite(Number(plan.csa.boxesPerWeek)) || Number(plan.csa.boxesPerWeek) <= 0) {
+        function validateCsa(plan) { // NEW
+            const errors = []; // NEW
+            if (plan && plan.csa && plan.csa.enabled) { // CHANGE
+                if (!Number.isFinite(Number(plan.csa.boxesPerWeek)) || Number(plan.csa.boxesPerWeek) <= 0) { // CHANGE
                     errors.push("CSA enabled but boxes/week is not set.");
                 }
                 for (const component of (plan.csa.components || [])) {
@@ -877,6 +871,17 @@ Draw.loadPlugin(function (ui) {
                     }
                 }
             }
+            return errors; // NEW
+        } // NEW
+
+        function validate(plan) { // CHANGE
+            const errors = [];
+            const crops = (plan && plan.crops) || [];
+            for (const crop of crops) errors.push(...validateCrop(crop)); // CHANGE
+
+            const duplicate = findFirstDuplicateCrop(plan); // NEW
+            if (duplicate) errors.push("Duplicate crop rows found. Each plant/variety may appear only once per year plan."); // NEW
+            errors.push(...validateCsa(plan)); // NEW
             return errors;
         }
 
@@ -892,6 +897,7 @@ Draw.loadPlugin(function (ui) {
             findDuplicateCrop,
             findFirstDuplicateCrop,
             validateCrop, // NEW
+            validateCsa, // NEW
             validate
         };
     })();
@@ -1612,6 +1618,9 @@ Draw.loadPlugin(function (ui) {
                 selectedCropId: resolveSelectedCropId(crops, "", 0), // NEW
                 activeTab: "basics", // NEW
                 previewExpanded: false, // NEW
+                csaExpanded: false, // NEW
+                hadBlockingErrors: false, // NEW
+                hadCsaErrors: false, // NEW
                 baselineSnapshot: "", // NEW
                 validationState: "idle", // NEW
                 lastSavedAt: null, // NEW
@@ -1643,6 +1652,56 @@ Draw.loadPlugin(function (ui) {
             } // NEW
             if (current && !seen.has(current)) options.unshift({ value: current, label: `${current} (legacy/unavailable)`, unavailable: true }); // NEW
             return options; // NEW
+        } // NEW
+
+        function formatKg(value) { // NEW
+            const number = Number(value); // NEW
+            return Number.isFinite(number) ? `${number.toFixed(1)} kg` : "-"; // NEW
+        } // NEW
+
+        function formatYmd(ymd) { // NEW
+            const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(ymd || "")); // NEW
+            if (!match) return ""; // NEW
+            const month = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][Number(match[2]) - 1]; // NEW
+            return month ? `${month} ${match[3]}` : ""; // NEW
+        } // NEW
+
+        function buildCompactStatus(dashboard) { // NEW
+            const cropCount = Math.max(0, Math.trunc(Number(dashboard && dashboard.cropCount) || 0)); // NEW
+            const parts = [String(Number(dashboard && dashboard.year) || ""), `${cropCount} crop${cropCount === 1 ? "" : "s"}`]; // NEW
+            if (Number(dashboard && dashboard.shortKg) > EPS) parts.push(`Short ${formatKg(dashboard.shortKg)}`); // NEW
+            else if (Number(dashboard && dashboard.surplusKg) > EPS) parts.push(`Surplus ${formatKg(dashboard.surplusKg)}`); // NEW
+            if (dashboard && dashboard.dirty) parts.push("Unsaved"); // NEW
+            return parts.filter(Boolean).join(" \u00b7 "); // NEW
+        } // NEW
+
+        function buildCsaSummary(plan) { // NEW
+            const csa = plan && plan.csa; // NEW
+            if (!csa || !csa.enabled) return "CSA Box Plan: Off"; // NEW
+            const parts = [`CSA Box Plan: ${Math.max(0, Math.trunc(Number(csa.boxesPerWeek) || 0))} boxes/week`]; // NEW
+            const start = formatYmd(csa.start); // NEW
+            const end = formatYmd(csa.end); // NEW
+            if (start || end) parts.push(`${start || "?"}\u2013${end || "?"}`); // NEW
+            const componentCount = Array.isArray(csa.components) ? csa.components.length : 0; // NEW
+            parts.push(`${componentCount} component${componentCount === 1 ? "" : "s"}`); // NEW
+            return parts.join(" \u00b7 "); // NEW
+        } // NEW
+
+        function syncExpansionState(state, dashboard, csaErrors) { // NEW
+            const hasBlockingErrors = !!(dashboard && dashboard.validationErrors && dashboard.validationErrors.length); // NEW
+            const hasCsaErrors = !!(csaErrors && csaErrors.length); // NEW
+            const changes = { previewChanged: false, csaChanged: false }; // NEW
+            if (hasBlockingErrors && !state.hadBlockingErrors && !state.previewExpanded) { // NEW
+                state.previewExpanded = true; // NEW
+                changes.previewChanged = true; // NEW
+            } // NEW
+            if (hasCsaErrors && !state.hadCsaErrors && !state.csaExpanded) { // NEW
+                state.csaExpanded = true; // NEW
+                changes.csaChanged = true; // NEW
+            } // NEW
+            state.hadBlockingErrors = hasBlockingErrors; // NEW
+            state.hadCsaErrors = hasCsaErrors; // NEW
+            return changes; // NEW
         } // NEW
 
         function compute(plan, runtime, options) { // NEW
@@ -1727,6 +1786,7 @@ Draw.loadPlugin(function (ui) {
                 validationErrors, // NEW
                 diagnostics, // NEW
                 badges, // NEW
+                dirty: !!settings.dirty, // NEW
                 cropMetrics, // NEW
                 cropMetricsById: new Map(cropMetrics.map(metric => [String(metric.crop.id), metric])) // NEW
             }; // NEW
@@ -1740,6 +1800,11 @@ Draw.loadPlugin(function (ui) {
             resolveSelectedCropId,
             uniqueMessages,
             buildMethodOptions, // NEW
+            formatKg, // NEW
+            formatYmd, // NEW
+            buildCompactStatus, // NEW
+            buildCsaSummary, // NEW
+            syncExpansionState, // NEW
             compute
         }; // NEW
     })(); // NEW
@@ -1855,14 +1920,12 @@ Draw.loadPlugin(function (ui) {
             style.textContent = ` /* NEW */
                 .yp-dashboard-grid{display:grid;grid-template-columns:280px minmax(0,1fr);gap:12px;align-items:start}
                 .yp-field-grid{display:grid;grid-template-columns:repeat(2,minmax(220px,1fr));gap:10px}
-                .yp-summary-grid{display:grid;grid-template-columns:repeat(7,minmax(90px,1fr));gap:6px}
                 .yp-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
                 .yp-line{display:grid;grid-template-columns:minmax(70px,1fr) 120px 150px 150px auto;gap:8px;align-items:center}
                 .yp-package-line{display:grid;grid-template-columns:32px minmax(90px,1fr) 26px 100px 100px 90px auto;gap:8px;align-items:center}
                 @media(max-width:850px){
                     .yp-dashboard-grid{grid-template-columns:1fr}
                     .yp-field-grid{grid-template-columns:1fr}
-                    .yp-summary-grid{grid-template-columns:repeat(2,minmax(100px,1fr))}
                     .yp-line,.yp-package-line{display:flex;flex-wrap:wrap}
                     .yp-preview-grid{grid-template-columns:1fr!important}
                 }`; // NEW
@@ -1897,7 +1960,7 @@ Draw.loadPlugin(function (ui) {
             const editorBox = document.createElement("div"); // NEW
             editorBox.style.cssText = "border:1px solid #ddd;border-radius:8px;background:#fff;min-height:280px;"; // NEW
             const csaBox = document.createElement("div"); // NEW
-            csaBox.style.cssText = "border:1px solid #ddd;border-radius:8px;padding:10px;background:#fff;"; // NEW
+            csaBox.style.cssText = "border:1px solid #ddd;border-radius:8px;background:#fff;overflow:hidden;"; // CHANGE
             mainColumn.appendChild(editorBox); // NEW
             mainColumn.appendChild(csaBox); // NEW
             dashboardGrid.appendChild(sidebar); // NEW
@@ -1911,7 +1974,7 @@ Draw.loadPlugin(function (ui) {
             previewBar.style.cssText = "padding:7px 12px;display:flex;align-items:center;justify-content:space-between;gap:10px;background:#f7f7f7;cursor:pointer;"; // NEW
             const previewSummary = document.createElement("div"); // NEW
             previewSummary.style.fontWeight = "700"; // NEW
-            const previewToggle = mkBtn("Show diagnostics"); // NEW
+            const previewToggle = mkBtn("Show plan check"); // CHANGE
             const previewDetails = document.createElement("div"); // NEW
             previewDetails.style.cssText = "display:none;max-height:310px;overflow:auto;padding:10px 12px;border-top:1px solid #ddd;"; // NEW
             const previewGrid = document.createElement("div"); // NEW
@@ -2002,10 +2065,7 @@ Draw.loadPlugin(function (ui) {
                 return plantName && varietyName ? `${plantName} - ${varietyName}` : (plantName || varietyName || String(crop && crop.id || "Crop")); // NEW
             } // NEW
 
-            function formatKg(value) { // NEW
-                const number = Number(value); // NEW
-                return Number.isFinite(number) ? `${number.toFixed(1)} kg` : "-"; // NEW
-            } // NEW
+            const formatKg = YearPlanDashboard.formatKg; // CHANGE
 
             function statusColor(status) { // NEW
                 if (status === "Short" || status === "Missing data") return "#a33"; // NEW
@@ -2099,6 +2159,9 @@ Draw.loadPlugin(function (ui) {
                 plan.year = currentYear; // NEW
                 state.selectedCropId = YearPlanDashboard.resolveSelectedCropId(plan.crops, "", 0); // NEW
                 state.activeTab = "basics"; // NEW
+                state.csaExpanded = false; // NEW
+                state.hadBlockingErrors = false; // NEW
+                state.hadCsaErrors = false; // NEW
                 state.validationState = "idle"; // NEW
                 state.lastSavedAt = null; // NEW
                 state.closePromptOpen = false; // NEW
@@ -2108,35 +2171,8 @@ Draw.loadPlugin(function (ui) {
             } // NEW
 
             function renderSummary() { // NEW
-                summaryBox.innerHTML = ""; // NEW
-                const grid = document.createElement("div"); // NEW
-                grid.className = "yp-summary-grid"; // NEW
-                const values = [ // NEW
-                    ["Year", dashboard.year],
-                    ["Crops", dashboard.cropCount],
-                    ["Target", formatKg(dashboard.targetKg)],
-                    ["Supply", formatKg(dashboard.supplyKg)],
-                    ["Short", formatKg(dashboard.shortKg)],
-                    ["Surplus", formatKg(dashboard.surplusKg)],
-                    ["Warnings", dashboard.warningCount]
-                ]; // NEW
-                for (const pair of values) { // NEW
-                    const item = document.createElement("div"); // NEW
-                    item.style.cssText = "border:1px solid #ddd;border-radius:6px;padding:6px 8px;background:#fff;"; // NEW
-                    item.innerHTML = `<div style="color:#666;font-size:10px;text-transform:uppercase;">${mxUtils.htmlEntities(String(pair[0]))}</div><div style="font-weight:700;margin-top:2px;">${mxUtils.htmlEntities(String(pair[1]))}</div>`; // NEW
-                    grid.appendChild(item); // NEW
-                } // NEW
-                summaryBox.appendChild(grid); // NEW
-                const badges = document.createElement("div"); // NEW
-                badges.className = "yp-row"; // NEW
-                badges.style.marginTop = "7px"; // NEW
-                for (const label of dashboard.badges) { // NEW
-                    const badge = document.createElement("span"); // NEW
-                    badge.textContent = label; // NEW
-                    badge.style.cssText = `padding:3px 7px;border-radius:999px;border:1px solid #bbb;background:#fff;color:${statusColor(label)};font-weight:700;`; // NEW
-                    badges.appendChild(badge); // NEW
-                } // NEW
-                summaryBox.appendChild(badges); // NEW
+                summaryBox.textContent = YearPlanDashboard.buildCompactStatus(dashboard); // CHANGE
+                summaryBox.style.fontWeight = "700"; // NEW
             } // NEW
 
             function renderCropList() { // NEW
@@ -2185,7 +2221,7 @@ Draw.loadPlugin(function (ui) {
 
             function renderPreview() { // NEW
                 previewDetails.style.display = state.previewExpanded ? "block" : "none"; // NEW
-                previewToggle.textContent = state.previewExpanded ? "Hide diagnostics" : "Show diagnostics"; // NEW
+                previewToggle.textContent = state.previewExpanded ? "Hide plan check" : "Show plan check"; // CHANGE
                 previewSummary.textContent = `Target ${formatKg(dashboard.targetKg)} | Supply ${formatKg(dashboard.supplyKg)} | Short ${formatKg(dashboard.shortKg)} | ${dashboard.warningCount} warning${dashboard.warningCount === 1 ? "" : "s"}`; // NEW
                 if (!state.previewExpanded) return; // NEW
                 const cropId = String(plan.cropFilterId || ""); // NEW
@@ -2195,8 +2231,8 @@ Draw.loadPlugin(function (ui) {
                 totalsBox.innerHTML = `<div style="font-weight:700;margin-bottom:6px;">Totals</div><table style="width:100%;border-collapse:collapse;"><thead><tr><th>Crop</th><th>Target</th><th>Supply</th><th>Short</th><th>Surplus</th><th>Status</th></tr></thead><tbody>${rows || '<tr><td colspan="6">No crops.</td></tr>'}</tbody></table>`; // NEW
                 for (const cell of totalsBox.querySelectorAll("th,td")) cell.style.cssText = "border:1px solid #ddd;padding:4px;text-align:left;"; // NEW
                 diagnosticsBox.innerHTML = dashboard.diagnostics.length // NEW
-                    ? `<div style="font-weight:700;margin-bottom:5px;">Diagnostics</div><ul style="margin:0 0 0 18px;padding:0;">${dashboard.diagnostics.map(message => `<li>${mxUtils.htmlEntities(message)}</li>`).join("")}</ul>` // NEW
-                    : '<div style="color:#256a36;font-weight:700;">No diagnostics.</div>'; // NEW
+                    ? `<div style="font-weight:700;margin-bottom:5px;">Plan Check</div><ul style="margin:0 0 0 18px;padding:0;">${dashboard.diagnostics.map(message => `<li>${mxUtils.htmlEntities(message)}</li>`).join("")}</ul>` // CHANGE
+                    : '<div style="color:#256a36;font-weight:700;">Plan Check passed.</div>'; // CHANGE
             } // NEW
 
             function renderFooter() { // NEW
@@ -2213,10 +2249,12 @@ Draw.loadPlugin(function (ui) {
                 runtime = PlanRuntimeService.recalculate(moduleCell, currentYear, plan); // NEW
                 const dirty = state.baselineSnapshot ? YearPlanDashboard.isDirty(state, plan) : false; // NEW
                 dashboard = YearPlanDashboard.compute(plan, runtime, { dirty, extraDiagnostics: state.extraDiagnostics }); // NEW
+                const expansionChanges = YearPlanDashboard.syncExpansionState(state, dashboard, PlanSchema.validateCsa(plan)); // NEW
                 state.selectedCropId = YearPlanDashboard.resolveSelectedCropId(plan.crops, state.selectedCropId, 0); // NEW
                 renderSummary(); // NEW
                 renderCropList(); // NEW
                 renderPreview(); // NEW
+                if (expansionChanges.csaChanged) renderCsa(); // NEW
                 renderFooter(); // NEW
                 syncEditorDerived(); // NEW
                 return runtime; // NEW
@@ -2551,7 +2589,7 @@ Draw.loadPlugin(function (ui) {
                 tabs.style.cssText = "display:flex;gap:4px;padding:8px 10px 0;flex-wrap:wrap;"; // NEW
                 const content = document.createElement("div"); // NEW
                 content.style.padding = "12px"; // NEW
-                for (const tab of [{ id: "basics", label: "Basics" }, { id: "demand", label: "Demand" }, { id: "packages", label: "Packages" }, { id: "advanced", label: "Advanced" }]) { // NEW
+                for (const tab of [{ id: "basics", label: "Basics" }, { id: "packages", label: "Packages" }, { id: "demand", label: "Demand" }, { id: "advanced", label: "Advanced" }]) { // CHANGE
                     const button = mkBtn(tab.label, state.activeTab === tab.id); // NEW
                     button.addEventListener("click", () => { state.activeTab = tab.id; renderSelectedEditor(); syncEditorDerived(); }); // NEW
                     tabs.appendChild(button); // NEW
@@ -2574,9 +2612,21 @@ Draw.loadPlugin(function (ui) {
             function renderCsa() { // NEW
                 csaBox.innerHTML = ""; // NEW
                 plan.csa = plan.csa || { enabled: false, boxesPerWeek: 0, start: "", end: "", components: [] }; // NEW
-                const title = document.createElement("div"); // NEW
-                title.style.cssText = "font-weight:700;font-size:13px;margin-bottom:8px;"; // NEW
-                title.textContent = "CSA (optional)"; // NEW
+                const strip = document.createElement("button"); // NEW
+                strip.type = "button"; // NEW
+                strip.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;padding:9px 10px;border:0;background:#f7f7f7;cursor:pointer;text-align:left;font:12px Arial,sans-serif;"; // NEW
+                strip.setAttribute("aria-expanded", state.csaExpanded ? "true" : "false"); // NEW
+                const summary = document.createElement("span"); // NEW
+                summary.style.fontWeight = "700"; // NEW
+                summary.textContent = YearPlanDashboard.buildCsaSummary(plan); // NEW
+                const toggle = document.createElement("span"); // NEW
+                toggle.textContent = state.csaExpanded ? "Collapse" : "Expand"; // NEW
+                strip.appendChild(summary); strip.appendChild(toggle); // NEW
+                csaBox.appendChild(strip); // NEW
+                strip.addEventListener("click", () => { state.csaExpanded = !state.csaExpanded; renderCsa(); }); // NEW
+                if (!state.csaExpanded) return; // NEW
+                const details = document.createElement("div"); // NEW
+                details.style.padding = "10px"; // NEW
                 const controls = document.createElement("div"); // NEW
                 controls.className = "yp-row"; // NEW
                 const enabled = document.createElement("input"); enabled.type = "checkbox"; enabled.checked = !!plan.csa.enabled; // NEW
@@ -2589,8 +2639,9 @@ Draw.loadPlugin(function (ui) {
                 rowsHost.style.cssText = "display:flex;flex-direction:column;gap:7px;margin-top:10px;"; // NEW
                 const add = mkBtn("Add component"); // NEW
                 add.style.marginTop = "8px"; // NEW
-                csaBox.appendChild(title); csaBox.appendChild(controls); csaBox.appendChild(rowsHost); csaBox.appendChild(add); // NEW
-                const sync = () => { plan.csa.enabled = enabled.checked; plan.csa.boxesPerWeek = Math.max(0, Math.trunc(Number(boxes.value) || 0)); plan.csa.start = start.value; plan.csa.end = end.value; debounceRefresh(); }; // NEW
+                details.appendChild(controls); details.appendChild(rowsHost); details.appendChild(add); csaBox.appendChild(details); // CHANGE
+                const refreshSummary = () => { summary.textContent = YearPlanDashboard.buildCsaSummary(plan); }; // NEW
+                const sync = () => { plan.csa.enabled = enabled.checked; plan.csa.boxesPerWeek = Math.max(0, Math.trunc(Number(boxes.value) || 0)); plan.csa.start = start.value; plan.csa.end = end.value; refreshSummary(); debounceRefresh(); }; // CHANGE
                 enabled.addEventListener("change", sync); boxes.addEventListener("input", sync); start.addEventListener("change", sync); end.addEventListener("change", sync); // NEW
 
                 function renderRows() { // NEW
@@ -2615,13 +2666,14 @@ Draw.loadPlugin(function (ui) {
                         every.addEventListener("input", () => { component.everyNWeeks = Math.max(1, Math.trunc(Number(every.value) || 1)); debounceRefresh(); }); // NEW
                         from.addEventListener("change", () => { component.start = from.value; refreshDerived(); }); // NEW
                         to.addEventListener("change", () => { component.end = to.value; refreshDerived(); }); // NEW
-                        remove.addEventListener("click", () => { plan.csa.components = plan.csa.components.filter(item => item !== component); renderRows(); refreshDerived(); }); // NEW
+                        remove.addEventListener("click", () => { plan.csa.components = plan.csa.components.filter(item => item !== component); renderRows(); refreshSummary(); refreshDerived(); }); // CHANGE
                     } // NEW
                 } // NEW
                 add.addEventListener("click", () => { // NEW
                     const crop = plan.crops && plan.crops[0]; // NEW
                     plan.csa.components.push({ cropId: crop ? crop.id : "", qty: 1, unit: defaultUnit(crop), everyNWeeks: 1, start: plan.csa.start || "", end: plan.csa.end || "" }); // NEW
-                    renderRows(); refreshDerived(); // NEW
+                    state.csaExpanded = true; // NEW
+                    renderRows(); refreshSummary(); refreshDerived(); // CHANGE
                 }); // NEW
                 renderRows(); // NEW
             } // NEW
@@ -2644,7 +2696,8 @@ Draw.loadPlugin(function (ui) {
                 if (dashboard.validationErrors.length) { // NEW
                     state.validationState = "invalid"; // NEW
                     state.previewExpanded = true; // NEW
-                    renderPreview(); renderFooter(); // NEW
+                    if (PlanSchema.validateCsa(plan).length) state.csaExpanded = true; // NEW
+                    renderCsa(); renderPreview(); renderFooter(); // CHANGE
                     return false; // NEW
                 } // NEW
                 persistPackageDefaults(); // NEW
@@ -2668,13 +2721,16 @@ Draw.loadPlugin(function (ui) {
             yearInput.min = "1900"; yearInput.max = "3000"; // NEW
             const templateSel = document.createElement("select"); // NEW
             templateSel.style.cssText = "padding:5px 6px;border:1px solid #bbb;border-radius:6px;min-width:190px;"; // NEW
+            const templateNameInput = mkInput("text", "", 170); // NEW
+            templateNameInput.placeholder = "Template name"; // NEW
             const applyTemplate = mkBtn("Apply"); // NEW
             const saveTemplate = mkBtn("Save template"); // NEW
             const deleteTemplate = mkBtn("Delete template"); // NEW
             titleEl.textContent = `Plan Year - ${currentYear}`; // NEW
-            headerControls.appendChild(document.createTextNode("Year")); headerControls.appendChild(yearInput); headerControls.appendChild(document.createTextNode("Template")); headerControls.appendChild(templateSel); headerControls.appendChild(applyTemplate); headerControls.appendChild(saveTemplate); headerControls.appendChild(deleteTemplate); // NEW
+            headerControls.appendChild(document.createTextNode("Year")); headerControls.appendChild(yearInput); headerControls.appendChild(document.createTextNode("Template")); headerControls.appendChild(templateSel); headerControls.appendChild(templateNameInput); headerControls.appendChild(applyTemplate); headerControls.appendChild(saveTemplate); headerControls.appendChild(deleteTemplate); // CHANGE
             header.appendChild(titleEl); header.appendChild(headerControls); // NEW
             fillTemplateDropdown(); // NEW
+            saveTemplate.disabled = true; // NEW
 
             const plantSelect = document.createElement("select"); // NEW
             plantSelect.style.cssText = "padding:6px;border:1px solid #bbb;border-radius:6px;min-width:260px;flex:1 1 260px;"; // NEW
@@ -2758,17 +2814,22 @@ Draw.loadPlugin(function (ui) {
                 replacePlan(PlanRepository.rekeyTemplateToPlan(template, currentYear), currentYear); // NEW
                 renderAll(); // NEW
             }); // NEW
+            templateSel.addEventListener("change", () => { // NEW
+                templateNameInput.value = String(templateSel.value || ""); // NEW
+                saveTemplate.disabled = !templateNameInput.value.trim(); // NEW
+            }); // NEW
+            templateNameInput.addEventListener("input", () => { saveTemplate.disabled = !templateNameInput.value.trim(); }); // NEW
             saveTemplate.addEventListener("click", () => { // NEW
-                const name = String(prompt("Template name?") || "").trim(); // NEW
+                const name = String(templateNameInput.value || "").trim(); // CHANGE
                 if (!name) return; // NEW
                 const template = PlanSchema.serializeForPersistence(plan, { forTemplate: true }); // NEW
                 template.templateBaseYear = currentYear; template.year = null; // NEW
-                PlanRepository.saveTemplateByName(name, template); fillTemplateDropdown(); templateSel.value = name; // NEW
+                PlanRepository.saveTemplateByName(name, template); fillTemplateDropdown(); templateSel.value = name; templateNameInput.value = name; saveTemplate.disabled = false; // CHANGE
             }); // NEW
             deleteTemplate.addEventListener("click", () => { // NEW
                 const name = String(templateSel.value || ""); // NEW
                 if (!name || !confirm(`Delete template "${name}"?`)) return; // NEW
-                PlanRepository.deleteTemplateByName(name); fillTemplateDropdown(); // NEW
+                PlanRepository.deleteTemplateByName(name); fillTemplateDropdown(); templateNameInput.value = ""; saveTemplate.disabled = true; // CHANGE
             }); // NEW
             cropFilterSel.addEventListener("change", () => { plan.cropFilterId = cropFilterSel.value; renderPreview(); renderFooter(); }); // NEW
             previewBar.addEventListener("click", event => { if (event.target === cropFilterSel) return; state.previewExpanded = !state.previewExpanded; renderPreview(); }); // NEW
@@ -2844,12 +2905,14 @@ Draw.loadPlugin(function (ui) {
         window.__uslYearPlannerTestApi = { // NEW
             Env,
             DiagramStore,
+            DbClient, // NEW
             PlanMath,
             PlanSchema,
             PlanRepository,
             DiagramPlanReader,
             PlanRuntimeService,
             YearPlanDashboard, // NEW
+            YearPlanModalController, // NEW
             SessionController
         };
     }

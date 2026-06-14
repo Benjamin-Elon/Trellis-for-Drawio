@@ -15,6 +15,7 @@ const PLUGIN_PATH = path.join(
     "garden_planner_plugins",
     "Year_planner.js"
 );
+const PLUGIN_SOURCE = fs.readFileSync(PLUGIN_PATH, "utf8"); // NEW
 
 class TestCell {
     constructor(id, attributes = {}) {
@@ -88,7 +89,7 @@ function createHarness() {
         }
     });
 
-    vm.runInContext(fs.readFileSync(PLUGIN_PATH, "utf8"), context, { filename: PLUGIN_PATH });
+    vm.runInContext(PLUGIN_SOURCE, context, { filename: PLUGIN_PATH }); // CHANGE
 
     function addCell(parent, cell) {
         parent.children.push(cell);
@@ -174,6 +175,19 @@ test("PlanSchema detects duplicate crop identities and validates invalid units",
     assert.ok(errors.some(error => error.includes("does not resolve to kg")));
 });
 
+test("PlanSchema exposes CSA validation independently from the full plan", () => { // NEW
+    const { api } = createHarness(); // NEW
+    const plan = api.PlanSchema.createEmptyPlan(2026); // NEW
+    plan.crops.push(emptyCrop()); // NEW
+    plan.csa.enabled = true; // NEW
+    plan.csa.components.push({ cropId: "crop_1", qty: 1, unit: "crate", start: "", end: "" }); // NEW
+    const csaErrors = Array.from(api.PlanSchema.validateCsa(plan)); // NEW
+    assert.ok(csaErrors.some(error => error.includes("boxes/week"))); // NEW
+    assert.ok(csaErrors.some(error => error.includes("missing dates"))); // NEW
+    assert.ok(csaErrors.some(error => error.includes("does not resolve to kg"))); // NEW
+    assert.ok(Array.from(api.PlanSchema.validate(plan)).length >= csaErrors.length); // NEW
+}); // NEW
+
 test("PlanRepository round-trips plans, templates, defaults, and leap-day shifts", () => {
     const { api, root, addCell, TestCell: Cell } = createHarness();
     const moduleCell = addCell(root, new Cell("module"));
@@ -201,6 +215,9 @@ test("PlanRepository round-trips plans, templates, defaults, and leap-day shifts
     template.year = null;
     api.PlanRepository.saveTemplateByName("Leap", template);
     assert.deepEqual(Array.from(api.PlanRepository.listTemplateNames()), ["Leap"]);
+    api.PlanRepository.saveTemplateByName(" Leap ", { overwritten: true }); // NEW
+    assert.equal(api.PlanRepository.loadTemplateByName("Leap").overwritten, true); // NEW
+    api.PlanRepository.saveTemplateByName("Leap", template); // NEW
     const shifted = api.PlanRepository.rekeyTemplateToPlan(api.PlanRepository.loadTemplateByName("Leap"), 2025);
     assert.equal(shifted.crops[0].harvestStart, "2025-02-28");
     assert.equal(shifted.csa.components[0].start, "2025-02-28");
@@ -391,6 +408,33 @@ test("YearPlanDashboard dirty snapshots ignore runtime fields and update after s
     api.YearPlanDashboard.markBaseline(state, plan, null); // NEW
     assert.equal(api.YearPlanDashboard.isDirty(state, plan), false); // NEW
     assert.equal(state.validationState, "valid"); // NEW
+}); // NEW
+
+test("YearPlanDashboard builds compact status and CSA summaries without timezone parsing", () => { // NEW
+    const { api } = createHarness(); // NEW
+    assert.equal(api.YearPlanDashboard.buildCompactStatus({ year: 2026, cropCount: 0, shortKg: 0, surplusKg: 0, dirty: false }), "2026 \u00b7 0 crops"); // NEW
+    assert.equal(api.YearPlanDashboard.buildCompactStatus({ year: 2026, cropCount: 1, shortKg: 12.4, surplusKg: 0, dirty: true }), "2026 \u00b7 1 crop \u00b7 Short 12.4 kg \u00b7 Unsaved"); // NEW
+    assert.equal(api.YearPlanDashboard.buildCompactStatus({ year: 2026, cropCount: 2, shortKg: 0, surplusKg: 3, dirty: false }), "2026 \u00b7 2 crops \u00b7 Surplus 3.0 kg"); // NEW
+    assert.equal(api.YearPlanDashboard.buildCsaSummary({ csa: { enabled: false } }), "CSA Box Plan: Off"); // NEW
+    assert.equal(api.YearPlanDashboard.buildCsaSummary({ csa: { enabled: true, boxesPerWeek: 25, start: "2026-06-01", end: "2026-09-30", components: [{}, {}] } }), "CSA Box Plan: 25 boxes/week \u00b7 Jun 01\u2013Sep 30 \u00b7 2 components"); // NEW
+}); // NEW
+
+test("YearPlanDashboard expands checks only when blocking errors first appear", () => { // NEW
+    const { api } = createHarness(); // NEW
+    const state = api.YearPlanDashboard.createState({ crops: [] }); // NEW
+    assert.equal(state.csaExpanded, false); // NEW
+    const invalid = { validationErrors: ["Plan error"] }; // NEW
+    let changes = api.YearPlanDashboard.syncExpansionState(state, invalid, ["CSA error"]); // NEW
+    assert.deepEqual(JSON.parse(JSON.stringify(changes)), { previewChanged: true, csaChanged: true }); // NEW
+    state.previewExpanded = false; state.csaExpanded = false; // NEW
+    changes = api.YearPlanDashboard.syncExpansionState(state, invalid, ["CSA error"]); // NEW
+    assert.deepEqual(JSON.parse(JSON.stringify(changes)), { previewChanged: false, csaChanged: false }); // NEW
+    api.YearPlanDashboard.syncExpansionState(state, { validationErrors: [] }, []); // NEW
+    changes = api.YearPlanDashboard.syncExpansionState(state, invalid, ["CSA error"]); // NEW
+    assert.deepEqual(JSON.parse(JSON.stringify(changes)), { previewChanged: true, csaChanged: true }); // NEW
+    state.previewExpanded = false; state.csaExpanded = false; // NEW
+    changes = api.YearPlanDashboard.syncExpansionState(state, { validationErrors: [], diagnostics: ["Runtime warning"] }, []); // NEW
+    assert.deepEqual(JSON.parse(JSON.stringify(changes)), { previewChanged: false, csaChanged: false }); // NEW
 }); // NEW
 
 test("YearPlanDashboard resolves selection after crop removal and preserves unknown methods", () => { // NEW
