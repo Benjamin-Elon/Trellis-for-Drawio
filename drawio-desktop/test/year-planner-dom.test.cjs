@@ -55,6 +55,21 @@ function findAddCropSelect(document) { // NEW
     ) || null; // NEW
 } // NEW
 
+function findCropFilterSelect(document) { // NEW
+    return Array.from(document.querySelectorAll("select")).find(select => // NEW
+        Array.from(select.options).some(option => option.textContent === "-- All crops --") // NEW
+    ) || null; // NEW
+} // NEW
+
+function findCropCard(document, label) { // NEW
+    return Array.from(document.querySelectorAll(".yp-crop-card")).find(card => card.textContent.includes(label)) || null; // NEW
+} // NEW
+
+function planCheckTotalsCropNames(document) { // NEW
+    const table = findStripDetails(document, "plan-check").querySelector("table"); // NEW
+    return table ? Array.from(table.querySelectorAll("tbody tr")).map(row => row.cells[0].textContent.trim()) : []; // NEW
+} // NEW
+
 function optionGroupLabels(select) { // NEW
     return Array.from(select.querySelectorAll("optgroup")).map(group => group.label); // NEW
 } // NEW
@@ -78,6 +93,34 @@ function canvasAxisLabels(canvas) { // NEW
         .map(operation => operation.text); // NEW
 } // NEW
 
+function planHero(document) { // NEW
+    const hero = document.querySelector(".yp-plan-hero"); // NEW
+    assert.ok(hero); // NEW
+    return hero; // NEW
+} // NEW
+
+function heroKpiTiles(document) { // NEW
+    return Array.from(planHero(document).querySelectorAll(".yp-kpi-tile")); // NEW
+} // NEW
+
+function heroKpiLabels(document) { // NEW
+    return heroKpiTiles(document).map(tile => tile.querySelector(".yp-kpi-label").textContent); // NEW
+} // NEW
+
+function attentionStrip(document) { // NEW
+    const strip = document.querySelector(".yp-attention-strip"); // NEW
+    assert.ok(strip); // NEW
+    return strip; // NEW
+} // NEW
+
+function assertHeroOverviewOnly(document) { // NEW
+    const hero = planHero(document); // NEW
+    const overviewText = [".yp-plan-hero-head", ".yp-kpi-grid"].map(selector => hero.querySelector(selector).textContent).join(""); // CHANGE
+    assert.equal(heroKpiTiles(document).length, 4); // NEW
+    assert.deepEqual(heroKpiLabels(document), ["Crops", "Target", "Usable supply", "Sales revenue"]); // NEW
+    assert.doesNotMatch(overviewText, /Plan Health|Worst shortage|Short weeks|Expired/); // CHANGE
+} // NEW
+
 test("modal renders four ordered strips with the expected defaults and crop tabs", async t => { // CHANGE
     const harness = createYearPlannerHarness();
     t.after(() => harness.dom.window.close());
@@ -85,7 +128,7 @@ test("modal renders four ordered strips with the expected defaults and crop tabs
 
     await harness.openModal(2026);
 
-    assert.match(harness.document.body.textContent, /2026 · 1 crop/);
+    assert.match(planHero(harness.document).textContent, /2026 Year Plan/); // CHANGE
     const tabLabels = Array.from(harness.document.querySelectorAll("button"))
         .map(button => button.textContent.trim())
         .filter(label => ["Basics", "Packages", "Advanced"].includes(label)); // CHANGE
@@ -97,7 +140,7 @@ test("modal renders four ordered strips with the expected defaults and crop tabs
 
     const csaStrip = findCsaStrip(harness.document);
     assert.ok(csaStrip);
-    assert.match(csaStrip.textContent, /CSA\s*Off/); // CHANGE
+    assert.match(csaStrip.textContent, /Status\s*Off/); // CHANGE
     assert.equal(csaStrip.getAttribute("aria-expanded"), "false");
     assert.equal(findStripHeader(harness.document, "demand").getAttribute("aria-expanded"), "true"); // NEW
     assert.equal(findStripHeader(harness.document, "crop-plan").getAttribute("aria-expanded"), "true"); // NEW
@@ -110,10 +153,75 @@ test("empty plans show Demand and Crop Plan guidance", async t => { // NEW
     t.after(() => harness.dom.window.close()); // NEW
     await harness.openModal(2026); // NEW
 
+    assertHeroOverviewOnly(harness.document); // NEW
+    assert.equal(attentionStrip(harness.document).style.display, "none"); // NEW
     assert.match(findStripDetails(harness.document, "demand").textContent, /No demand lines in this channel/); // CHANGE
     assert.match(findStripDetails(harness.document, "crop-plan").textContent, /Add or select a crop to edit its plan/); // NEW
-    assert.match(findStripHeader(harness.document, "demand").textContent, /4 channels.*0 lines/); // CHANGE
-    assert.match(findStripHeader(harness.document, "crop-plan").textContent, /0 crops.*No crop selected/); // NEW
+    assert.match(findStripHeader(harness.document, "demand").textContent, /Channels\s*4.*Lines\s*0/); // CHANGE
+    assert.match(findStripHeader(harness.document, "crop-plan").textContent, /Crops\s*0.*No crop selected/); // CHANGE
+}); // NEW
+
+test("hero stays overview-only for clean and unsaved clean plans", async t => { // NEW
+    const harness = createYearPlannerHarness(); // NEW
+    t.after(() => harness.dom.window.close()); // NEW
+    savePlan(harness, 2026); // NEW
+    await harness.openModal(2026); // NEW
+
+    assertHeroOverviewOnly(harness.document); // NEW
+    assert.match(planHero(harness.document).textContent, /Status\s*OK/); // NEW
+    assert.doesNotMatch(planHero(harness.document).textContent, /Unsaved/); // NEW
+    assert.equal(attentionStrip(harness.document).style.display, "none"); // NEW
+
+    const kgInput = Array.from(harness.document.querySelectorAll("label")).find(label => label.textContent.includes("kg/plant")).querySelector('input[type="number"]'); // NEW
+    harness.setControlValue(kgInput, 1.5); // NEW
+    await harness.settle(130); // NEW
+
+    assertHeroOverviewOnly(harness.document); // NEW
+    assert.match(planHero(harness.document).textContent, /Unsaved/); // NEW
+    assert.equal(attentionStrip(harness.document).style.display, "none"); // NEW
+}); // NEW
+
+test("Needs attention surfaces problems while the hero remains simple", async t => { // NEW
+    const scenarios = [ // NEW
+        { // NEW
+            name: "shortage", // NEW
+            configure: plan => addDemand(plan, { qty: 20 }), // NEW
+            expected: /Tomato short/ // NEW
+        }, // NEW
+        { // NEW
+            name: "expired harvest", // NEW
+            setup: harness => harness.addCell(harness.moduleCell, new harness.TestCell("expired-harvest", { tiler_group: "1", plant_id: "1", plant_name: "Tomato", plant_count: "10", season_start_year: "2026", harvest_start: "2026-01-05", harvest_end: "2026-01-11" })), // CHANGE
+            configure: plan => { plan.crops[0].useActualHarvest = false; plan.crops[0].harvestStart = "2026-01-05"; plan.crops[0].harvestEnd = "2026-01-11"; addDemand(plan, { from: "2026-01-12", to: "2026-01-18" }); }, // CHANGE
+            expected: /Expired/ // NEW
+        }, // NEW
+        { // NEW
+            name: "missing crop data", // NEW
+            configure: plan => { plan.crops[0].plantId = ""; addDemand(plan); }, // CHANGE
+            expected: /Tomato missing data/ // NEW
+        }, // NEW
+        { // NEW
+            name: "invalid demand dates", // NEW
+            configure: plan => addDemand(plan, { from: "2026-07-01", to: "2026-06-01" }), // NEW
+            expected: /Demand dates invalid/ // NEW
+        }, // NEW
+        { // NEW
+            name: "CSA errors", // NEW
+            configure: plan => { plan.csa.enabled = true; plan.csa.boxesPerWeek = 0; }, // NEW
+            expected: /CSA dates invalid/ // NEW
+        } // NEW
+    ]; // NEW
+
+    for (const scenario of scenarios) { // NEW
+        const harness = createYearPlannerHarness(); // NEW
+        t.after(() => harness.dom.window.close()); // NEW
+        if (scenario.setup) scenario.setup(harness); // NEW
+        savePlan(harness, 2026, scenario.configure); // NEW
+        await harness.openModal(2026); // NEW
+
+        assertHeroOverviewOnly(harness.document); // NEW
+        assert.equal(attentionStrip(harness.document).style.display, "block", scenario.name); // NEW
+        assert.match(attentionStrip(harness.document).textContent, scenario.expected, scenario.name); // NEW
+    } // NEW
 }); // NEW
 
 test("strip expansion survives year changes, template application, and clearing", async t => { // NEW
@@ -143,7 +251,7 @@ test("strip expansion survives year changes, template application, and clearing"
         Array.from(select.options).some(option => option.textContent === "Empty layout") // NEW
     ); // NEW
     templateSelect.value = "Empty layout"; // NEW
-    harness.findButton("Apply").click(); // NEW
+    harness.findButton("Apply template").click(); // CHANGE
     assertLayout(); // NEW
 
     harness.findButton("Clear").click(); // NEW
@@ -295,13 +403,108 @@ test("Centralized Demand remains visible and removes lines with their crop", asy
     const carrotButton = Array.from(cropPlanDetails.querySelectorAll("button")).find(button => button.textContent.includes("Carrot")); // NEW
     carrotButton.click(); // NEW
 
-    assert.match(findStripHeader(harness.document, "demand").textContent, /2 lines/); // CHANGE
+    assert.match(findStripHeader(harness.document, "demand").textContent, /Lines\s*2/); // CHANGE
     assert.equal(findStripDetails(harness.document, "demand").querySelectorAll("[data-demand-line-id]").length, 2); // CHANGE
     harness.findButton("Remove crop").click(); // NEW
     assert.equal(session.plan.crops.length, 1); // NEW
     assert.equal(session.plan.demands.length, 1); // NEW
-    assert.match(findStripHeader(harness.document, "demand").textContent, /1 line/); // CHANGE
+    assert.match(findStripHeader(harness.document, "demand").textContent, /Lines\s*1/); // CHANGE
     assert.equal(findStripDetails(harness.document, "demand").querySelector('input[type="number"]').value, "1"); // NEW
+}); // NEW
+
+test("crop selection syncs Crop Plan and Plan Check while preserving all-crop filter selection", async t => { // NEW
+    const harness = createYearPlannerHarness(); // NEW
+    t.after(() => harness.dom.window.close()); // NEW
+    savePlan(harness, 2026, plan => { // NEW
+        plan.crops.push(makePlanCrop({ id: "crop_2", plantId: "2", plant: "Carrot" })); // NEW
+    }); // NEW
+    const session = await harness.openModal(2026); // NEW
+    setStripExpanded(harness.document, "plan-check", true); // NEW
+
+    const cropFilter = findCropFilterSelect(harness.document); // NEW
+    assert.ok(cropFilter); // NEW
+    assert.equal(cropFilter.value, ""); // NEW
+
+    findCropCard(harness.document, "Carrot").click(); // NEW
+    assert.equal(session.plan.cropFilterId, "crop_2"); // NEW
+    assert.equal(cropFilter.value, "crop_2"); // NEW
+    assert.match(findEditorBox(harness).textContent, /Carrot/); // NEW
+    assert.equal(findCropCard(harness.document, "Carrot").dataset.selected, "true"); // NEW
+
+    cropFilter.value = ""; // NEW
+    cropFilter.dispatchEvent(new harness.window.Event("change", { bubbles: true })); // NEW
+    assert.equal(session.plan.cropFilterId, ""); // NEW
+    assert.match(findEditorBox(harness).textContent, /Carrot/); // NEW
+    assert.equal(findCropCard(harness.document, "Carrot").dataset.selected, "true"); // NEW
+
+    cropFilter.value = "crop_1"; // NEW
+    cropFilter.dispatchEvent(new harness.window.Event("change", { bubbles: true })); // NEW
+    assert.equal(session.plan.cropFilterId, "crop_1"); // NEW
+    assert.match(findEditorBox(harness).textContent, /Tomato/); // NEW
+    assert.equal(findCropCard(harness.document, "Tomato").dataset.selected, "true"); // NEW
+}); // NEW
+
+test("Needs attention crop clicks expand related strips and sync Plan Check", async t => { // NEW
+    const harness = createYearPlannerHarness(); // NEW
+    t.after(() => harness.dom.window.close()); // NEW
+    savePlan(harness, 2026, plan => { // NEW
+        plan.crops.push(makePlanCrop({ id: "crop_2", plantId: "2", plant: "Carrot" })); // NEW
+        addDemand(plan, { id: "demand_2", cropId: "crop_2", qty: 3 }); // NEW
+    }); // NEW
+    await harness.openModal(2026); // NEW
+    setStripExpanded(harness.document, "crop-plan", false); // NEW
+    setStripExpanded(harness.document, "plan-check", false); // NEW
+
+    const attentionButton = Array.from(attentionStrip(harness.document).querySelectorAll("button")).find(button => /Carrot short/.test(button.textContent)); // NEW
+    assert.ok(attentionButton); // NEW
+    attentionButton.click(); // NEW
+
+    assert.equal(findStripHeader(harness.document, "crop-plan").getAttribute("aria-expanded"), "true"); // NEW
+    assert.equal(findStripHeader(harness.document, "plan-check").getAttribute("aria-expanded"), "true"); // NEW
+    assert.equal(findCropFilterSelect(harness.document).value, "crop_2"); // NEW
+    assert.match(findEditorBox(harness).textContent, /Carrot/); // NEW
+}); // NEW
+
+test("crop add and remove paths keep Plan Check filter aligned with valid crop selection", async t => { // NEW
+    const harness = createYearPlannerHarness(); // NEW
+    t.after(() => harness.dom.window.close()); // NEW
+    savePlan(harness, 2026, plan => { // NEW
+        plan.crops.push(makePlanCrop({ id: "crop_2", plantId: "2", plant: "Carrot" })); // NEW
+    }); // NEW
+    const session = await harness.openModal(2026); // NEW
+    setStripExpanded(harness.document, "plan-check", true); // NEW
+
+    const cropFilter = findCropFilterSelect(harness.document); // NEW
+    cropFilter.value = "crop_2"; // NEW
+    cropFilter.dispatchEvent(new harness.window.Event("change", { bubbles: true })); // NEW
+    harness.findButton("Remove crop").click(); // NEW
+    assert.equal(session.plan.crops.length, 1); // NEW
+    assert.equal(findCropFilterSelect(harness.document).value, "crop_1"); // NEW
+    assert.deepEqual(planCheckTotalsCropNames(harness.document), ["Tomato"]); // NEW
+
+    harness.findButton("Remove crop").click(); // NEW
+    assert.equal(session.plan.crops.length, 0); // NEW
+    assert.equal(findCropFilterSelect(harness.document).value, ""); // NEW
+    assert.match(findStripDetails(harness.document, "crop-plan").textContent, /Add or select a crop/); // CHANGE
+    assert.deepEqual(planCheckTotalsCropNames(harness.document), ["No crops."]); // NEW
+}); // NEW
+
+test("adding a crop selects it and syncs Plan Check filter", async t => { // NEW
+    const harness = createYearPlannerHarness(); // NEW
+    t.after(() => harness.dom.window.close()); // NEW
+    const plan = harness.api.PlanSchema.createEmptyPlan(2026); // NEW
+    harness.api.PlanRepository.savePlanForYear(harness.moduleCell, 2026, plan); // NEW
+    const session = await harness.openModal(2026); // NEW
+
+    const select = findAddCropSelect(harness.document); // NEW
+    const annualGroup = Array.from(select.querySelectorAll("optgroup")).find(group => group.label === "Annual crops"); // NEW
+    select.value = annualGroup.querySelector("option").value; // NEW
+    harness.findButton("Add crop").click(); // NEW
+    await harness.settle(10); // NEW
+
+    assert.equal(session.plan.crops.length, 1); // NEW
+    assert.equal(findCropFilterSelect(harness.document).value, session.plan.crops[0].id); // NEW
+    assert.match(findEditorBox(harness).textContent, /Tomato/); // NEW
 }); // NEW
 
 test("Unavailable garden records are skipped while deleted persisted varieties remain selectable", async t => { // NEW
@@ -359,7 +562,7 @@ test("Add crop options refresh after year changes, template application, and res
         Array.from(candidate.options).some(option => option.textContent === "-- Select template --") // NEW
     ); // NEW
     templateSelect.value = "Tomato Template"; // NEW
-    harness.findButton("Apply").click(); // NEW
+    harness.findButton("Apply template").click(); // CHANGE
     await harness.settle(10); // NEW
     select = findAddCropSelect(harness.document); // NEW
     assert.equal(Array.from(select.querySelectorAll("optgroup")).some(group => group.label.startsWith("Crops in this garden")), false); // NEW
@@ -414,7 +617,7 @@ test("Stale Add crop loads cannot replace newer grouped options", async t => { /
         Array.from(candidate.options).some(option => option.textContent === "-- Select template --") // NEW
     ); // NEW
     templateSelect.value = "Empty"; // NEW
-    harness.findButton("Apply").click(); // NEW
+    harness.findButton("Apply template").click(); // CHANGE
     resolveSecond([{ plant_id: 2, plant_name: "Newer", yield_per_plant_kg: 1, default_planting_method: "direct_sow.field", annual: 1, biennial: 0, perennial: 0 }]); // NEW
     await harness.settle(10); // NEW
     resolveFirst([{ plant_id: 1, plant_name: "Stale", yield_per_plant_kg: 1, default_planting_method: "direct_sow.field", annual: 1, biennial: 0, perennial: 0 }]); // NEW
@@ -444,19 +647,19 @@ test("Plan Check summary follows the crop filter and chart hover shows inventory
     setStripExpanded(harness.document, "plan-check", true); // CHANGE
 
     const summary = harness.document.querySelector(".yp-plan-check-summary"); // NEW
-    const cropFilter = Array.from(harness.document.querySelectorAll("select")).find(select => // NEW
-        Array.from(select.options).some(option => option.textContent === "-- All crops --") // NEW
-    ); // NEW
+    const cropFilter = findCropFilterSelect(harness.document); // CHANGE
     assert.ok(summary); // NEW
     assert.ok(cropFilter); // NEW
-    assert.match(summary.textContent, /Target:\s*5\.0 kg/); // NEW
-    assert.match(summary.textContent, /Short weeks:\s*1/); // NEW
+    assert.match(summary.textContent, /Target\s*5\.0 kg/); // CHANGE
+    assert.match(summary.textContent, /Short weeks\s*1/); // CHANGE
+    assert.deepEqual(planCheckTotalsCropNames(harness.document), ["Tomato", "Carrot"]); // NEW
     assert.match(findStripDetails(harness.document, "plan-check").textContent, /Channels[\s\S]*Priorities[\s\S]*Shortage weeks[\s\S]*Revenue:/); // CHANGE
 
     cropFilter.value = "crop_1"; // NEW
     cropFilter.dispatchEvent(new harness.window.Event("change", { bubbles: true })); // NEW
-    assert.match(summary.textContent, /Target:\s*2\.0 kg/); // NEW
-    assert.doesNotMatch(summary.textContent, /Target:\s*5\.0 kg/); // NEW
+    assert.match(summary.textContent, /Target\s*2\.0 kg/); // CHANGE
+    assert.doesNotMatch(summary.textContent, /Target\s*5\.0 kg/); // CHANGE
+    assert.deepEqual(planCheckTotalsCropNames(harness.document), ["Tomato"]); // NEW
 
     const canvas = harness.document.querySelector("canvas"); // NEW
     const tooltip = harness.document.querySelector(".yp-plan-chart-tooltip"); // NEW
@@ -564,7 +767,7 @@ test("interactive chart legend controls drawing and hover details without changi
     ); // NEW
     templateSelect.value = "Legend template"; // NEW
     templateSelect.dispatchEvent(new harness.window.Event("change", { bubbles: true })); // NEW
-    harness.findButton("Apply").click(); // CHANGE
+    harness.findButton("Apply template").click(); // CHANGE
     assert.equal(chartLegendButtons(harness.document)[0].getAttribute("aria-pressed"), "false"); // NEW
 
     harness.findButton("Close").click(); // NEW
@@ -618,7 +821,7 @@ test("invalid enabled CSA auto-expands CSA and Plan Check", async t => {
     const csaStrip = findCsaStrip(harness.document);
     assert.ok(csaStrip);
     assert.equal(csaStrip.getAttribute("aria-expanded"), "true");
-    assert.match(csaStrip.textContent, /0 boxes\/week/);
+    assert.match(csaStrip.textContent, /Boxes\/week\s*0/); // CHANGE
     assert.ok(harness.findButton("Add component"));
     assert.equal(findStripHeader(harness.document, "plan-check").getAttribute("aria-expanded"), "true"); // CHANGE
     assert.match(harness.document.body.textContent, /CSA enabled but boxes\/week is not set/);
@@ -646,9 +849,9 @@ test("CSA summary updates as controls and components change", async t => {
     harness.findButton("Add component").click();
 
     csaStrip = findCsaStrip(harness.document);
-    assert.match(csaStrip.textContent, /25 boxes\/week/);
-    assert.match(csaStrip.textContent, /Jun 01–Sep 30/);
-    assert.match(csaStrip.textContent, /1 component/);
+    assert.match(csaStrip.textContent, /Boxes\/week\s*25/); // CHANGE
+    assert.match(csaStrip.textContent, /Jun 01[-–]Sep 30/); // CHANGE
+    assert.match(csaStrip.textContent, /Components\s*1/); // CHANGE
 
     await harness.settle(120);
     assert.equal(session.plan.csa.components.length, 1);
@@ -670,11 +873,11 @@ test("Demand date controls reject reversed ranges and expose reciprocal picker c
     assert.equal(editorDates[1].min, "2026-06-01"); // NEW
     harness.setControlValue(editorDates[1], "2026-06-14", "change"); // NEW
     setStripExpanded(harness.document, "plan-check", true); // CHANGE
-    assert.match(harness.document.querySelector(".yp-plan-check-summary").textContent, /Target:\s*4\.0 kg/); // NEW
+    assert.match(harness.document.querySelector(".yp-plan-check-summary").textContent, /Target\s*4\.0 kg/); // CHANGE
 
     editorDates = findStripDetails(harness.document, "demand").querySelectorAll('input[type="date"]'); // CHANGE
     harness.setControlValue(editorDates[0], "2026-06-08", "change"); // NEW
-    assert.match(harness.document.querySelector(".yp-plan-check-summary").textContent, /Target:\s*2\.0 kg/); // NEW
+    assert.match(harness.document.querySelector(".yp-plan-check-summary").textContent, /Target\s*2\.0 kg/); // CHANGE
 
     editorDates = findStripDetails(harness.document, "demand").querySelectorAll('input[type="date"]'); // CHANGE
     assert.equal(editorDates[0].max, "2026-06-14"); // NEW
@@ -683,7 +886,7 @@ test("Demand date controls reject reversed ranges and expose reciprocal picker c
     editorDates = findStripDetails(harness.document, "demand").querySelectorAll('input[type="date"]'); // CHANGE
     assert.equal(editorDates[0].value, "2026-06-08"); // CHANGE
     assert.equal(editorDates[1].value, "2026-06-14"); // NEW
-    assert.match(harness.document.querySelector(".yp-plan-check-summary").textContent, /Target:\s*2\.0 kg/); // CHANGE
+    assert.match(harness.document.querySelector(".yp-plan-check-summary").textContent, /Target\s*2\.0 kg/); // CHANGE
     assert.match(harness.document.body.textContent, /Demand line start date cannot be after end date/); // CHANGE
     const totalCells = harness.document.querySelectorAll(".yp-plan-check-grid table tbody tr td"); // CHANGE
     assert.equal(totalCells[1].textContent, "2.0"); // CHANGE
@@ -747,7 +950,7 @@ test("CSA date controls reject reversed ranges and retain harvest-window clampin
     assert.equal(dates[2].value, "2026-09-20"); // NEW
     assert.equal(dates[3].value, "2026-09-30"); // CHANGE
     assert.match(harness.document.body.textContent, /CSA component start date cannot be after end date/); // CHANGE
-    assert.doesNotMatch(harness.document.querySelector(".yp-plan-check-summary").textContent, /Target:\s*0\.0 kg/); // CHANGE
+    assert.doesNotMatch(harness.document.querySelector(".yp-plan-check-summary").textContent, /Target\s*0\.0 kg/); // CHANGE
 }); // NEW
 
 test("Harvest date controls reject reversed ranges and allow same-day windows", async t => { // NEW
@@ -906,13 +1109,13 @@ test("public plan request event opens one modal and replaces the active session"
         detail: { moduleCellId: harness.moduleCell.id, year: 2026 }
     }));
     await harness.settle();
-    assert.match(harness.document.body.textContent, /Plan Year - 2026/);
+    assert.match(harness.document.body.textContent, /Plan Year 2026/); // CHANGE
     assert.equal(harness.document.body.children.length, 1);
 
     harness.window.dispatchEvent(new harness.window.CustomEvent("usl:planYearRequested", {
         detail: { moduleCellId: harness.moduleCell.id, year: 2027 }
     }));
     await harness.settle();
-    assert.match(harness.document.body.textContent, /Plan Year - 2027/);
+    assert.match(harness.document.body.textContent, /Plan Year 2027/); // CHANGE
     assert.equal(harness.document.body.children.length, 1);
 });
