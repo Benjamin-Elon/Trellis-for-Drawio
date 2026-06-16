@@ -1,10 +1,10 @@
 /**
  * Draw.io Plugin: Context Menu Submenus for Copy/Paste, Move, and Edit
  *
- * - Adds three submenus to the cell right-click menu:
+ * - Adds one standard draw.io submenu to Trellis-owned cell right-click menus: // CHANGE
  *   - "Copy / Paste": cut, copy, copy as image, copy as SVG, duplicate
- *   - "Move": to front, to back, bring forward, send backward
- *   - "Edit": edit style, edit data, edit link, edit connection points
+ *   - "Move / Arrange": to front, to back, bring forward, send backward // CHANGE
+ *   - "Edit Shape": edit style, edit data, edit link, edit connection points // CHANGE
  * - Hides the original top-level entries for those actions to clean up the menu.
  * - Cleans up leftover separators after hiding items.
  */
@@ -47,8 +47,9 @@ Draw.loadPlugin(function (ui) {
     ];
 
     const COPY_PASTE_LABEL = 'Copy / Paste';
-    const MOVE_LABEL = 'Move';
-    const EDIT_LABEL = 'Edit';
+    const STANDARD_ACTIONS_LABEL = 'Standard draw.io actions'; // NEW
+    const MOVE_LABEL = 'Move / Arrange'; // CHANGE
+    const EDIT_LABEL = 'Edit Shape'; // CHANGE
 
     // Manual display labels for actions (human-friendly)
     const DISPLAY_LABELS = {
@@ -72,6 +73,65 @@ Draw.loadPlugin(function (ui) {
     // -----------------------------
     // 2. Helpers
     // -----------------------------
+
+    /**
+     * Reads an XML-backed cell attribute without assuming the value type.
+     */
+    function getCellAttribute(cell, key) { // NEW
+        if (cell && typeof cell.getAttribute === 'function') { // NEW
+            return cell.getAttribute(key); // NEW
+        } // NEW
+        return null; // NEW
+    } // NEW
+
+    /**
+     * Identifies cells owned by Trellis features.
+     */
+    function isTrellisCell(cell) { // NEW
+        if (!cell) return false; // NEW
+
+        const trellisFlags = [ // NEW
+            'garden_module', // NEW
+            'garden_bed', // NEW
+            'tiler_group', // NEW
+            'kanban_card', // NEW
+            'garden_dashboard' // NEW
+        ]; // NEW
+
+        for (let i = 0; i < trellisFlags.length; i++) { // NEW
+            if (getCellAttribute(cell, trellisFlags[i]) === '1') return true; // NEW
+        } // NEW
+
+        return String(getCellAttribute(cell, 'board_key') || '').trim().length > 0; // NEW
+    } // NEW
+
+    /**
+     * Requires every selected cell to be Trellis-owned before changing multi-select menus.
+     */
+    function isAllSelectedCellsTrellis() { // NEW
+        const selectedCells = graph.getSelectionCells ? graph.getSelectionCells() : []; // NEW
+        if (!selectedCells || selectedCells.length === 0) return false; // NEW
+
+        for (let i = 0; i < selectedCells.length; i++) { // NEW
+            if (!isTrellisCell(selectedCells[i])) return false; // NEW
+        } // NEW
+
+        return true; // NEW
+    } // NEW
+
+    /**
+     * Applies the Trellis menu only to single Trellis cells or all-Trellis selections.
+     */
+    function shouldUseTrellisContextMenu(cell) { // NEW
+        if (!cell || !isTrellisCell(cell)) return false; // NEW
+
+        const selectedCells = graph.getSelectionCells ? graph.getSelectionCells() : []; // NEW
+        if (selectedCells && selectedCells.length > 0) { // CHANGE
+            return isAllSelectedCellsTrellis(); // NEW
+        } // NEW
+
+        return true; // NEW
+    } // NEW
 
     function getDisplayLabelForAction(actionKey) {
         if (Object.prototype.hasOwnProperty.call(DISPLAY_LABELS, actionKey)) {
@@ -183,19 +243,30 @@ Draw.loadPlugin(function (ui) {
     /**
      * Builds one submenu with items mapped from the given action keys.
      */
-    function buildSubmenu(menu, title, actionKeys) {
+    function buildSubmenu(menu, title, actionKeys, parent) { // CHANGE
         if (!actionKeys || !actionKeys.length) {
             return null;
         }
 
-        const parent = menu.addItem(title, null, null);
+        const submenuParent = menu.addItem(title, null, null, parent); // CHANGE
 
         actionKeys.forEach(function (key) {
-            addActionMenuItem(menu, parent, key);
+            addActionMenuItem(menu, submenuParent, key); // CHANGE
         });
 
-        return parent;
+        return submenuParent; // CHANGE
     }
+
+    /**
+     * Builds the grouped standard draw.io submenu for Trellis cell menus.
+     */
+    function buildStandardActionsSubmenu(menu) { // NEW
+        const parent = menu.addItem(STANDARD_ACTIONS_LABEL, null, null); // NEW
+        buildSubmenu(menu, COPY_PASTE_LABEL, COPY_PASTE_ACTIONS, parent); // NEW
+        buildSubmenu(menu, MOVE_LABEL, MOVE_ACTIONS, parent); // NEW
+        buildSubmenu(menu, EDIT_LABEL, EDIT_ACTIONS, parent); // NEW
+        return parent; // NEW
+    } // NEW
 
     /**
      * Removes hidden rows and collapses redundant separators.
@@ -266,16 +337,14 @@ Draw.loadPlugin(function (ui) {
      * Main post-processor to reorganize the popup menu.
      */
     function reorganizeContextMenu(menu, cell, evt) {
-        // Only adjust for cell popup
-        if (!cell) {
+        // Only adjust for Trellis-owned cell popups. // CHANGE
+        if (!shouldUseTrellisContextMenu(cell)) { // CHANGE
             return;
         }
 
-        // Add submenus
+        // Add grouped standard draw.io submenu. // CHANGE
         menu.addSeparator();
-        buildSubmenu(menu, COPY_PASTE_LABEL, COPY_PASTE_ACTIONS);
-        buildSubmenu(menu, MOVE_LABEL, MOVE_ACTIONS);
-        buildSubmenu(menu, EDIT_LABEL, EDIT_ACTIONS);
+        buildStandardActionsSubmenu(menu); // CHANGE
 
         // Hide originals
         hideOriginalActionItems(menu, COPY_PASTE_ACTIONS);

@@ -1296,12 +1296,56 @@ Draw.loadPlugin(function (ui) {
   }
 
 
+
+  // -------------------- Context eligibility -------------------- // NEW
+
+  const MODULE_STYLE_KEYS = ['garden_module']; // NEW
+
+  function hasStyleFlag(cell, key, expected) { // NEW
+    if (!cell || !key) return false; // NEW
+    const st = getStoredStyle(cell); // NEW
+    const re = new RegExp('(?:^|;)' + key + '=' + expected + '(?:;|$)'); // NEW
+    return re.test(st); // NEW
+  } // NEW
+
+  function hasAttrOrStyleFlag(cell, key, expected) { // NEW
+    return getAttrStr(cell, key) === expected || hasStyleFlag(cell, key, expected); // NEW
+  } // NEW
+
+  function isModuleCell(cell) { // NEW
+    if (!cell) return false; // NEW
+
+    for (let i = 0; i < MODULE_STYLE_KEYS.length; i++) { // NEW
+      if (hasAttrOrStyleFlag(cell, MODULE_STYLE_KEYS[i], '1')) return true; // NEW
+    } // NEW
+
+    return false; // NEW
+  } // NEW
+
+  function isDiagramRootContext(cell) { // NEW
+    if (!cell) return true; // NEW blank-canvas right click
+    if (cell === model.getRoot()) return true; // NEW actual mxGraph model root
+
+    const defaultParent = graph.getDefaultParent && graph.getDefaultParent(); // NEW usually the current page/layer
+    if (cell === defaultParent) return true; // NEW
+
+    return false; // NEW
+  } // NEW
+
+  function shouldShowCcMapContext(cell) { // NEW
+    return isDiagramRootContext(cell) || isModuleCell(cell); // NEW
+  } // NEW
+
+
+
   // -------------------- Context menu --------------------
 
   const oldFactory = graph.popupMenuHandler.factoryMethod;
 
   graph.popupMenuHandler.factoryMethod = function (menu, cell, evt) {
     oldFactory.apply(this, arguments);
+
+    if (!shouldShowCcMapContext(cell)) return; // CHANGE
 
     const panelLabel = isPanelVisible() ? 'Hide Map Panel' : 'Show Map Panel';
     menu.addItem(panelLabel, null, function () {
