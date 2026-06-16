@@ -80,6 +80,46 @@ Draw.loadPlugin(function (ui) {
         return null; // CHANGE
     } // CHANGE
 
+    function isGardenModuleCell(cell) { // CHANGE
+        return !!cell && getAttr(cell, 'garden_module') === '1'; // CHANGE
+    } // CHANGE
+
+    function isGardenDashboardCell(cell) { // CHANGE
+        return !!cell && getAttr(cell, 'garden_dashboard') === '1'; // CHANGE
+    } // CHANGE
+
+    function findGardenModuleAncestor(cell) { // CHANGE
+        let cur = cell; // CHANGE
+        while (cur) { // CHANGE
+            if (isGardenModuleCell(cur)) return cur; // CHANGE
+            cur = model.getParent(cur); // CHANGE
+        } // CHANGE
+        return null; // CHANGE
+    } // CHANGE
+
+    function findDashboardCellInModule(moduleCell) { // CHANGE
+        if (!moduleCell) return null; // CHANGE
+        const stack = [moduleCell]; // CHANGE
+        while (stack.length) { // CHANGE
+            const cur = stack.pop(); // CHANGE
+            const count = model.getChildCount(cur); // CHANGE
+            for (let i = 0; i < count; i++) { // CHANGE
+                const child = model.getChildAt(cur, i); // CHANGE
+                if (!child) continue; // CHANGE
+                if (isGardenDashboardCell(child)) return child; // CHANGE
+                stack.push(child); // CHANGE
+            } // CHANGE
+        } // CHANGE
+        return null; // CHANGE
+    } // CHANGE
+
+    function getDashboardYearForCell(cell) { // CHANGE
+        const moduleCell = findGardenModuleAncestor(cell); // CHANGE
+        const dashboard = findDashboardCellInModule(moduleCell); // CHANGE
+        const year = Number(getAttr(dashboard, 'dashboard_year')); // CHANGE
+        return Number.isFinite(year) && year > 1900 && year < 3000 ? year : new Date().getFullYear(); // CHANGE
+    } // CHANGE
+
     function collectSameBoardLinkedKanbanCards(selectedCard, directTargets) { // CHANGE
         if (!isKanbanCard(selectedCard)) return []; // CHANGE
 
@@ -114,6 +154,278 @@ Draw.loadPlugin(function (ui) {
         } // CHANGE
 
         return out; // CHANGE
+    } // CHANGE
+
+    function collectLinkedKanbanCardsForSource(source) { // CHANGE
+        if (!source || isKanbanCard(source)) return []; // CHANGE
+
+        const out = []; // CHANGE
+        const seen = new Set(); // CHANGE
+        const m = graph.getModel(); // CHANGE
+
+        for (const id of getLinkSet(source)) { // CHANGE
+            if (!id || seen.has(id)) continue; // CHANGE
+            const card = m.getCell(id); // CHANGE
+            if (!card || !m.isVertex(card)) continue; // CHANGE
+            if (!isKanbanCard(card)) continue; // CHANGE
+            if (!findKanbanBoardAncestor(card)) continue; // CHANGE
+
+            seen.add(card.id); // CHANGE
+            out.push(card); // CHANGE
+        } // CHANGE
+
+        out.sort(compareTaskCardsByStartDate); // CHANGE
+        return out; // CHANGE
+    } // CHANGE
+
+    function compareTaskCardsByStartDate(a, b) { // CHANGE
+        const aRange = getTaskDateRange(a); // CHANGE
+        const bRange = getTaskDateRange(b); // CHANGE
+        const aHasDate = !!aRange; // CHANGE
+        const bHasDate = !!bRange; // CHANGE
+
+        if (aHasDate !== bHasDate) return aHasDate ? -1 : 1; // CHANGE
+        if (aHasDate && bHasDate && aRange.startDay !== bRange.startDay) return aRange.startDay - bRange.startDay; // CHANGE
+
+        const aLabel = (getRawTextLabel(a) || getAttr(a, 'title') || a.id || '').toLowerCase(); // CHANGE
+        const bLabel = (getRawTextLabel(b) || getAttr(b, 'title') || b.id || '').toLowerCase(); // CHANGE
+        if (aLabel < bLabel) return -1; // CHANGE
+        if (aLabel > bLabel) return 1; // CHANGE
+
+        return String(a.id || '').localeCompare(String(b.id || '')); // CHANGE
+    } // CHANGE
+
+    function parseTaskOverlayDate(raw) { // CHANGE
+        if (!raw) return null; // CHANGE
+        const match = String(raw).trim().match(/^(\d{4})-(\d{1,2})-(\d{1,2})/); // CHANGE
+        if (!match) return null; // CHANGE
+        const year = Number(match[1]); // CHANGE
+        const month = Number(match[2]); // CHANGE
+        const day = Number(match[3]); // CHANGE
+        if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null; // CHANGE
+        const utc = Date.UTC(year, month - 1, day); // CHANGE
+        const date = new Date(utc); // CHANGE
+        if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null; // CHANGE
+        return { // CHANGE
+            iso: match[0], // CHANGE
+            date, // CHANGE
+            dayNumber: Math.floor(utc / 86400000) // CHANGE
+        }; // CHANGE
+    } // CHANGE
+
+    function getTaskDateRange(card) { // CHANGE
+        const start = parseTaskOverlayDate(getAttr(card, 'start')); // CHANGE
+        if (!start) return null; // CHANGE
+        const rawEnd = getAttr(card, 'end'); // CHANGE
+        const end = rawEnd ? parseTaskOverlayDate(rawEnd) : start; // CHANGE
+        if (!end || end.dayNumber < start.dayNumber) return null; // CHANGE
+        return { // CHANGE
+            start, // CHANGE
+            end, // CHANGE
+            startDay: start.dayNumber, // CHANGE
+            endDay: end.dayNumber, // CHANGE
+            durationDays: end.dayNumber - start.dayNumber + 1 // CHANGE
+        }; // CHANGE
+    } // CHANGE
+
+    function taskDateRangeOverlapsYear(card, year) { // CHANGE
+        const range = getTaskDateRange(card); // CHANGE
+        const selectedYear = Number(year); // CHANGE
+        if (!range || !Number.isFinite(selectedYear)) return false; // CHANGE
+        const startDay = Math.floor(Date.UTC(selectedYear, 0, 1) / 86400000); // CHANGE
+        const endDay = Math.floor(Date.UTC(selectedYear, 11, 31) / 86400000); // CHANGE
+        return range.startDay <= endDay && range.endDay >= startDay; // CHANGE
+    } // CHANGE
+
+    function getTaskOverlayYears(cards) { // CHANGE
+        const years = new Set(); // CHANGE
+        for (const card of cards || []) { // CHANGE
+            const range = getTaskDateRange(card); // CHANGE
+            if (!range) continue; // CHANGE
+            for (let year = range.start.date.getUTCFullYear(); year <= range.end.date.getUTCFullYear(); year++) { // CHANGE
+                if (year > 1900 && year < 3000) years.add(year); // CHANGE
+            } // CHANGE
+        } // CHANGE
+        return Array.from(years).sort((a, b) => a - b); // CHANGE
+    } // CHANGE
+
+    function chooseDefaultOverlayYear(years) { // CHANGE
+        const list = Array.isArray(years) ? years : []; // CHANGE
+        if (!list.length) return null; // CHANGE
+        const currentYear = new Date().getFullYear(); // CHANGE
+        return list.indexOf(currentYear) >= 0 ? currentYear : list[0]; // CHANGE
+    } // CHANGE
+
+    function formatTaskOverlayDate(dateInfo) { // CHANGE
+        if (!dateInfo || !dateInfo.date) return ''; // CHANGE
+        const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']; // CHANGE
+        return months[dateInfo.date.getUTCMonth()] + ' ' + String(dateInfo.date.getUTCDate()).padStart(2, '0'); // CHANGE
+    } // CHANGE
+
+    function formatTaskDateRange(card) { // CHANGE
+        const range = getTaskDateRange(card); // CHANGE
+        if (!range) return 'Unscheduled'; // CHANGE
+        const startLabel = formatTaskOverlayDate(range.start); // CHANGE
+        const endLabel = formatTaskOverlayDate(range.end); // CHANGE
+        return range.startDay === range.endDay ? startLabel : (startLabel + ' - ' + endLabel); // CHANGE
+    } // CHANGE
+
+    function stripTaskBadgeText(raw) { // CHANGE
+        const text = stripHtmlAndPlaceholders(String(raw || '')); // CHANGE
+        return text.length > 36 ? text.slice(0, 33) + '...' : text; // CHANGE
+    } // CHANGE
+
+    function getTaskLaneColor(card) { // CHANGE
+        return getLaneColorForCard(card) || '#9aa0a6'; // CHANGE
+    } // CHANGE
+
+    function getTaskOverlayBadges(card) { // CHANGE
+        const badges = []; // CHANGE
+        const rawBadges = stripTaskBadgeText(getAttr(card, 'badges_html')); // CHANGE
+        if (rawBadges) badges.push(rawBadges); // CHANGE
+        const repeatBadge = getAttr(card, 'repeat_badge'); // CHANGE
+        if (repeatBadge) badges.push('Repeat ' + repeatBadge); // CHANGE
+        const note = stripTaskBadgeText(getAttr(card, 'card_note')); // CHANGE
+        if (note) badges.push('Note ' + note); // CHANGE
+        if (getAttr(card, 'date_override') === '1') badges.push('Dates edited'); // CHANGE
+        const linkCount = getLinkSet(card).size; // CHANGE
+        if (linkCount > 1) badges.push('Links ' + linkCount); // CHANGE
+        return badges; // CHANGE
+    } // CHANGE
+
+    function normalizeRepeatIdentityText(value) { // CHANGE
+        return String(value == null ? '' : value).trim().toLowerCase(); // CHANGE
+    } // CHANGE
+
+    function normalizeRepeatLinkedIds(value) { // CHANGE
+        return Array.from(new Set(String(value == null ? '' : value) // CHANGE
+            .split(',') // CHANGE
+            .map(id => id.trim()) // CHANGE
+            .filter(Boolean))) // CHANGE
+            .sort(); // CHANGE
+    } // CHANGE
+
+    function buildRepeatSeriesKeyForOverlay(card) { // CHANGE
+        const linkedIds = normalizeRepeatLinkedIds(getAttr(card, LINK_ATTR)); // CHANGE
+        if (linkedIds.length === 0) return null; // CHANGE
+
+        return JSON.stringify([ // CHANGE
+            linkedIds, // CHANGE
+            normalizeRepeatIdentityText(getAttr(card, 'plant_name')), // CHANGE
+            normalizeRepeatIdentityText(getAttr(card, 'method')), // CHANGE
+            normalizeRepeatIdentityText(getAttr(card, 'title')) // CHANGE
+        ]); // CHANGE
+    } // CHANGE
+
+    function compareRepeatOccurrenceCards(a, b) { // CHANGE
+        const aRange = getTaskDateRange(a); // CHANGE
+        const bRange = getTaskDateRange(b); // CHANGE
+        if (aRange && bRange && aRange.startDay !== bRange.startDay) return aRange.startDay - bRange.startDay; // CHANGE
+        if (aRange && !bRange) return -1; // CHANGE
+        if (!aRange && bRange) return 1; // CHANGE
+        if (aRange && bRange && aRange.endDay !== bRange.endDay) return aRange.endDay - bRange.endDay; // CHANGE
+        return String(a && a.id || '').localeCompare(String(b && b.id || '')); // CHANGE
+    } // CHANGE
+
+    function isOverlayCardVisibilityEligible(card) { // CHANGE
+        return getAttr(card, 'year_hidden') !== '1' && getAttr(card, 'repeat_hidden') !== '1'; // CHANGE
+    } // CHANGE
+
+    function getLaneOrderIndex(lane) { // CHANGE
+        if (!lane) return Number.POSITIVE_INFINITY; // CHANGE
+        const parent = model.getParent(lane); // CHANGE
+        if (!parent) return Number.POSITIVE_INFINITY; // CHANGE
+        const count = model.getChildCount(parent); // CHANGE
+        for (let i = 0; i < count; i++) { // CHANGE
+            if (model.getChildAt(parent, i) === lane) return i; // CHANGE
+        } // CHANGE
+        return Number.POSITIVE_INFINITY; // CHANGE
+    } // CHANGE
+
+    function cleanOverlayLaneLabel(label) { // CHANGE
+        return stripHtmlAndPlaceholders(String(label || '')).replace(/\s*\(Page\s+\d+\s*\/\s*\d+\)\s*$/i, '').trim(); // CHANGE
+    } // CHANGE
+
+    function getLaneGroupLabel(card, lane, laneKey) { // CHANGE
+        if (lane) { // CHANGE
+            const explicit = getAttr(lane, 'label') || getAttr(lane, 'status'); // CHANGE
+            if (explicit) return cleanOverlayLaneLabel(explicit); // CHANGE
+            if (typeof lane.value === 'string' && lane.value) return cleanOverlayLaneLabel(lane.value); // CHANGE
+            if (lane.value && lane.value.textContent) return cleanOverlayLaneLabel(lane.value.textContent); // CHANGE
+        } // CHANGE
+        return laneKey || getAttr(card, 'status') || 'Unlaned'; // CHANGE
+    } // CHANGE
+
+    function makeLaneGroupForCard(card) { // CHANGE
+        const lane = findLaneAncestor(card); // CHANGE
+        const laneKey = getLaneStatusKeyForTask(card) || (lane ? getAttr(lane, 'lane_key') : null) || 'UNLANED'; // CHANGE
+        return { // CHANGE
+            lane, // CHANGE
+            laneId: lane && lane.id ? lane.id : laneKey, // CHANGE
+            laneKey, // CHANGE
+            label: getLaneGroupLabel(card, lane, laneKey), // CHANGE
+            color: getTaskLaneColor(card), // CHANGE
+            order: getLaneOrderIndex(lane), // CHANGE
+            items: [] // CHANGE
+        }; // CHANGE
+    } // CHANGE
+
+    function withRepeatOverlayBadge(item, badgeText) { // CHANGE
+        item.repeatBadge = badgeText || ''; // CHANGE
+        return item; // CHANGE
+    } // CHANGE
+
+    function groupLinkedTasksForOverlay(cards) { // CHANGE
+        const groupsByLane = new Map(); // CHANGE
+
+        function getGroup(card) { // CHANGE
+            const lane = findLaneAncestor(card); // CHANGE
+            const laneKey = getLaneStatusKeyForTask(card) || (lane ? getAttr(lane, 'lane_key') : null) || 'UNLANED'; // CHANGE
+            const laneId = lane && lane.id ? lane.id : laneKey; // CHANGE
+            if (!groupsByLane.has(laneId)) groupsByLane.set(laneId, makeLaneGroupForCard(card)); // CHANGE
+            return groupsByLane.get(laneId); // CHANGE
+        } // CHANGE
+
+        const recordsByLaneAndSeries = new Map(); // CHANGE
+        for (const card of cards || []) { // CHANGE
+            if (!card || getAttr(card, 'year_hidden') === '1') continue; // CHANGE
+            const group = getGroup(card); // CHANGE
+            const seriesKey = buildRepeatSeriesKeyForOverlay(card); // CHANGE
+
+            if (!seriesKey) { // CHANGE
+                if (isOverlayCardVisibilityEligible(card)) group.items.push({ card, repeatBadge: '' }); // CHANGE
+                continue; // CHANGE
+            } // CHANGE
+
+            const laneSeriesKey = group.laneId + '|' + seriesKey; // CHANGE
+            if (!recordsByLaneAndSeries.has(laneSeriesKey)) { // CHANGE
+                recordsByLaneAndSeries.set(laneSeriesKey, { group, seriesKey, cards: [] }); // CHANGE
+            } // CHANGE
+            recordsByLaneAndSeries.get(laneSeriesKey).cards.push(card); // CHANGE
+        } // CHANGE
+
+        for (const series of recordsByLaneAndSeries.values()) { // CHANGE
+            const ordered = series.cards.slice().sort(compareRepeatOccurrenceCards); // CHANGE
+            const candidates = ordered.filter(isOverlayCardVisibilityEligible); // CHANGE
+            if (!candidates.length) continue; // CHANGE
+            const representative = candidates[0]; // CHANGE
+            const globalIndex = ordered.indexOf(representative); // CHANGE
+            const hiddenInLane = Math.max(0, ordered.length - 1); // CHANGE
+            const badge = ordered.length > 1 // CHANGE
+                ? ((globalIndex + 1) + '/' + ordered.length + (hiddenInLane > 0 ? ' +' + hiddenInLane : '')) // CHANGE
+                : ''; // CHANGE
+            series.group.items.push(withRepeatOverlayBadge({ card: representative }, badge)); // CHANGE
+        } // CHANGE
+
+        const groups = Array.from(groupsByLane.values()) // CHANGE
+            .map(group => { // CHANGE
+                group.items.sort((a, b) => compareTaskCardsByStartDate(a.card, b.card)); // CHANGE
+                return group; // CHANGE
+            }) // CHANGE
+            .filter(group => group.items.length > 0) // CHANGE
+            .sort((a, b) => (a.order - b.order) || String(a.label || '').localeCompare(String(b.label || ''))); // CHANGE
+
+        return groups; // CHANGE
     } // CHANGE
 
     function findLaneAncestor(cell) {
@@ -694,6 +1006,29 @@ Draw.loadPlugin(function (ui) {
             return view && view.getOverlayPane ? view.getOverlayPane() : null;
         }
 
+        function formatLinkOverlayBadgeLabel(label) { // CHANGE
+            const text = stripHtmlAndPlaceholders(String(label || '')).trim(); // CHANGE
+            return text.length > 40 ? text.slice(0, 37) + '...' : text; // CHANGE
+        } // CHANGE
+
+        function applyLinkOverlayBadgeStyle(txt, stroke) { // CHANGE
+            if (!txt) return; // CHANGE
+            txt.size = 10; // CHANGE
+            txt.fontStyle = mxConstants.FONT_BOLD; // CHANGE
+            txt.color = '#3c4043'; // CHANGE
+            txt.background = '#ffffff'; // CHANGE
+            txt.border = stroke || '#9aa0a6'; // CHANGE
+            txt.spacing = 6; // CHANGE
+            txt.spacingTop = 2; // CHANGE
+            txt.spacingRight = 6; // CHANGE
+            txt.spacingBottom = 2; // CHANGE
+            txt.spacingLeft = 6; // CHANGE
+            if (txt.node && txt.node.style) { // CHANGE
+                txt.node.style.borderRadius = '10px'; // CHANGE
+                txt.node.style.filter = 'drop-shadow(0 1px 2px rgba(0, 0, 0, 0.16))'; // CHANGE
+            } // CHANGE
+        } // CHANGE
+
         // Compute line endpoints from current cell geometry + exitHint                    
         function computePointsFor(entry) {
             const m = model;
@@ -727,7 +1062,7 @@ Draw.loadPlugin(function (ui) {
         // Create or update text label near the source side                               
         function createOrUpdateLabel(entry, pts) {
             const pane = getOverlayPane();
-            const label = entry.label || '';
+            const label = formatLinkOverlayBadgeLabel(entry.label); // CHANGE
             if (!pane || !pts || pts.length < 2 || !label.trim()) {
                 // No label or no geometry → remove any existing label                     
                 if (entry.labelElt && entry.labelElt.node && entry.labelElt.node.parentNode) {
@@ -763,6 +1098,7 @@ Draw.loadPlugin(function (ui) {
                 entry.labelElt.value = label;
                 entry.labelElt.bounds.x = lx;
                 entry.labelElt.bounds.y = ly;
+                applyLinkOverlayBadgeStyle(entry.labelElt, entry.color); // CHANGE
                 entry.labelElt.redraw();
             } else {
                 // Remove old, if any
@@ -778,16 +1114,24 @@ Draw.loadPlugin(function (ui) {
                     bounds,
                     mxConstants.ALIGN_LEFT,
                     mxConstants.ALIGN_MIDDLE,
-                    '#000000',
-                    mxConstants.FONT_BOLD,
-                    11,
-                    '#000000',
-                    '#ffffff',
-                    '#000000'
+                    '#3c4043', // CHANGE
+                    'Arial, Helvetica, sans-serif', // CHANGE
+                    10, // CHANGE
+                    mxConstants.FONT_BOLD, // CHANGE
+                    6, // CHANGE
+                    2, // CHANGE
+                    6, // CHANGE
+                    2, // CHANGE
+                    6, // CHANGE
+                    true, // CHANGE
+                    '#ffffff', // CHANGE
+                    entry.color || '#9aa0a6' // CHANGE
                 );
+                applyLinkOverlayBadgeStyle(txt, entry.color); // CHANGE
                 txt.dialect = graph.dialect;
                 txt.init(pane);
                 txt.redraw();
+                applyLinkOverlayBadgeStyle(txt, entry.color); // CHANGE
 
                 if (txt.node) {
                     txt.node.__manualLinkMeta = {
@@ -941,6 +1285,933 @@ Draw.loadPlugin(function (ui) {
         };
     })();
 
+    // -------------------- Linked Task Schedule Overlay Manager -------------------- // CHANGE
+    // DOM-only task schedule panel plus mxPolyline guide lines; no model or undo changes. // CHANGE
+    const taskScheduleOverlay = (function () { // CHANGE
+        const MODE_CARDS = 'cards'; // CHANGE
+        const MODE_SCHEDULE = 'schedule'; // CHANGE
+        const PANEL_WIDTH = 380; // CHANGE
+        const PANEL_GAP = 12; // CHANGE
+        const BODY_MAX_HEIGHT = 360; // CHANGE
+        const registry = new Map(); // sourceId -> entry // CHANGE
+        const selectedYearBySource = new Map(); // sourceId -> session-only year // CHANGE
+        const LANE_COLLAPSE_STORAGE_KEY = 'trellis.vertexLinker.taskOverlay.collapsedLanes.v1'; // CHANGE
+        const laneCollapseState = new Map(); // laneKey -> collapsed boolean // CHANGE
+        let laneCollapseLoaded = false; // CHANGE
+        let activeMode = MODE_CARDS; // CHANGE
+
+        function getOverlayPane() { // CHANGE
+            const view = graph.getView && graph.getView(); // CHANGE
+            return view && view.getOverlayPane ? view.getOverlayPane() : null; // CHANGE
+        } // CHANGE
+
+        function getPanelHost() { // CHANGE
+            const host = graph.container; // CHANGE
+            if (!host) return null; // CHANGE
+            try { // CHANGE
+                if (window.getComputedStyle(host).position === 'static') { // CHANGE
+                    host.style.position = 'relative'; // CHANGE
+                } // CHANGE
+            } catch (_) { } // CHANGE
+            return host; // CHANGE
+        } // CHANGE
+
+        function removeNode(node) { // CHANGE
+            if (node && node.parentNode) node.parentNode.removeChild(node); // CHANGE
+        } // CHANGE
+
+        function removePolyline(poly) { // CHANGE
+            if (poly && poly.node && poly.node.parentNode) { // CHANGE
+                poly.node.parentNode.removeChild(poly.node); // CHANGE
+            } // CHANGE
+        } // CHANGE
+
+        function loadLaneCollapseState() { // CHANGE
+            if (laneCollapseLoaded) return; // CHANGE
+            laneCollapseLoaded = true; // CHANGE
+            try { // CHANGE
+                const raw = window.localStorage && window.localStorage.getItem(LANE_COLLAPSE_STORAGE_KEY); // CHANGE
+                const parsed = raw ? JSON.parse(raw) : null; // CHANGE
+                if (!parsed || typeof parsed !== 'object') return; // CHANGE
+                for (const key in parsed) { // CHANGE
+                    if (Object.prototype.hasOwnProperty.call(parsed, key)) laneCollapseState.set(key, parsed[key] === true); // CHANGE
+                } // CHANGE
+            } catch (_) { } // CHANGE
+        } // CHANGE
+
+        function saveLaneCollapseState() { // CHANGE
+            try { // CHANGE
+                if (!window.localStorage) return; // CHANGE
+                const out = {}; // CHANGE
+                laneCollapseState.forEach((collapsed, key) => { out[key] = !!collapsed; }); // CHANGE
+                window.localStorage.setItem(LANE_COLLAPSE_STORAGE_KEY, JSON.stringify(out)); // CHANGE
+            } catch (_) { } // CHANGE
+        } // CHANGE
+
+        function laneCollapseKey(group) { // CHANGE
+            return String(group && (group.laneKey || group.label || group.laneId) || 'UNLANED'); // CHANGE
+        } // CHANGE
+
+        function isLaneGroupCollapsed(group) { // CHANGE
+            loadLaneCollapseState(); // CHANGE
+            return laneCollapseState.get(laneCollapseKey(group)) === true; // CHANGE
+        } // CHANGE
+
+        function setLaneGroupCollapsed(group, collapsed) { // CHANGE
+            loadLaneCollapseState(); // CHANGE
+            laneCollapseState.set(laneCollapseKey(group), !!collapsed); // CHANGE
+            saveLaneCollapseState(); // CHANGE
+        } // CHANGE
+
+        function normalizeBadgeText(text) { // CHANGE
+            return stripHtmlAndPlaceholders(String(text || '')).trim(); // CHANGE
+        } // CHANGE
+
+        function isValidOverlayCard(card) { // CHANGE
+            return !!card && model.isVertex(card) && isKanbanCard(card) && !!findKanbanBoardAncestor(card); // CHANGE
+        } // CHANGE
+
+        function taskTitle(card) { // CHANGE
+            return getAttr(card, 'title') || getRawTextLabel(card) || card.id || 'Task'; // CHANGE
+        } // CHANGE
+
+        function getTaskLinkLabelBadge(entry, card) { // CHANGE
+            if (!entry || !entry.linkLabels || !card) return ''; // CHANGE
+            const label = normalizeBadgeText(entry.linkLabels.get(card.id)); // CHANGE
+            if (!label) return ''; // CHANGE
+            const title = normalizeBadgeText(taskTitle(card)); // CHANGE
+            return label.toLowerCase() === title.toLowerCase() ? '' : label; // CHANGE
+        } // CHANGE
+
+        function applyPanelStyle(panel) { // CHANGE
+            panel.style.position = 'absolute'; // CHANGE
+            panel.style.zIndex = '100'; // CHANGE
+            panel.style.width = PANEL_WIDTH + 'px'; // CHANGE
+            panel.style.boxSizing = 'border-box'; // CHANGE
+            panel.style.padding = '8px'; // CHANGE
+            panel.style.border = '1px solid rgba(60, 64, 67, 0.28)'; // CHANGE
+            panel.style.borderRadius = '6px'; // CHANGE
+            panel.style.background = 'rgba(255, 255, 255, 0.97)'; // CHANGE
+            panel.style.boxShadow = '0 3px 10px rgba(0, 0, 0, 0.20)'; // CHANGE
+            panel.style.fontFamily = 'Arial, Helvetica, sans-serif'; // CHANGE
+            panel.style.fontSize = '11px'; // CHANGE
+            panel.style.lineHeight = '16px'; // CHANGE
+            panel.style.pointerEvents = 'all'; // CHANGE
+            panel.style.color = '#202124'; // CHANGE
+        } // CHANGE
+
+        function makeTextSpan(text, color) { // CHANGE
+            const span = document.createElement('span'); // CHANGE
+            span.textContent = text || ''; // CHANGE
+            span.style.overflow = 'hidden'; // CHANGE
+            span.style.textOverflow = 'ellipsis'; // CHANGE
+            span.style.whiteSpace = 'nowrap'; // CHANGE
+            if (color) span.style.color = color; // CHANGE
+            return span; // CHANGE
+        } // CHANGE
+
+        function makeClickableRow(card, className) { // CHANGE
+            const row = document.createElement('div'); // CHANGE
+            row.className = className || ''; // CHANGE
+            row.setAttribute('title', 'Click to navigate to task'); // CHANGE
+            const cardId = card.id; // CHANGE
+            mxEvent.addListener(row, 'mousedown', function (evt) { // CHANGE
+                if (evt.button != null && evt.button !== 0) return; // CHANGE
+                const realCard = model.getCell(cardId); // CHANGE
+                if (realCard && model.isVertex(realCard)) selectAndReveal(realCard); // CHANGE
+                mxEvent.consume(evt); // CHANGE
+                if (evt.stopPropagation) evt.stopPropagation(); // CHANGE
+                if (evt.preventDefault) evt.preventDefault(); // CHANGE
+            }); // CHANGE
+            return row; // CHANGE
+        } // CHANGE
+
+        function makeBadge(text) { // CHANGE
+            const badge = document.createElement('span'); // CHANGE
+            badge.textContent = text; // CHANGE
+            badge.style.display = 'inline-block'; // CHANGE
+            badge.style.maxWidth = '150px'; // CHANGE
+            badge.style.overflow = 'hidden'; // CHANGE
+            badge.style.textOverflow = 'ellipsis'; // CHANGE
+            badge.style.whiteSpace = 'nowrap'; // CHANGE
+            badge.style.padding = '1px 6px'; // CHANGE
+            badge.style.border = '1px solid rgba(60, 64, 67, 0.25)'; // CHANGE
+            badge.style.borderRadius = '10px'; // CHANGE
+            badge.style.background = '#f8f9fa'; // CHANGE
+            badge.style.color = '#3c4043'; // CHANGE
+            badge.style.fontSize = '10px'; // CHANGE
+            badge.style.lineHeight = '14px'; // CHANGE
+            return badge; // CHANGE
+        } // CHANGE
+
+        function makeYearControlButton(text, disabled) { // CHANGE
+            const button = document.createElement('button'); // CHANGE
+            button.type = 'button'; // CHANGE
+            button.textContent = text; // CHANGE
+            button.disabled = !!disabled; // CHANGE
+            button.style.width = '24px'; // CHANGE
+            button.style.height = '22px'; // CHANGE
+            button.style.border = '1px solid rgba(60, 64, 67, 0.28)'; // CHANGE
+            button.style.borderRadius = '5px'; // CHANGE
+            button.style.background = disabled ? '#f1f3f4' : '#ffffff'; // CHANGE
+            button.style.color = disabled ? '#9aa0a6' : '#202124'; // CHANGE
+            button.style.cursor = disabled ? 'default' : 'pointer'; // CHANGE
+            button.style.padding = '0'; // CHANGE
+            button.style.lineHeight = '18px'; // CHANGE
+            return button; // CHANGE
+        } // CHANGE
+
+        function applyOverlayYearFilter(entry, year) { // CHANGE
+            if (!entry || !Number.isFinite(Number(year))) return; // CHANGE
+            const selectedYear = Number(year); // CHANGE
+            const cards = entry.targetIds.map(id => model.getCell(id)).filter(isValidOverlayCard); // CHANGE
+            model.beginUpdate(); // CHANGE
+            try { // CHANGE
+                for (const card of cards) { // CHANGE
+                    const hidden = !taskDateRangeOverlapsYear(card, selectedYear); // CHANGE
+                    const nextValue = hidden ? '1' : null; // CHANGE
+                    if (getAttr(card, 'year_hidden') !== (nextValue || null)) setCellAttrUndoable(card, 'year_hidden', nextValue); // CHANGE
+                } // CHANGE
+            } finally { // CHANGE
+                model.endUpdate(); // CHANGE
+            } // CHANGE
+            entry.selectedYear = selectedYear; // CHANGE
+            selectedYearBySource.set(entry.sourceId, selectedYear); // CHANGE
+            dispatchYearFilterChangedForTaskOverlay(null, selectedYear); // CHANGE
+            renderEntry(entry); // CHANGE
+        } // CHANGE
+
+        function restoreEntryTasksToCurrentYear(entry) { // CHANGE
+            if (!entry || !entry.targetIds) return; // CHANGE
+            const cards = entry.targetIds.map(id => model.getCell(id)).filter(isValidOverlayCard); // CHANGE
+            if (!cards.length) return; // CHANGE
+            const source = model.getCell(entry.sourceId); // CHANGE
+            const restoreYear = getDashboardYearForCell(source || cards[0]); // CHANGE
+            if (Number(entry.selectedYear) === restoreYear) return; // CHANGE
+            model.beginUpdate(); // CHANGE
+            try { // CHANGE
+                for (const card of cards) { // CHANGE
+                    const hidden = !taskDateRangeOverlapsYear(card, restoreYear); // CHANGE
+                    const nextValue = hidden ? '1' : null; // CHANGE
+                    if (getAttr(card, 'year_hidden') !== (nextValue || null)) setCellAttrUndoable(card, 'year_hidden', nextValue); // CHANGE
+                } // CHANGE
+            } finally { // CHANGE
+                model.endUpdate(); // CHANGE
+            } // CHANGE
+            selectedYearBySource.delete(entry.sourceId); // CHANGE
+            dispatchYearFilterChangedForTaskOverlay(null, restoreYear); // CHANGE
+        } // CHANGE
+
+        function isEntryStillSelected(entry) { // CHANGE
+            const selected = graph.getSelectionCells && graph.getSelectionCells(); // CHANGE
+            if (!entry || !selected || selected.length !== 1) return false; // CHANGE
+            const selectedCell = normalizeForLinkingAndPrimary(selected[0]); // CHANGE
+            return !!selectedCell && selectedCell.id === entry.sourceId; // CHANGE
+        } // CHANGE
+
+        function createYearControls(entry) { // CHANGE
+            const years = entry && entry.years ? entry.years : []; // CHANGE
+            if (years.length < 2) return null; // CHANGE
+            const current = Number(entry.selectedYear); // CHANGE
+            const idx = Math.max(0, years.indexOf(current)); // CHANGE
+            const wrap = document.createElement('div'); // CHANGE
+            wrap.style.gridColumn = '1 / span 2'; // CHANGE
+            wrap.style.display = 'flex'; // CHANGE
+            wrap.style.alignItems = 'center'; // CHANGE
+            wrap.style.gap = '5px'; // CHANGE
+            wrap.style.marginTop = '7px'; // CHANGE
+
+            const prev = makeYearControlButton('<', idx <= 0); // CHANGE
+            const label = document.createElement('div'); // CHANGE
+            label.textContent = String(years[idx] || current || years[0]); // CHANGE
+            label.style.minWidth = '48px'; // CHANGE
+            label.style.textAlign = 'center'; // CHANGE
+            label.style.border = '1px solid rgba(60, 64, 67, 0.28)'; // CHANGE
+            label.style.borderRadius = '5px'; // CHANGE
+            label.style.background = '#ffffff'; // CHANGE
+            label.style.fontWeight = 'bold'; // CHANGE
+            label.style.fontSize = '10px'; // CHANGE
+            label.style.lineHeight = '20px'; // CHANGE
+            const next = makeYearControlButton('>', idx >= years.length - 1); // CHANGE
+
+            mxEvent.addListener(prev, 'mousedown', function (evt) { // CHANGE
+                if (idx > 0) applyOverlayYearFilter(entry, years[idx - 1]); // CHANGE
+                mxEvent.consume(evt); // CHANGE
+                if (evt.stopPropagation) evt.stopPropagation(); // CHANGE
+                if (evt.preventDefault) evt.preventDefault(); // CHANGE
+            }); // CHANGE
+            mxEvent.addListener(next, 'mousedown', function (evt) { // CHANGE
+                if (idx < years.length - 1) applyOverlayYearFilter(entry, years[idx + 1]); // CHANGE
+                mxEvent.consume(evt); // CHANGE
+                if (evt.stopPropagation) evt.stopPropagation(); // CHANGE
+                if (evt.preventDefault) evt.preventDefault(); // CHANGE
+            }); // CHANGE
+
+            wrap.appendChild(prev); // CHANGE
+            wrap.appendChild(label); // CHANGE
+            wrap.appendChild(next); // CHANGE
+            return wrap; // CHANGE
+        } // CHANGE
+
+        function createHeader(entry, count) { // CHANGE
+            const header = document.createElement('div'); // CHANGE
+            header.style.display = 'grid'; // CHANGE
+            header.style.gridTemplateColumns = '1fr auto'; // CHANGE
+            header.style.alignItems = 'center'; // CHANGE
+            header.style.columnGap = '8px'; // CHANGE
+            header.style.marginBottom = '8px'; // CHANGE
+
+            const titleWrap = document.createElement('div'); // CHANGE
+            const title = document.createElement('div'); // CHANGE
+            title.textContent = 'Linked Task Schedule'; // CHANGE
+            title.style.fontWeight = 'bold'; // CHANGE
+            title.style.fontSize = '12px'; // CHANGE
+            const subtitle = document.createElement('div'); // CHANGE
+            subtitle.textContent = count + (count === 1 ? ' linked task' : ' linked tasks'); // CHANGE
+            subtitle.style.color = '#5f6368'; // CHANGE
+            subtitle.style.fontSize = '10px'; // CHANGE
+            titleWrap.appendChild(title); // CHANGE
+            titleWrap.appendChild(subtitle); // CHANGE
+            header.appendChild(titleWrap); // CHANGE
+
+            const toggle = document.createElement('div'); // CHANGE
+            toggle.style.display = 'inline-flex'; // CHANGE
+            toggle.style.border = '1px solid rgba(60, 64, 67, 0.28)'; // CHANGE
+            toggle.style.borderRadius = '5px'; // CHANGE
+            toggle.style.overflow = 'hidden'; // CHANGE
+            toggle.appendChild(createModeButton(entry, 'Cards', MODE_CARDS)); // CHANGE
+            toggle.appendChild(createModeButton(entry, 'Schedule', MODE_SCHEDULE)); // CHANGE
+            header.appendChild(toggle); // CHANGE
+            const yearControls = createYearControls(entry); // CHANGE
+            if (yearControls) header.appendChild(yearControls); // CHANGE
+            return header; // CHANGE
+        } // CHANGE
+
+        function createModeButton(entry, label, mode) { // CHANGE
+            const button = document.createElement('button'); // CHANGE
+            button.type = 'button'; // CHANGE
+            button.textContent = label; // CHANGE
+            button.style.border = '0'; // CHANGE
+            button.style.padding = '4px 7px'; // CHANGE
+            button.style.fontSize = '10px'; // CHANGE
+            button.style.cursor = 'pointer'; // CHANGE
+            button.style.background = activeMode === mode ? '#202124' : '#ffffff'; // CHANGE
+            button.style.color = activeMode === mode ? '#ffffff' : '#202124'; // CHANGE
+            mxEvent.addListener(button, 'mousedown', function (evt) { // CHANGE
+                setMode(mode); // CHANGE
+                mxEvent.consume(evt); // CHANGE
+                if (evt.stopPropagation) evt.stopPropagation(); // CHANGE
+                if (evt.preventDefault) evt.preventDefault(); // CHANGE
+            }); // CHANGE
+            return button; // CHANGE
+        } // CHANGE
+
+        function createBody() { // CHANGE
+            const body = document.createElement('div'); // CHANGE
+            body.style.maxHeight = BODY_MAX_HEIGHT + 'px'; // CHANGE
+            body.style.overflowY = 'auto'; // CHANGE
+            body.style.overflowX = 'hidden'; // CHANGE
+            body.style.paddingRight = '2px'; // CHANGE
+            return body; // CHANGE
+        } // CHANGE
+
+        function renderEmptyTaskOverlayMessage(body) { // CHANGE
+            const empty = document.createElement('div'); // CHANGE
+            empty.textContent = 'No linked tasks visible for this year'; // CHANGE
+            empty.style.color = '#5f6368'; // CHANGE
+            empty.style.padding = '8px 0'; // CHANGE
+            body.appendChild(empty); // CHANGE
+        } // CHANGE
+
+        function countGroupItems(groups) { // CHANGE
+            return (groups || []).reduce((sum, group) => sum + group.items.length, 0); // CHANGE
+        } // CHANGE
+
+        function countScheduleRows(cards) { // CHANGE
+            return buildScheduleRowsForCards(cards).length; // CHANGE
+        } // CHANGE
+
+        function todayOverlayDayNumber() { // CHANGE
+            const now = new Date(); // CHANGE
+            return Math.floor(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()) / 86400000); // CHANGE
+        } // CHANGE
+
+        function firstScheduledCard(cards) { // CHANGE
+            return (cards || []).slice().sort(compareRepeatOccurrenceCards).find(card => !!getTaskDateRange(card)) || (cards && cards[0]) || null; // CHANGE
+        } // CHANGE
+
+        function buildScheduleRowsForCards(cards) { // CHANGE
+            const rows = []; // CHANGE
+            const repeatRows = new Map(); // CHANGE
+
+            for (const card of cards || []) { // CHANGE
+                const seriesKey = buildRepeatSeriesKeyForOverlay(card); // CHANGE
+                if (!seriesKey) { // CHANGE
+                    rows.push({ // CHANGE
+                        key: 'card:' + card.id, // CHANGE
+                        card, // CHANGE
+                        cards: [card], // CHANGE
+                        label: taskTitle(card), // CHANGE
+                        repeat: false // CHANGE
+                    }); // CHANGE
+                    continue; // CHANGE
+                } // CHANGE
+
+                if (!repeatRows.has(seriesKey)) { // CHANGE
+                    repeatRows.set(seriesKey, { // CHANGE
+                        key: 'repeat:' + seriesKey, // CHANGE
+                        card, // CHANGE
+                        cards: [], // CHANGE
+                        label: taskTitle(card), // CHANGE
+                        repeat: true // CHANGE
+                    }); // CHANGE
+                } // CHANGE
+                repeatRows.get(seriesKey).cards.push(card); // CHANGE
+            } // CHANGE
+
+            for (const row of repeatRows.values()) { // CHANGE
+                row.cards.sort(compareRepeatOccurrenceCards); // CHANGE
+                row.card = firstScheduledCard(row.cards) || row.cards[0]; // CHANGE
+                row.label = taskTitle(row.card); // CHANGE
+                rows.push(row); // CHANGE
+            } // CHANGE
+
+            rows.sort((a, b) => compareTaskCardsByStartDate(a.card, b.card)); // CHANGE
+            return rows; // CHANGE
+        } // CHANGE
+
+        function createLaneHeader(entry, group, collapsed) { // CHANGE
+            const header = document.createElement('div'); // CHANGE
+            header.style.display = 'grid'; // CHANGE
+            header.style.gridTemplateColumns = '21px 6px 1fr auto'; // CHANGE
+            header.style.alignItems = 'center'; // CHANGE
+            header.style.columnGap = '6px'; // CHANGE
+            header.style.margin = '8px 0 3px'; // CHANGE
+            header.style.color = '#3c4043'; // CHANGE
+            header.style.fontWeight = 'bold'; // CHANGE
+            header.style.fontSize = '10px'; // CHANGE
+            header.style.cursor = 'pointer'; // CHANGE
+            header.setAttribute('title', collapsed ? 'Expand lane' : 'Collapse lane'); // CHANGE
+
+            const toggle = document.createElement('span'); // CHANGE
+            toggle.textContent = collapsed ? '+' : '-'; // CHANGE
+            toggle.style.display = 'inline-block'; // CHANGE
+            toggle.style.width = '21px'; // CHANGE
+            toggle.style.textAlign = 'center'; // CHANGE
+            toggle.style.color = '#5f6368'; // CHANGE
+            toggle.style.fontSize = '15px'; // CHANGE
+            toggle.style.lineHeight = '14px'; // CHANGE
+            header.appendChild(toggle); // CHANGE
+
+            const stripe = document.createElement('span'); // CHANGE
+            stripe.style.height = '12px'; // CHANGE
+            stripe.style.borderRadius = '4px'; // CHANGE
+            stripe.style.background = group.color || '#9aa0a6'; // CHANGE
+            header.appendChild(stripe); // CHANGE
+
+            header.appendChild(makeTextSpan(group.label || 'Lane', null)); // CHANGE
+            const count = document.createElement('span'); // CHANGE
+            count.textContent = String(group.items.length); // CHANGE
+            count.style.color = '#5f6368'; // CHANGE
+            count.style.fontWeight = 'normal'; // CHANGE
+            header.appendChild(count); // CHANGE
+            mxEvent.addListener(header, 'mousedown', function (evt) { // CHANGE
+                if (evt.button != null && evt.button !== 0) return; // CHANGE
+                setLaneGroupCollapsed(group, !isLaneGroupCollapsed(group)); // CHANGE
+                renderEntry(entry); // CHANGE
+                mxEvent.consume(evt); // CHANGE
+                if (evt.stopPropagation) evt.stopPropagation(); // CHANGE
+                if (evt.preventDefault) evt.preventDefault(); // CHANGE
+            }); // CHANGE
+            return header; // CHANGE
+        } // CHANGE
+
+        function renderCardView(entry, body, groups) { // CHANGE
+            for (const group of groups) { // CHANGE
+                const collapsed = isLaneGroupCollapsed(group); // CHANGE
+                body.appendChild(createLaneHeader(entry, group, collapsed)); // CHANGE
+                if (collapsed) continue; // CHANGE
+                for (const item of group.items) { // CHANGE
+                    const card = item.card; // CHANGE
+                const row = makeClickableRow(card, 'manual-link-task-schedule-card'); // CHANGE
+                row.style.display = 'grid'; // CHANGE
+                row.style.gridTemplateColumns = '6px 1fr'; // CHANGE
+                row.style.columnGap = '8px'; // CHANGE
+                row.style.margin = '4px 0'; // CHANGE
+                row.style.border = '1px solid rgba(60, 64, 67, 0.18)'; // CHANGE
+                row.style.borderRadius = '5px'; // CHANGE
+                row.style.background = '#ffffff'; // CHANGE
+                row.style.cursor = 'pointer'; // CHANGE
+                row.style.overflow = 'hidden'; // CHANGE
+
+                const stripe = document.createElement('div'); // CHANGE
+                stripe.style.background = getTaskLaneColor(card); // CHANGE
+                row.appendChild(stripe); // CHANGE
+
+                const content = document.createElement('div'); // CHANGE
+                content.style.minWidth = '0'; // CHANGE
+                content.style.padding = '6px 7px 6px 0'; // CHANGE
+
+                const titleLine = makeTextSpan(taskTitle(card), null); // CHANGE
+                titleLine.style.display = 'block'; // CHANGE
+                titleLine.style.fontWeight = 'bold'; // CHANGE
+                titleLine.style.fontSize = '12px'; // CHANGE
+                content.appendChild(titleLine); // CHANGE
+
+                const metaLine = makeTextSpan(formatTaskDateRange(card), '#5f6368'); // CHANGE
+                metaLine.style.display = 'block'; // CHANGE
+                metaLine.style.fontSize = '10px'; // CHANGE
+                content.appendChild(metaLine); // CHANGE
+
+                    let badges = getTaskOverlayBadges(card); // CHANGE
+                    const linkLabelBadge = getTaskLinkLabelBadge(entry, card); // CHANGE
+                    if (linkLabelBadge) badges.unshift(linkLabelBadge); // CHANGE
+                    if (item.repeatBadge) { // CHANGE
+                        badges = badges.filter(text => !String(text || '').startsWith('Repeat ')); // CHANGE
+                        badges.unshift('Repeat ' + item.repeatBadge); // CHANGE
+                    } // CHANGE
+                    const visibleBadges = badges.slice(0, 4); // CHANGE
+                    if (visibleBadges.length) { // CHANGE
+                    const badgeRow = document.createElement('div'); // CHANGE
+                    badgeRow.style.display = 'flex'; // CHANGE
+                    badgeRow.style.flexWrap = 'wrap'; // CHANGE
+                    badgeRow.style.gap = '3px'; // CHANGE
+                    badgeRow.style.marginTop = '4px'; // CHANGE
+                        for (const badge of visibleBadges) badgeRow.appendChild(makeBadge(badge)); // CHANGE
+                    content.appendChild(badgeRow); // CHANGE
+                } // CHANGE
+
+                row.appendChild(content); // CHANGE
+                body.appendChild(row); // CHANGE
+                entry.visibleItems.push({ cardId: card.id, row }); // CHANGE
+                } // CHANGE
+            } // CHANGE
+        } // CHANGE
+
+        function axisLabelForDay(dayNumber) { // CHANGE
+            const date = new Date(dayNumber * 86400000); // CHANGE
+            return formatTaskOverlayDate({ date }); // CHANGE
+        } // CHANGE
+
+        function renderScheduleAxis(grid, minDay, maxDay, todayPct) { // CHANGE
+            const axis = document.createElement('div'); // CHANGE
+            axis.style.display = 'grid'; // CHANGE
+            axis.style.gridTemplateColumns = '112px 1fr'; // CHANGE
+            axis.style.columnGap = '8px'; // CHANGE
+            axis.style.alignItems = 'end'; // CHANGE
+            axis.style.marginBottom = '4px'; // CHANGE
+
+            const taskHead = document.createElement('div'); // CHANGE
+            taskHead.textContent = 'Task'; // CHANGE
+            taskHead.style.color = '#5f6368'; // CHANGE
+            taskHead.style.fontSize = '10px'; // CHANGE
+            axis.appendChild(taskHead); // CHANGE
+
+            const ticks = document.createElement('div'); // CHANGE
+            ticks.style.display = 'grid'; // CHANGE
+            ticks.style.gridTemplateColumns = 'repeat(4, 1fr)'; // CHANGE
+            ticks.style.color = '#5f6368'; // CHANGE
+            ticks.style.fontSize = '10px'; // CHANGE
+            ticks.style.position = 'relative'; // CHANGE
+            ticks.appendChild(makeTextSpan(axisLabelForDay(minDay), null)); // CHANGE
+            ticks.appendChild(makeTextSpan(axisLabelForDay(Math.round(minDay + (maxDay - minDay) / 3)), null)); // CHANGE
+            ticks.appendChild(makeTextSpan(axisLabelForDay(Math.round(minDay + 2 * (maxDay - minDay) / 3)), null)); // CHANGE
+            const end = makeTextSpan(axisLabelForDay(maxDay), null); // CHANGE
+            end.style.textAlign = 'right'; // CHANGE
+            ticks.appendChild(end); // CHANGE
+            if (todayPct != null) { // CHANGE
+                const today = document.createElement('span'); // CHANGE
+                today.textContent = 'Today'; // CHANGE
+                today.style.position = 'absolute'; // CHANGE
+                today.style.left = todayPct + '%'; // CHANGE
+                today.style.top = '-12px'; // CHANGE
+                today.style.transform = 'translateX(-50%)'; // CHANGE
+                today.style.color = '#b91c1c'; // CHANGE
+                today.style.fontWeight = 'bold'; // CHANGE
+                ticks.appendChild(today); // CHANGE
+            } // CHANGE
+            axis.appendChild(ticks); // CHANGE
+            grid.appendChild(axis); // CHANGE
+        } // CHANGE
+
+        function renderScheduleBar(track, card, range, minDay, totalDays) { // CHANGE
+            const bar = document.createElement('div'); // CHANGE
+            const leftPct = Math.max(0, Math.min(98, ((range.startDay - minDay) / totalDays) * 100)); // CHANGE
+            const rawWidthPct = range.startDay === range.endDay ? 2 : ((range.endDay - range.startDay + 1) / totalDays) * 100; // CHANGE
+            const widthPct = Math.max(range.startDay === range.endDay ? 2 : 3, rawWidthPct); // CHANGE
+            bar.style.position = 'absolute'; // CHANGE
+            bar.style.left = leftPct + '%'; // CHANGE
+            bar.style.top = '5px'; // CHANGE
+            bar.style.width = Math.min(100 - leftPct, widthPct) + '%'; // CHANGE
+            bar.style.height = range.startDay === range.endDay ? '8px' : '9px'; // CHANGE
+            bar.style.borderRadius = range.startDay === range.endDay ? '999px' : '4px'; // CHANGE
+            bar.style.background = getTaskLaneColor(card); // CHANGE
+            track.appendChild(bar); // CHANGE
+        } // CHANGE
+
+        function renderScheduleRow(entry, grid, scheduleRow, minDay, totalDays, todayPct) { // CHANGE
+            const card = scheduleRow.card; // CHANGE
+            const row = makeClickableRow(card, 'manual-link-task-schedule-row'); // CHANGE
+            row.style.display = 'grid'; // CHANGE
+            row.style.gridTemplateColumns = '112px 1fr'; // CHANGE
+            row.style.columnGap = '8px'; // CHANGE
+            row.style.alignItems = 'center'; // CHANGE
+            row.style.minHeight = '24px'; // CHANGE
+            row.style.cursor = 'pointer'; // CHANGE
+
+            const labelCell = document.createElement('div'); // CHANGE
+            labelCell.style.minWidth = '0'; // CHANGE
+            const label = makeTextSpan(scheduleRow.label, null); // CHANGE
+            label.style.fontSize = '10px'; // CHANGE
+            if (scheduleRow.repeat && scheduleRow.cards.length > 1) { // CHANGE
+                label.textContent = scheduleRow.label + ' (' + scheduleRow.cards.length + ')'; // CHANGE
+            } // CHANGE
+            labelCell.appendChild(label); // CHANGE
+
+            const scheduleBadge = getTaskLinkLabelBadge(entry, card); // CHANGE
+            if (scheduleBadge) { // CHANGE
+                const badgeWrap = document.createElement('div'); // CHANGE
+                badgeWrap.style.marginTop = '2px'; // CHANGE
+                badgeWrap.appendChild(makeBadge(scheduleBadge)); // CHANGE
+                labelCell.appendChild(badgeWrap); // CHANGE
+            } // CHANGE
+            row.appendChild(labelCell); // CHANGE
+
+            const track = document.createElement('div'); // CHANGE
+            track.style.position = 'relative'; // CHANGE
+            track.style.height = '18px'; // CHANGE
+            track.style.borderBottom = '1px solid #e8eaed'; // CHANGE
+            if (todayPct != null) { // CHANGE
+                const todayLine = document.createElement('div'); // CHANGE
+                todayLine.style.position = 'absolute'; // CHANGE
+                todayLine.style.left = todayPct + '%'; // CHANGE
+                todayLine.style.top = '0'; // CHANGE
+                todayLine.style.bottom = '0'; // CHANGE
+                todayLine.style.width = '1px'; // CHANGE
+                todayLine.style.background = '#b91c1c'; // CHANGE
+                todayLine.style.opacity = '0.75'; // CHANGE
+                track.appendChild(todayLine); // CHANGE
+            } // CHANGE
+
+            for (const occurrenceCard of scheduleRow.cards) { // CHANGE
+                const range = getTaskDateRange(occurrenceCard); // CHANGE
+                if (range) renderScheduleBar(track, occurrenceCard, range, minDay, totalDays); // CHANGE
+            } // CHANGE
+            row.appendChild(track); // CHANGE
+
+            grid.appendChild(row); // CHANGE
+            for (const occurrenceCard of scheduleRow.cards) { // CHANGE
+                entry.visibleItems.push({ cardId: occurrenceCard.id, row }); // CHANGE
+            } // CHANGE
+        } // CHANGE
+
+        function renderUnscheduledSection(entry, body, unscheduledRows) { // CHANGE
+            if (!unscheduledRows.length) return; // CHANGE
+            const section = document.createElement('div'); // CHANGE
+            section.style.marginTop = '8px'; // CHANGE
+            const title = document.createElement('div'); // CHANGE
+            title.textContent = 'Unscheduled'; // CHANGE
+            title.style.fontWeight = 'bold'; // CHANGE
+            title.style.fontSize = '10px'; // CHANGE
+            title.style.color = '#5f6368'; // CHANGE
+            title.style.marginBottom = '3px'; // CHANGE
+            section.appendChild(title); // CHANGE
+            for (const scheduleRow of unscheduledRows) { // CHANGE
+                const card = scheduleRow.card; // CHANGE
+                const row = makeClickableRow(card, 'manual-link-task-schedule-unscheduled'); // CHANGE
+                row.style.display = 'grid'; // CHANGE
+                row.style.gridTemplateColumns = '6px 1fr'; // CHANGE
+                row.style.columnGap = '6px'; // CHANGE
+                row.style.alignItems = 'center'; // CHANGE
+                row.style.minHeight = '22px'; // CHANGE
+                row.style.padding = '2px 0'; // CHANGE
+                row.style.cursor = 'pointer'; // CHANGE
+                const stripe = document.createElement('span'); // CHANGE
+                stripe.style.height = '14px'; // CHANGE
+                stripe.style.borderRadius = '4px'; // CHANGE
+                stripe.style.background = getTaskLaneColor(card); // CHANGE
+                row.appendChild(stripe); // CHANGE
+                const label = scheduleRow.repeat && scheduleRow.cards.length > 1 // CHANGE
+                    ? scheduleRow.label + ' (' + scheduleRow.cards.length + ')' // CHANGE
+                    : scheduleRow.label; // CHANGE
+                const labelWrap = document.createElement('div'); // CHANGE
+                labelWrap.style.minWidth = '0'; // CHANGE
+                labelWrap.appendChild(makeTextSpan(label, '#5f6368')); // CHANGE
+                const linkLabelBadge = getTaskLinkLabelBadge(entry, card); // CHANGE
+                if (linkLabelBadge) { // CHANGE
+                    const badgeLine = document.createElement('div'); // CHANGE
+                    badgeLine.style.marginTop = '2px'; // CHANGE
+                    badgeLine.appendChild(makeBadge(linkLabelBadge)); // CHANGE
+                    labelWrap.appendChild(badgeLine); // CHANGE
+                } // CHANGE
+                row.appendChild(labelWrap); // CHANGE
+                section.appendChild(row); // CHANGE
+                for (const occurrenceCard of scheduleRow.cards) { // CHANGE
+                    entry.visibleItems.push({ cardId: occurrenceCard.id, row }); // CHANGE
+                } // CHANGE
+            } // CHANGE
+            body.appendChild(section); // CHANGE
+        } // CHANGE
+
+        function renderScheduleView(entry, body, cards) { // CHANGE
+            const rows = buildScheduleRowsForCards(cards); // CHANGE
+            const scheduledRows = []; // CHANGE
+            const unscheduled = []; // CHANGE
+            for (const row of rows) { // CHANGE
+                const ranges = row.cards.map(card => getTaskDateRange(card)).filter(Boolean); // CHANGE
+                if (ranges.length) scheduledRows.push({ row, ranges }); // CHANGE
+                else unscheduled.push(row); // CHANGE
+            } // CHANGE
+
+            let minDay = null; // CHANGE
+            let maxDay = null; // CHANGE
+            let totalDays = 1; // CHANGE
+            let todayPct = null; // CHANGE
+            if (scheduledRows.length) { // CHANGE
+                const startDays = []; // CHANGE
+                const endDays = []; // CHANGE
+                for (const record of scheduledRows) { // CHANGE
+                    for (const range of record.ranges) { // CHANGE
+                        startDays.push(range.startDay); // CHANGE
+                        endDays.push(range.endDay); // CHANGE
+                    } // CHANGE
+                } // CHANGE
+                minDay = Math.min.apply(null, startDays); // CHANGE
+                maxDay = Math.max.apply(null, endDays); // CHANGE
+                totalDays = Math.max(1, maxDay - minDay + 1); // CHANGE
+                const today = todayOverlayDayNumber(); // CHANGE
+                if (today >= minDay && today <= maxDay) todayPct = ((today - minDay) / totalDays) * 100; // CHANGE
+            } // CHANGE
+
+            if (!scheduledRows.length) { // CHANGE
+                const empty = document.createElement('div'); // CHANGE
+                empty.textContent = 'No scheduled task dates'; // CHANGE
+                empty.style.color = '#5f6368'; // CHANGE
+                empty.style.padding = '8px 0'; // CHANGE
+                body.appendChild(empty); // CHANGE
+            } else { // CHANGE
+                const grid = document.createElement('div'); // CHANGE
+                renderScheduleAxis(grid, minDay, maxDay, todayPct); // CHANGE
+                scheduledRows.sort((a, b) => compareTaskCardsByStartDate(a.row.card, b.row.card)); // CHANGE
+                for (const record of scheduledRows) { // CHANGE
+                    renderScheduleRow(entry, grid, record.row, minDay, totalDays, todayPct); // CHANGE
+                } // CHANGE
+                body.appendChild(grid); // CHANGE
+            } // CHANGE
+
+            renderUnscheduledSection(entry, body, unscheduled); // CHANGE
+        } // CHANGE
+
+        function positionPanel(entry, source) { // CHANGE
+            const host = getPanelHost(); // CHANGE
+            const srcC = getCellCenter(source); // CHANGE
+            if (!host || !entry.panel || !srcC) return false; // CHANGE
+
+            const panelHeight = entry.panel.offsetHeight || 32; // CHANGE
+            const visibleRight = (host.scrollLeft || 0) + (host.clientWidth || 0); // CHANGE
+            const visibleLeft = host.scrollLeft || 0; // CHANGE
+            const visibleTop = host.scrollTop || 0; // CHANGE
+            const visibleBottom = visibleTop + (host.clientHeight || 0); // CHANGE
+            let left = srcC.x + srcC.w / 2 + PANEL_GAP; // CHANGE
+
+            if (visibleRight && left + PANEL_WIDTH > visibleRight - 8) { // CHANGE
+                left = srcC.x - srcC.w / 2 - PANEL_GAP - PANEL_WIDTH; // CHANGE
+            } // CHANGE
+
+            let top = srcC.y - panelHeight / 2; // CHANGE
+            if (visibleBottom) top = Math.min(top, visibleBottom - panelHeight - 4); // CHANGE
+            top = Math.max(top, visibleTop + 4); // CHANGE
+            left = Math.max(left, visibleLeft + 4); // CHANGE
+
+            entry.panelLeft = left; // CHANGE
+            entry.panelTop = top; // CHANGE
+            entry.panel.style.left = left + 'px'; // CHANGE
+            entry.panel.style.top = top + 'px'; // CHANGE
+            return true; // CHANGE
+        } // CHANGE
+
+        function itemCenterFromRow(entry, row) { // CHANGE
+            const host = getPanelHost(); // CHANGE
+            if (!host || !row || !row.getBoundingClientRect) return null; // CHANGE
+            const rowRect = row.getBoundingClientRect(); // CHANGE
+            const hostRect = host.getBoundingClientRect(); // CHANGE
+            return { // CHANGE
+                x: rowRect.left - hostRect.left + (host.scrollLeft || 0) + rowRect.width / 2, // CHANGE
+                y: rowRect.top - hostRect.top + (host.scrollTop || 0) + rowRect.height / 2, // CHANGE
+                w: rowRect.width, // CHANGE
+                h: rowRect.height // CHANGE
+            }; // CHANGE
+        } // CHANGE
+
+        function createOrUpdateLine(entry, cardId, row) { // CHANGE
+            const pane = getOverlayPane(); // CHANGE
+            const card = model.getCell(cardId); // CHANGE
+            if (!pane || !row || !isValidOverlayCard(card)) { // CHANGE
+                removePolyline(entry.lines.get(cardId)); // CHANGE
+                entry.lines.delete(cardId); // CHANGE
+                return; // CHANGE
+            } // CHANGE
+
+            const itemC = itemCenterFromRow(entry, row); // CHANGE
+            const dstC = getCellCenter(card); // CHANGE
+            if (!itemC || !dstC) { // CHANGE
+                removePolyline(entry.lines.get(cardId)); // CHANGE
+                entry.lines.delete(cardId); // CHANGE
+                return; // CHANGE
+            } // CHANGE
+
+            const srcPt = anchorOnSide(itemC, sideToward(itemC, dstC), 0.5); // CHANGE
+            const dstPt = anchorOnSide(dstC, sideToward(dstC, itemC), 0.5); // CHANGE
+            if (!srcPt || !dstPt) return; // CHANGE
+
+            const points = [new mxPoint(srcPt.x, srcPt.y), new mxPoint(dstPt.x, dstPt.y)]; // CHANGE
+            const stroke = getTaskLaneColor(card); // CHANGE
+            let poly = entry.lines.get(cardId); // CHANGE
+
+            if (poly && poly.node && poly.node.parentNode === pane) { // CHANGE
+                poly.points = points; // CHANGE
+                poly.stroke = stroke; // CHANGE
+                poly.redraw(); // CHANGE
+            } else { // CHANGE
+                removePolyline(poly); // CHANGE
+                poly = new mxPolyline(points, stroke, 2); // CHANGE
+                poly.dialect = graph.dialect; // CHANGE
+                poly.init(pane); // CHANGE
+                poly.redraw(); // CHANGE
+                if (poly.node) { // CHANGE
+                    poly.node.style.pointerEvents = 'none'; // CHANGE
+                    poly.node.setAttribute('opacity', '0.72'); // CHANGE
+                } // CHANGE
+                entry.lines.set(cardId, poly); // CHANGE
+            } // CHANGE
+        } // CHANGE
+
+        function refreshLines(entry) { // CHANGE
+            const liveIds = new Set(); // CHANGE
+            for (const item of entry.visibleItems || []) { // CHANGE
+                liveIds.add(item.cardId); // CHANGE
+                createOrUpdateLine(entry, item.cardId, item.row); // CHANGE
+            } // CHANGE
+            for (const [cardId, poly] of Array.from(entry.lines.entries())) { // CHANGE
+                if (liveIds.has(cardId)) continue; // CHANGE
+                removePolyline(poly); // CHANGE
+                entry.lines.delete(cardId); // CHANGE
+            } // CHANGE
+        } // CHANGE
+
+        function renderEntry(entry) { // CHANGE
+            const host = getPanelHost(); // CHANGE
+            const source = model.getCell(entry.sourceId); // CHANGE
+            if (!host || !source || !model.isVertex(source)) { // CHANGE
+                removeEntry(entry); // CHANGE
+                return; // CHANGE
+            } // CHANGE
+
+            const cards = entry.targetIds // CHANGE
+                .map((id) => model.getCell(id)) // CHANGE
+                .filter(isValidOverlayCard) // CHANGE
+                .sort(compareTaskCardsByStartDate); // CHANGE
+            entry.targetIds = cards.map((card) => card.id); // CHANGE
+            if (entry.linkLabels) { // CHANGE
+                const liveLabels = new Map(); // CHANGE
+                for (const card of cards) liveLabels.set(card.id, entry.linkLabels.get(card.id) || ''); // CHANGE
+                entry.linkLabels = liveLabels; // CHANGE
+            } // CHANGE
+            if (cards.length === 0) { // CHANGE
+                removeEntry(entry); // CHANGE
+                return; // CHANGE
+            } // CHANGE
+
+            entry.years = getTaskOverlayYears(cards); // CHANGE
+            if (entry.years.length) { // CHANGE
+                const rememberedYear = selectedYearBySource.get(entry.sourceId); // CHANGE
+                entry.selectedYear = entry.years.indexOf(rememberedYear) >= 0 ? rememberedYear : (entry.selectedYear || chooseDefaultOverlayYear(entry.years)); // CHANGE
+            } else { // CHANGE
+                entry.selectedYear = null; // CHANGE
+            } // CHANGE
+            const visibleCards = cards.filter(card => getAttr(card, 'year_hidden') !== '1'); // CHANGE
+            const groups = groupLinkedTasksForOverlay(visibleCards); // CHANGE
+
+            if (!entry.panel) { // CHANGE
+                entry.panel = document.createElement('div'); // CHANGE
+                entry.panel.className = 'manual-link-task-schedule-overlay'; // CHANGE
+                applyPanelStyle(entry.panel); // CHANGE
+                host.appendChild(entry.panel); // CHANGE
+            } // CHANGE
+
+            while (entry.panel.firstChild) entry.panel.removeChild(entry.panel.firstChild); // CHANGE
+            entry.visibleItems = []; // CHANGE
+            const headerCount = activeMode === MODE_SCHEDULE ? countScheduleRows(visibleCards) : countGroupItems(groups); // CHANGE
+            entry.panel.appendChild(createHeader(entry, headerCount)); // CHANGE
+            const body = createBody(); // CHANGE
+            entry.panel.appendChild(body); // CHANGE
+            mxEvent.addListener(body, 'scroll', function () { refreshLines(entry); }); // CHANGE
+
+            if (visibleCards.length === 0) renderEmptyTaskOverlayMessage(body); // CHANGE
+            else if (activeMode === MODE_SCHEDULE) renderScheduleView(entry, body, visibleCards); // CHANGE
+            else if (groups.length) renderCardView(entry, body, groups); // CHANGE
+            else renderEmptyTaskOverlayMessage(body); // CHANGE
+
+            if (!positionPanel(entry, source)) { // CHANGE
+                removeEntry(entry); // CHANGE
+                return; // CHANGE
+            } // CHANGE
+
+            refreshLines(entry); // CHANGE
+        } // CHANGE
+
+        function removeEntry(entry, restoreYear) { // CHANGE
+            if (!entry) return; // CHANGE
+            for (const poly of entry.lines.values()) removePolyline(poly); // CHANGE
+            entry.lines.clear(); // CHANGE
+            removeNode(entry.panel); // CHANGE
+            registry.delete(entry.sourceId); // CHANGE
+            if (restoreYear && !isEntryStillSelected(entry)) restoreEntryTasksToCurrentYear(entry); // CHANGE
+        } // CHANGE
+
+        function show(source, cards, linkLabels) { // CHANGE
+            clear(); // CHANGE
+            if (!source || !source.id || !cards || cards.length === 0) return; // CHANGE
+
+            const validCards = cards.filter(isValidOverlayCard).sort(compareTaskCardsByStartDate); // CHANGE
+            if (validCards.length === 0) return; // CHANGE
+
+            const entry = { // CHANGE
+                sourceId: source.id, // CHANGE
+                targetIds: validCards.map((card) => card.id), // CHANGE
+                linkLabels: new Map(), // CHANGE
+                panel: null, // CHANGE
+                panelLeft: 0, // CHANGE
+                panelTop: 0, // CHANGE
+                visibleItems: [], // CHANGE
+                lines: new Map() // CHANGE
+            }; // CHANGE
+            for (const card of validCards) entry.linkLabels.set(card.id, linkLabels && linkLabels.get ? (linkLabels.get(card.id) || '') : ''); // CHANGE
+            registry.set(source.id, entry); // CHANGE
+            renderEntry(entry); // CHANGE
+        } // CHANGE
+
+        function clear() { // CHANGE
+            for (const entry of Array.from(registry.values())) removeEntry(entry, true); // CHANGE
+        } // CHANGE
+
+        function refresh() { // CHANGE
+            for (const entry of Array.from(registry.values())) renderEntry(entry); // CHANGE
+        } // CHANGE
+
+        function setMode(mode) { // CHANGE
+            activeMode = mode === MODE_SCHEDULE ? MODE_SCHEDULE : MODE_CARDS; // CHANGE
+            refresh(); // CHANGE
+        } // CHANGE
+
+        return { // CHANGE
+            show, // CHANGE
+            clear, // CHANGE
+            refresh, // CHANGE
+            setMode // CHANGE
+        }; // CHANGE
+    })(); // CHANGE
+
 
     // Primary flag persistence
     const PRIMARY_ATTR = 'manualLinkPrimary'; // string '1' means primary
@@ -964,11 +2235,78 @@ Draw.loadPlugin(function (ui) {
         return { P, S };
     }
 
+    function isRenderableTaskForLanePaging(card) { // CHANGE
+        return isKanbanCard(card) && getAttr(card, 'year_hidden') !== '1' && getAttr(card, 'repeat_hidden') !== '1'; // CHANGE
+    } // CHANGE
+
+    function getLaneCardsInCurrentOrder(lane) { // CHANGE
+        const cards = []; // CHANGE
+        if (!lane) return cards; // CHANGE
+        const count = model.getChildCount(lane); // CHANGE
+        for (let i = 0; i < count; i++) { // CHANGE
+            const child = model.getChildAt(lane, i); // CHANGE
+            if (child && model.isVertex(child) && isRenderableTaskForLanePaging(child)) cards.push(child); // CHANGE
+        } // CHANGE
+        return cards; // CHANGE
+    } // CHANGE
+
+    function getLanePageSizeForReveal(lane, cards) { // CHANGE
+        const laneGeo = lane && lane.geometry; // CHANGE
+        const availableHeight = laneGeo && Number.isFinite(Number(laneGeo.height)) ? Number(laneGeo.height) : 0; // CHANGE
+        let totalHeight = 0; // CHANGE
+        let measured = 0; // CHANGE
+        for (const card of cards || []) { // CHANGE
+            const geo = card && card.geometry; // CHANGE
+            const height = geo && Number.isFinite(Number(geo.height)) ? Number(geo.height) : 0; // CHANGE
+            if (height > 0) { totalHeight += height; measured++; } // CHANGE
+        } // CHANGE
+        const avgCardHeight = measured ? totalHeight / measured : 80; // CHANGE
+        const unitHeight = avgCardHeight + 20; // CHANGE
+        if (availableHeight <= 0 || unitHeight <= 0) return Math.max(1, (cards || []).length); // CHANGE
+        return Math.max(1, Math.floor(availableHeight / unitHeight)); // CHANGE
+    } // CHANGE
+
+    function dispatchYearFilterChangedForTaskOverlay(card, year) { // CHANGE
+        try { // CHANGE
+            window.dispatchEvent(new CustomEvent('yearFilterChanged', { // CHANGE
+                detail: { moduleCellId: null, taskCardId: card && card.id || null, year: year == null ? null : year } // CHANGE
+            })); // CHANGE
+        } catch (_) { } // CHANGE
+    } // CHANGE
+
+    function revealKanbanCardForNavigation(card) { // CHANGE
+        if (!isKanbanCard(card)) return; // CHANGE
+        if (getAttr(card, 'year_hidden') === '1' || getAttr(card, 'repeat_hidden') === '1') return; // CHANGE
+        if (!model.isVisible || model.isVisible(card)) return; // CHANGE
+        const lane = findLaneAncestor(card); // CHANGE
+        if (!lane) return; // CHANGE
+        const cards = getLaneCardsInCurrentOrder(lane); // CHANGE
+        const idx = cards.indexOf(card); // CHANGE
+        if (idx < 0) return; // CHANGE
+        const pageSize = getLanePageSizeForReveal(lane, cards); // CHANGE
+        const pageIndex = Math.max(0, Math.floor(idx / pageSize)); // CHANGE
+        model.beginUpdate(); // CHANGE
+        try { // CHANGE
+            setCellAttrUndoable(lane, 'page_index', String(pageIndex)); // CHANGE
+            const start = pageIndex * pageSize; // CHANGE
+            const end = Math.min(start + pageSize, cards.length); // CHANGE
+            for (let i = 0; i < cards.length; i++) { // CHANGE
+                model.setVisible(cards[i], i >= start && i < end); // CHANGE
+            } // CHANGE
+        } finally { // CHANGE
+            model.endUpdate(); // CHANGE
+        } // CHANGE
+        graph.refresh(lane); // CHANGE
+        dispatchYearFilterChangedForTaskOverlay(card, null); // CHANGE
+    } // CHANGE
+
 
     // Works for arbitrarily nested children
     function selectAndReveal(cell) {
         if (!cell) return;
         const m = graph.getModel();
+
+        revealKanbanCardForNavigation(cell); // CHANGE
 
         m.beginUpdate();
         try {
@@ -1007,6 +2345,44 @@ Draw.loadPlugin(function (ui) {
     }
 
 
+    function refreshAfterLinkNavigation() { // CHANGE
+        setTimeout(function () { // CHANGE
+            refreshCurrentHighlight(); // CHANGE
+            taskScheduleOverlay.refresh(); // CHANGE
+        }, 0); // CHANGE
+    } // CHANGE
+
+    function getValidLinkedVertices(cell) { // CHANGE
+        const linked = []; // CHANGE
+        const seen = new Set(); // CHANGE
+        if (!cell) return linked; // CHANGE
+        for (const id of getLinkSet(cell)) { // CHANGE
+            if (!id || seen.has(id) || id === cell.id) continue; // CHANGE
+            const other = model.getCell(id); // CHANGE
+            if (!other || !model.isVertex(other)) continue; // CHANGE
+            seen.add(id); // CHANGE
+            linked.push(other); // CHANGE
+        } // CHANGE
+        return linked; // CHANGE
+    } // CHANGE
+
+    function tryNavigateSingleLinkedSelection(cell, evt) { // CHANGE
+        if (!cell || !model.isVertex(cell) || !evt || evt.button !== 0) return false; // CHANGE
+        const selected = graph.getSelectionCells(); // CHANGE
+        if (!selected || selected.length !== 1) return false; // CHANGE
+        const clicked = normalizeForLinkingAndPrimary(cell); // CHANGE
+        const selectedCell = normalizeForLinkingAndPrimary(selected[0]); // CHANGE
+        if (!clicked || !selectedCell || clicked !== selectedCell) return false; // CHANGE
+        const linked = getValidLinkedVertices(selectedCell); // CHANGE
+        if (linked.length !== 1) return false; // CHANGE
+        selectAndReveal(linked[0]); // CHANGE
+        refreshAfterLinkNavigation(); // CHANGE
+        mxEvent.consume(evt); // CHANGE
+        if (evt.stopPropagation) evt.stopPropagation(); // CHANGE
+        if (evt.preventDefault) evt.preventDefault(); // CHANGE
+        return true; // CHANGE
+    } // CHANGE
+
     // Navigate between endpoints of an overlay link                        
     function navigateOverlayLink(meta, evt) {
         if (!meta) return;
@@ -1024,6 +2400,7 @@ Draw.loadPlugin(function (ui) {
         if (next) {
             selectAndReveal(next);
             graph.scrollCellToVisible(next, true);
+            refreshAfterLinkNavigation(); // CHANGE
         }
 
         if (evt) {
@@ -1264,6 +2641,7 @@ Draw.loadPlugin(function (ui) {
     // Clear visuals WITHOUT opening a transaction; caller groups.
     // Only clear what we previously changed, and only on vertices.
     function clearAllHighlights() {
+        taskScheduleOverlay.clear(); // CHANGE
         linkOverlays.clearAll();
         clearDomHighlights();
     }
@@ -1319,6 +2697,14 @@ Draw.loadPlugin(function (ui) {
             }
 
             const sameBoardLinkedCards = collectSameBoardLinkedKanbanCards(cell, targets); // CHANGE
+            const linkedTaskCards = collectLinkedKanbanCardsForSource(cell); // CHANGE
+            const taskOverlayActive = linkedTaskCards.length > 0 && !isKanbanCard(cell); // CHANGE
+            const taskOverlayLinkLabels = new Map(); // CHANGE
+            if (taskOverlayActive) { // CHANGE
+                taskScheduleOverlay.show(cell, linkedTaskCards, taskOverlayLinkLabels); // CHANGE
+            } else { // CHANGE
+                taskScheduleOverlay.clear(); // CHANGE
+            } // CHANGE
 
             const exitMap = computeExitParamsForOrigin(cell, targets);
 
@@ -1337,7 +2723,7 @@ Draw.loadPlugin(function (ui) {
 
                 // Decide visibility using internal lane-based policy               
                 const shouldShow = shouldShowEdgeInternal(cell, other);
-                if (shouldShow) {
+                if (shouldShow && !taskOverlayActive) { // CHANGE
                     linkOverlays.setLinkOverlay(
                         cell, other, exitHint, edgeColor, label
                     );
@@ -1380,13 +2766,17 @@ Draw.loadPlugin(function (ui) {
             }
 
             // Shift+Click:
-            // - If vertex: do NOTHING here → let normal selection occur
-            // - If overlay line/label: navigate between endpoints                
+            // - If selected vertex has exactly one live link, jump to that linked vertex. // CHANGE
+            // - Otherwise let normal selection or overlay-line navigation continue. // CHANGE
             if (mxEvent.isShiftDown(evt)) {
                 const cell = me.getCell();
 
-                // If clicking a vertex, let normal multi-select logic handle it
+                // If clicking a vertex, try single-link navigation before normal selection. // CHANGE
                 if (cell && model.isVertex(cell)) {
+                    if (tryNavigateSingleLinkedSelection(cell, evt)) { // CHANGE
+                        me.consume(); // CHANGE
+                        return; // CHANGE
+                    } // CHANGE
                     return; // do not consume; selection proceeds            
                 }
 
@@ -1812,12 +3202,14 @@ Draw.loadPlugin(function (ui) {
     if (view && view.addListener) {
         function refreshViewOnlyLinkVisuals() { // CHANGE
             linkOverlays.refreshAll(); // CHANGE
+            taskScheduleOverlay.refresh(); // CHANGE
 
             // Draw.io may recreate SVG nodes during zoom/pan, so reapply DOM highlights
             // after the view has finished its redraw cycle. // CHANGE
             setTimeout(function () { // CHANGE
                 refreshCurrentHighlight(); // CHANGE
                 linkOverlays.refreshAll(); // CHANGE
+                taskScheduleOverlay.refresh(); // CHANGE
             }, 0); // CHANGE
         } // CHANGE
 
@@ -1829,6 +3221,7 @@ Draw.loadPlugin(function (ui) {
     graph.getModel().addListener(mxEvent.CHANGE, function () {
         // Any geometry change (move/resize) will trigger recompute                
         linkOverlays.refreshAll();
+        taskScheduleOverlay.refresh(); // CHANGE
     });
 
 
