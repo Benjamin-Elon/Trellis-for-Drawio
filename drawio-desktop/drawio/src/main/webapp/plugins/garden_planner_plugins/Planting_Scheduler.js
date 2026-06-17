@@ -5956,6 +5956,7 @@ Draw.loadPlugin(function (ui) {
                     schedule: result.schedule, // ADDED
                     timelines: result.timelines, // ADDED
                     taskTemplate: { version: 2, rules: taskRules }, // ADDED
+                    varietyName: inputs.varietyName, // ADDED
                     includePreviewMetadata: true // ADDED
                 }); // ADDED
                 if (requestVersion !== taskPreviewVersion) return; // ADDED
@@ -6743,15 +6744,77 @@ Draw.loadPlugin(function (ui) {
         return `${id}::${Number(ruleIndex)}`; // ADDED
     } // ADDED
 
+    function normalizeTaskTitleIdentity(value) { // ADDED
+        return String(value || '').trim().replace(/\s+/g, ' ').toLowerCase(); // ADDED
+    } // ADDED
+
+    function taskTitleContainsIdentity(title, identity) { // ADDED
+        const normalizedTitle = normalizeTaskTitleIdentity(title); // ADDED
+        const normalizedIdentity = normalizeTaskTitleIdentity(identity); // ADDED
+        return !!normalizedIdentity && normalizedTitle.includes(normalizedIdentity); // ADDED
+    } // ADDED
+
+    function escapeTaskTitleRegExp(value) { // ADDED
+        return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); // ADDED
+    } // ADDED
+
+    function stripTrailingTaskIdentity(title, identity) { // ADDED
+        const text = String(title || '').trim(); // ADDED
+        const identityText = String(identity || '').trim(); // ADDED
+        if (!text || !identityText) return text; // ADDED
+        const pattern = new RegExp(`(?:\\s*(?:[-–—:]+|for)?\\s*)${escapeTaskTitleRegExp(identityText)}\\s*$`, 'i'); // ADDED
+        return text.replace(pattern, '').trim(); // ADDED
+    } // ADDED
+
+    function cleanTaskActionTitle(title) { // ADDED
+        return String(title || '') // ADDED
+            .replace(/\{plant\}/g, '') // ADDED
+            .replace(/\{succ\}/g, '') // ADDED
+            .replace(/\s+for\s*$/i, '') // ADDED
+            .replace(/\s*[-–—:]+\s*$/g, '') // ADDED
+            .trim(); // ADDED
+    } // ADDED
+
+    function appendCropDisplayNameToTaskAction(actionTitle, cropDisplayName) { // ADDED
+        const action = cleanTaskActionTitle(actionTitle) || 'Task'; // ADDED
+        return `${action} – ${cropDisplayName}`; // ADDED
+    } // ADDED
+
+    function formatCropDisplayName(plantName, varietyName) { // ADDED
+        const plantText = String(plantName || '').trim() || 'Plant'; // ADDED
+        const varietyText = String(varietyName || '').trim(); // ADDED
+        if (!varietyText) return plantText; // ADDED
+        const normalizedPlant = normalizeTaskTitleIdentity(plantText); // ADDED
+        const normalizedVariety = normalizeTaskTitleIdentity(varietyText); // ADDED
+        if (normalizedPlant === normalizedVariety || normalizedPlant.includes(`(${normalizedVariety})`)) return plantText; // ADDED
+        return `${plantText} (${varietyText})`; // ADDED
+    } // ADDED
+
+    function buildGeneratedTaskTitle(template, cropDisplayName, plantName, varietyName) { // ADDED
+        const rawTitle = String(template || '').trim(); // ADDED
+        const hasPlantToken = /\{plant\}/.test(rawTitle); // ADDED
+        const title = rawTitle.replace(/\{succ\}/g, ''); // ADDED
+        if (hasPlantToken) return appendCropDisplayNameToTaskAction(title, cropDisplayName); // CHANGED
+        const customTitle = title.trim(); // ADDED
+        if (!customTitle) return appendCropDisplayNameToTaskAction('Task', cropDisplayName); // CHANGED
+        let actionTitle = stripTrailingTaskIdentity(customTitle, cropDisplayName); // ADDED
+        actionTitle = stripTrailingTaskIdentity(actionTitle, plantName); // ADDED
+        if (varietyName) actionTitle = stripTrailingTaskIdentity(actionTitle, varietyName); // ADDED
+        if (taskTitleContainsIdentity(actionTitle, cropDisplayName)) return actionTitle; // CHANGED
+        return appendCropDisplayNameToTaskAction(actionTitle, cropDisplayName); // CHANGED
+    } // ADDED
+
     async function buildTasksForPlan({ // ADDED
         plant, // ADDED
         schedule, // ADDED
         timelines, // ADDED
         taskTemplate, // ADDED
+        varietyName = '', // ADDED
         includePreviewMetadata = false // ADDED
     }) { // ADDED
         const tasks = []; // ADDED
         const plantName = plant?.plant_name || plant?.abbr || "Plant"; // ADDED
+        const cropDisplayName = formatCropDisplayName(plantName, varietyName); // ADDED
         const tpl = normalizeTaskTemplate(taskTemplate ?? null); // ADDED
         const rules = Array.isArray(tpl?.rules) ? tpl.rules : []; // ADDED
         const sowDate = Array.isArray(schedule) ? schedule[0] : schedule; // ADDED
@@ -6759,9 +6822,7 @@ Draw.loadPlugin(function (ui) {
         if (!sowDate || !timeline) return tasks; // ADDED
 
         function substituteTitle(template) { // ADDED
-            return String(template || '') // ADDED
-                .replace(/\{plant\}/g, plantName) // ADDED
-                .replace(/\{succ\}/g, ''); // ADDED
+            return buildGeneratedTaskTitle(template, cropDisplayName, plantName, varietyName); // CHANGED
         } // ADDED
 
         function anchorDatesForTimeline(currentTimeline, currentSowDate) { // ADDED
@@ -6844,7 +6905,7 @@ Draw.loadPlugin(function (ui) {
                 } // ADDED
             } // ADDED
 
-            const title = substituteTitle(rule.title) || `Task for ${plantName}`; // ADDED
+            const title = substituteTitle(rule.title) || `Task for ${cropDisplayName}`; // CHANGED
             const previewRuleKey = getTaskPreviewRuleKey(rule, ruleIndex); // ADDED
             occurrences.forEach((occurrence, occurrenceIndex) => { // ADDED
                 if (!occurrence.startISO && !occurrence.endISO) return; // ADDED
@@ -6853,6 +6914,7 @@ Draw.loadPlugin(function (ui) {
                     startISO: occurrence.startISO || occurrence.endISO, // ADDED
                     endISO: occurrence.endISO || occurrence.startISO, // ADDED
                     plant_name: plantName, // ADDED
+                    variety_name: String(varietyName || '').trim(), // ADDED
                     rule_id: rule.id || null, // ADDED
                     startAnchorStage: rule.startAnchorStage, // ADDED
                     endMode: rule.endMode // ADDED
@@ -7150,7 +7212,7 @@ Draw.loadPlugin(function (ui) {
         return {
             prep: {
                 id: "prep",
-                title: "Prep bed for {plant}",
+                title: "Prep bed – {plant}", // CHANGED
                 startAnchorStage: prepAnchor, // CHANGED
                 startOffsetDays: 3, // CHANGED
                 startOffsetDirection: "before", // CHANGED
@@ -7167,7 +7229,7 @@ Draw.loadPlugin(function (ui) {
             },
             sow: {
                 id: "sow",
-                title: "Sow {plant}",
+                title: "Sow – {plant}", // CHANGED
                 startAnchorStage: "SOW", // CHANGED
                 startOffsetDays: 0, // CHANGED
                 startOffsetDirection: "after", // CHANGED
@@ -7184,7 +7246,7 @@ Draw.loadPlugin(function (ui) {
             },
             start: {
                 id: "start",
-                title: "Start {plant} indoors",
+                title: "Start indoors – {plant}", // CHANGED
                 startAnchorStage: "SOW", // CHANGED
                 startOffsetDays: 0, // CHANGED
                 startOffsetDirection: "after", // CHANGED
@@ -7201,7 +7263,7 @@ Draw.loadPlugin(function (ui) {
             },
             harden: {
                 id: "harden",
-                title: "Harden off {plant}",
+                title: "Harden off – {plant}", // CHANGED
                 startAnchorStage: "TRANSPLANT", // CHANGED
                 startOffsetDays: 7, // CHANGED
                 startOffsetDirection: "before", // CHANGED
@@ -7218,7 +7280,7 @@ Draw.loadPlugin(function (ui) {
             },
             transplant: {
                 id: "transplant",
-                title: "Transplant {plant}",
+                title: "Transplant – {plant}", // CHANGED
                 startAnchorStage: "TRANSPLANT", // CHANGED
                 startOffsetDays: 0, // CHANGED
                 startOffsetDirection: "after", // CHANGED
@@ -7235,7 +7297,7 @@ Draw.loadPlugin(function (ui) {
             },
             thin: {
                 id: "thin",
-                title: "Thin / check {plant}",
+                title: "Thin / check – {plant}", // CHANGED
                 startAnchorStage: "GERM", // CHANGED
                 startOffsetDays: 7, // CHANGED
                 startOffsetDirection: "after", // CHANGED
@@ -7252,7 +7314,7 @@ Draw.loadPlugin(function (ui) {
             },
             harvest: {
                 id: "harvest",
-                title: "Harvest – {plant}",
+                title: "Harvest – {plant}", // CHANGED
                 startAnchorStage: "HARVEST_START", // CHANGED
                 startOffsetDays: 0, // CHANGED
                 startOffsetDirection: "after", // CHANGED
@@ -7533,6 +7595,7 @@ Draw.loadPlugin(function (ui) {
             timelines,
             plantId = null,
             varietyId = null,
+            varietyName = '', // ADDED
             methodCategoryId = null,
             methodId = null,
             taskTemplate = null // FIX
@@ -7546,6 +7609,7 @@ Draw.loadPlugin(function (ui) {
                 taskTemplate,
                 plantId,
                 varietyId,
+                varietyName, // ADDED
                 methodCategoryId,
                 methodId
             });
@@ -7554,6 +7618,7 @@ Draw.loadPlugin(function (ui) {
                 mode: "replace", // FIX: make replacement semantics explicit
                 tasks,
                 plantName: plant.plant_name,
+                varietyName: String(varietyName || ''), // ADDED
                 targetGroupId: cell.id
             };
 
@@ -7605,6 +7670,7 @@ Draw.loadPlugin(function (ui) {
                 timelines,
                 plantId: Number(inputs?.plant?.plant_id ?? null),
                 varietyId: inputs?.varietyId ?? null,
+                varietyName: inputs?.varietyName ?? '', // ADDED
                 methodCategoryId: normId(inputs?.methodCategoryId), // FIX
                 methodId: normId(inputs?.methodId), // FIX
                 taskTemplate: options.taskTemplate ?? null // FIX: do not reread task_template_json after mutation
@@ -8284,6 +8350,7 @@ Draw.loadPlugin(function (ui) {
             humanFeasibilityReason, // ADDED
             classifySelectedSowDate, // ADDED
             buildScheduleViewState, // ADDED
+            taskRuleLibraryForPlanningMode, // ADDED
             buildTasksForPlan, // ADDED
             filterPreviewTasks, // ADDED
             getTaskPreviewRuleKey, // ADDED

@@ -1199,6 +1199,7 @@ Draw.loadPlugin(function (ui) {
 
                 if (t.method) setAttrNoUndo(card, 'method', t.method);
                 if (t.plant_name) setAttrNoUndo(card, 'plant_name', t.plant_name);
+                if (t.variety_name) setAttrNoUndo(card, 'variety_name', t.variety_name); // ADDED
 
                 if (grp) linkBothWays(grp, card);
                 updateBadgeForLane(card, getAttr(parentLane, 'lane_key'));

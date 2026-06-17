@@ -642,6 +642,73 @@ test('task preview and save share generated dates before display filtering', asy
     assert.equal(previewTasks[0].previewRuleKey, 'water::0'); // ADDED
 }); // ADDED
 
+test('task titles use plant and variety for built-in and custom task rules', async () => { // ADDED
+    const plant = makePlant({ plant_name: 'Tomato' }); // ADDED
+    const result = hooks.computeScheduleResult(makeInputs({ plant })); // ADDED
+    const template = { // ADDED
+        version: 2, // ADDED
+        rules: [ // ADDED
+            { id: 'water', title: 'Water {plant}', startAnchorStage: 'SOW', endMode: 'fixed_days', durationDays: 0 }, // ADDED
+            { id: 'fertilize', title: 'Fertilize', startAnchorStage: 'SOW', endMode: 'fixed_days', durationDays: 0 }, // ADDED
+            { id: 'check_crop', title: 'Check Tomato (Roma)', startAnchorStage: 'SOW', endMode: 'fixed_days', durationDays: 0 }, // ADDED
+            { id: 'mulch_plant', title: 'Mulch Tomato', startAnchorStage: 'SOW', endMode: 'fixed_days', durationDays: 0 } // ADDED
+        ] // ADDED
+    }; // ADDED
+    const tasks = await hooks.buildTasksForPlan({ // ADDED
+        plant, // ADDED
+        schedule: result.schedule, // ADDED
+        timelines: result.timelines, // ADDED
+        taskTemplate: template, // ADDED
+        varietyName: 'Roma' // ADDED
+    }); // ADDED
+    assert.equal(tasks.map(task => task.title).join('|'), 'Water – Tomato (Roma)|Fertilize – Tomato (Roma)|Check – Tomato (Roma)|Mulch – Tomato (Roma)'); // CHANGED
+    assert.equal(tasks.every(task => task.plant_name === 'Tomato'), true); // ADDED
+    assert.equal(tasks.every(task => task.variety_name === 'Roma'), true); // ADDED
+}); // ADDED
+
+test('task titles fall back to plant-only names when no variety is selected', async () => { // ADDED
+    const plant = makePlant({ plant_name: 'Tomato' }); // ADDED
+    const result = hooks.computeScheduleResult(makeInputs({ plant })); // ADDED
+    const template = { // ADDED
+        version: 2, // ADDED
+        rules: [ // ADDED
+            { id: 'water', title: 'Water {plant}', startAnchorStage: 'SOW', endMode: 'fixed_days', durationDays: 0 }, // ADDED
+            { id: 'fertilize', title: 'Fertilize', startAnchorStage: 'SOW', endMode: 'fixed_days', durationDays: 0 } // ADDED
+        ] // ADDED
+    }; // ADDED
+    const tasks = await hooks.buildTasksForPlan({ // ADDED
+        plant, // ADDED
+        schedule: result.schedule, // ADDED
+        timelines: result.timelines, // ADDED
+        taskTemplate: template // ADDED
+    }); // ADDED
+    assert.equal(tasks.map(task => task.title).join('|'), 'Water – Tomato|Fertilize – Tomato'); // CHANGED
+    assert.equal(tasks.every(task => task.variety_name === ''), true); // ADDED
+}); // ADDED
+
+test('built-in task titles separate action and crop with an en dash', async () => { // ADDED
+    const plant = makePlant({ plant_name: 'Lettuce' }); // ADDED
+    const result = hooks.computeScheduleResult(makeInputs({ plant })); // ADDED
+    const library = hooks.taskRuleLibraryForPlanningMode('direct_sow'); // ADDED
+    assert.equal([ // ADDED
+        library.prep.title, // ADDED
+        library.sow.title, // ADDED
+        library.start.title, // ADDED
+        library.harden.title, // ADDED
+        library.transplant.title, // ADDED
+        library.thin.title, // ADDED
+        library.harvest.title // ADDED
+    ].join('|'), 'Prep bed – {plant}|Sow – {plant}|Start indoors – {plant}|Harden off – {plant}|Transplant – {plant}|Thin / check – {plant}|Harvest – {plant}'); // ADDED
+    const tasks = await hooks.buildTasksForPlan({ // ADDED
+        plant, // ADDED
+        schedule: result.schedule, // ADDED
+        timelines: result.timelines, // ADDED
+        taskTemplate: { version: 2, rules: [library.thin, library.harvest] }, // ADDED
+        varietyName: 'butthead' // ADDED
+    }); // ADDED
+    assert.equal(tasks.map(task => task.title).join('|'), 'Thin / check – Lettuce (butthead)|Harvest – Lettuce (butthead)'); // ADDED
+}); // ADDED
+
 test('task preview range uses the complete annual schedule instead of selected task dates', () => { // ADDED
     const result = hooks.computeScheduleResult(makeInputs({ startISO: '2026-04-01' })); // ADDED
     const range = hooks.resolveTaskPreviewScheduleRange(result); // ADDED
@@ -678,7 +745,7 @@ test('task preview filtering is display-only and includes all occurrences for se
     }); // ADDED
     const filtered = hooks.filterPreviewTasks(generated, new Set(['duplicate::1'])); // CHANGED
     assert.equal(filtered.length, 2); // CHANGED
-    assert.equal(filtered.every(task => task.title === 'Second'), true); // CHANGED
+    assert.equal(filtered.every(task => task.title === 'Second – Test Plant'), true); // CHANGED
     assert.equal(filtered.map(task => task.previewOccurrenceIndex).join(','), '0,1'); // ADDED
     assert.equal(JSON.stringify(rules), originalRules); // ADDED
     assert.equal(generated.length, 5); // ADDED

@@ -7,6 +7,7 @@
  *   - "Edit Shape": edit style, edit data, edit link, edit connection points // CHANGE
  * - Hides the original top-level entries for those actions to clean up the menu.
  * - Cleans up leftover separators after hiding items.
+ * - Suppresses draw.io XML data hover tooltips for Trellis-owned cells. // NEW
  */
 
 Draw.loadPlugin(function (ui) {
@@ -94,6 +95,7 @@ Draw.loadPlugin(function (ui) {
             'garden_module', // NEW
             'garden_bed', // NEW
             'tiler_group', // NEW
+            'plant_tiler', // NEW
             'kanban_card', // NEW
             'garden_dashboard' // NEW
         ]; // NEW
@@ -355,9 +357,34 @@ Draw.loadPlugin(function (ui) {
         cleanSeparators(menu);
     }
 
+    /**
+     * Prevents Trellis metadata attributes from showing as draw.io hover tooltips.
+     */
+    function installTrellisTooltipSuppression() { // NEW
+        if (graph.__trellisTooltipsSuppressedInstalled) { // NEW
+            return; // NEW
+        } // NEW
+        graph.__trellisTooltipsSuppressedInstalled = true; // NEW
+
+        const oldGetTooltipForCell = graph.getTooltipForCell; // NEW
+        graph.getTooltipForCell = function (cell) { // NEW
+            if (isTrellisCell(cell)) { // NEW
+                return ''; // NEW
+            } // NEW
+
+            if (typeof oldGetTooltipForCell === 'function') { // NEW
+                return oldGetTooltipForCell.apply(this, arguments); // NEW
+            } // NEW
+
+            return ''; // NEW
+        }; // NEW
+    } // NEW
+
     // -----------------------------
-    // 3. Wrap popup menu factory
+    // 3. Install graph hooks // CHANGE
     // -----------------------------
+
+    installTrellisTooltipSuppression(); // NEW
 
     const oldFactory = graph.popupMenuHandler.factoryMethod;
 
