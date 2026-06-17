@@ -14,7 +14,7 @@ const PLUGIN_PATH = path.join( // NEW
     "webapp", // NEW
     "plugins", // NEW
     "garden_planner_plugins", // NEW
-    "Tidy_context_menu.js" // NEW
+    "Tidy_Context_Menu.js" // CHANGE
 ); // NEW
 
 const ACTION_LABELS = { // NEW

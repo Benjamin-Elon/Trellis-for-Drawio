@@ -293,11 +293,11 @@ App.pluginRegistry = {    'trellisContextMenu': 'plugins/garden_planner_plugins/
     'gardenScheduler': 'plugins/garden_planner_plugins/Planting_Scheduler.js',                  // CHANGE
     'gardenClickThrough': 'plugins/garden_planner_plugins/Deep_Click_Through.js',                // CHANGE
     'gardenLinking': 'plugins/garden_planner_plugins/Vertex_Linking_Standalone.js',              // CHANGE
-    'tidyContextMenu': 'plugins/garden_planner_plugins/Tidy_context_menu.js',                    // NEW
-    'createdChangeMap': 'plugins/garden_planner_plugins/Created_change_map.js',                  // NEW
+    'tidyContextMenu': 'plugins/garden_planner_plugins/Tidy_Context_Menu.js',                    // CHANGE
+    'createdChangeMap': 'plugins/garden_planner_plugins/Created_Change_Map.js',                  // CHANGE
     'gardenDashboard': 'plugins/garden_planner_plugins/Garden_Dashboard.js',                     // NEW
-    'gardenPlanner': 'plugins/garden_planner_plugins/Year_planner.js',                           // NEW
-    'gardenScale': 'plugins/garden_planner_plugins/Garden_scale.js' };                           // NEW
+    'gardenPlanner': 'plugins/garden_planner_plugins/Year_Planner.js',                           // CHANGE
+    'gardenScale': 'plugins/garden_planner_plugins/Garden_Scale.js' };                           // CHANGE
 
 App.publicPlugin = [
     'trellisContextMenu',                                    // NEW

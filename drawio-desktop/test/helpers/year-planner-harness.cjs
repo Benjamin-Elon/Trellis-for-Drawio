@@ -13,7 +13,7 @@ const PLUGIN_PATH = path.join(
     "webapp",
     "plugins",
     "garden_planner_plugins",
-    "Year_planner.js"
+    "Year_Planner.js" // CHANGE
 );
 const PLUGIN_SOURCE = fs.readFileSync(PLUGIN_PATH, "utf8");
 
