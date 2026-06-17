@@ -1,13 +1,13 @@
 /**
- * Draw.io Plugin: Garden Bed Conditions
+ * Draw.io Plugin: Garden Beds
  *
  * Stores growing-condition metadata on Trellis garden beds and garden modules,
  * then renders compact, non-persistent badges from that saved metadata.
  */
 Draw.loadPlugin(function (ui) { // NEW
     const graph = ui && ui.editor && ui.editor.graph; // NEW
-    if (!graph || graph.__gardenBedConditionsInstalled) return; // NEW
-    graph.__gardenBedConditionsInstalled = true; // NEW
+    if (!graph || graph.__gardenBedsInstalled) return; // CHANGE
+    graph.__gardenBedsInstalled = true; // CHANGE
 
     const model = graph.getModel && graph.getModel(); // NEW
     if (!model) return; // NEW
@@ -98,6 +98,8 @@ Draw.loadPlugin(function (ui) { // NEW
 
     let copiedProfile = null; // NEW
     const badgeOverlays = new Map(); // NEW
+    const knownGardenBedIds = new Set(); // NEW
+    let applyingNewBedDefaults = false; // NEW
 
     function getStyleSafe(cell) { // NEW
         return cell && typeof cell.getStyle === "function" ? (cell.getStyle() || "") : ((cell && cell.style) || ""); // NEW
@@ -293,6 +295,55 @@ Draw.loadPlugin(function (ui) { // NEW
 
     function collectBedsInModule(moduleCell) { // NEW
         return collectDescendants(moduleCell).filter(isGardenBed); // NEW
+    } // NEW
+
+    function collectAllGardenBeds() { // NEW
+        return model.getRoot ? collectDescendants(model.getRoot()).filter(isGardenBed) : []; // NEW
+    } // NEW
+
+    function rememberExistingGardenBeds() { // NEW
+        knownGardenBedIds.clear(); // NEW
+        collectAllGardenBeds().forEach(function (bed) { // NEW
+            const id = getCellId(bed); // NEW
+            if (id) knownGardenBedIds.add(id); // NEW
+        }); // NEW
+    } // NEW
+
+    function applyDefaultsToNewGardenBeds() { // NEW
+        if (applyingNewBedDefaults) return; // NEW
+        const beds = collectAllGardenBeds(); // NEW
+        const liveIds = new Set(); // NEW
+        const newBeds = []; // NEW
+        beds.forEach(function (bed) { // NEW
+            const id = getCellId(bed); // NEW
+            if (!id) return; // NEW
+            liveIds.add(id); // NEW
+            if (!knownGardenBedIds.has(id)) { // NEW
+                knownGardenBedIds.add(id); // NEW
+                newBeds.push(bed); // NEW
+            } // NEW
+        }); // NEW
+        Array.from(knownGardenBedIds).forEach(function (id) { if (!liveIds.has(id)) knownGardenBedIds.delete(id); }); // NEW
+
+        const targets = newBeds.filter(function (bed) { // NEW
+            if (getCellAttr(bed, ATTRS.BED_JSON, "")) return false; // NEW
+            const moduleCell = findGardenModuleAncestor(graph, bed); // NEW
+            return !!(moduleCell && getCellAttr(moduleCell, ATTRS.DEFAULT_JSON, "")); // NEW
+        }); // NEW
+        if (!targets.length) return; // NEW
+
+        applyingNewBedDefaults = true; // NEW
+        model.beginUpdate(); // NEW
+        try { // NEW
+            targets.forEach(function (bed) { // NEW
+                const moduleCell = findGardenModuleAncestor(graph, bed); // NEW
+                writeBedConditions(bed, readDefaultBedConditions(moduleCell)); // NEW
+            }); // NEW
+        } finally { // NEW
+            model.endUpdate(); // NEW
+            applyingNewBedDefaults = false; // NEW
+        } // NEW
+        refreshBadgesSoon(); // NEW
     } // NEW
 
     function collectSelectedBeds(fallbackBed) { // NEW
@@ -523,7 +574,14 @@ Draw.loadPlugin(function (ui) { // NEW
                 finally { model.endUpdate(); } // NEW
                 ui.hideDialog(); // NEW
             })); // NEW
-            secondaryButtons.appendChild(mxUtils.button("Clear Overrides", function () { // NEW
+            secondaryButtons.appendChild(mxUtils.button("Set as Default", function () { // NEW
+                const moduleCell = findGardenModuleAncestor(graph, targetCell); // NEW
+                if (!moduleCell) { ui.alert("This bed is not inside a garden module."); return; } // NEW
+                model.beginUpdate(); // NEW
+                try { writeDefaultBedConditions(moduleCell, readDialogProfile()); } // NEW
+                finally { model.endUpdate(); } // NEW
+            })); // NEW
+            secondaryButtons.appendChild(mxUtils.button("Clear", function () { // CHANGE
                 const targets = collectSelectedBeds(targetCell); // NEW
                 model.beginUpdate(); // NEW
                 try { targets.forEach(clearBedConditions); } // NEW
@@ -692,26 +750,20 @@ Draw.loadPlugin(function (ui) { // NEW
     } // NEW
 
     registerTrellisContextMenuContributor({ // NEW
-        id: "gardenBedConditions", // NEW
+        id: "gardenBeds", // CHANGE
         priority: 350, // NEW
         addItems: function (menu, cell, evt) { // NEW
             const bed = resolveBedTarget(cell, evt); // NEW
-            const moduleCell = resolveModuleTarget(cell, evt); // NEW
-            if (!bed && !moduleCell) return; // NEW
+            if (!bed) return; // CHANGE
             menu.addSeparator(); // NEW
-            if (bed) { // NEW
-                menu.addItem("Set Bed Conditions...", null, function () { showConditionEditorDialog(bed); }); // NEW
-                menu.addItem("View Bed Conditions", null, function () { showBedConditions(bed); }); // NEW
-            } // NEW
-            if (!bed && moduleCell) { // CHANGE
-                menu.addItem("Set Default Bed Conditions...", null, function () { showConditionEditorDialog(moduleCell, { defaults: true }); }); // NEW
-                menu.addItem("Review Bed Conditions", null, function () { showReviewDialog(moduleCell); }); // NEW
-            } // NEW
+            menu.addItem("Set Bed Conditions...", null, function () { showConditionEditorDialog(bed); }); // CHANGE
+            menu.addItem("View Bed Conditions", null, function () { showBedConditions(bed); }); // CHANGE
         } // NEW
     }); // NEW
 
     const selectionModel = graph.getSelectionModel ? graph.getSelectionModel() : null; // NEW
-    model.addListener && model.addListener(mxEvent.CHANGE, refreshBadgesSoon); // NEW
+    rememberExistingGardenBeds(); // NEW
+    model.addListener && model.addListener(mxEvent.CHANGE, function () { applyDefaultsToNewGardenBeds(); refreshBadgesSoon(); }); // CHANGE
     if (selectionModel && selectionModel.addListener) selectionModel.addListener(mxEvent.CHANGE, refreshBadgesSoon); // NEW
     if (graph.view && graph.view.addListener) { // NEW
         graph.view.addListener(mxEvent.SCALE, refreshBadgesSoon); // NEW
@@ -721,7 +773,7 @@ Draw.loadPlugin(function (ui) { // NEW
     if (graph.container && graph.container.addEventListener) graph.container.addEventListener("scroll", refreshBadgesSoon, { passive: true }); // NEW
     graph.addListener && graph.addListener(mxEvent.DESTROY, clearBadges); // NEW
 
-    window.TrellisBedConditions = { // NEW
+    window.TrellisGardenBeds = { // CHANGE
         getEffectiveBedConditions: getEffectiveBedConditions, // NEW
         readBedConditions: readBedConditions, // NEW
         writeBedConditions: writeBedConditions, // NEW
@@ -740,9 +792,11 @@ Draw.loadPlugin(function (ui) { // NEW
             parseProfileRecord: parseProfileRecord, // NEW
             syncBadges: syncBadges, // NEW
             collectSelectedBeds: collectSelectedBeds, // NEW
-            applyDefaultsToEmptyBeds: applyDefaultsToEmptyBeds // NEW
+            applyDefaultsToEmptyBeds: applyDefaultsToEmptyBeds, // CHANGE
+            applyDefaultsToNewGardenBeds: applyDefaultsToNewGardenBeds // NEW
         } // NEW
     }; // NEW
+    window.TrellisBedConditions = window.TrellisGardenBeds; // NEW
 
     refreshBadgesSoon(); // NEW
 }); // NEW

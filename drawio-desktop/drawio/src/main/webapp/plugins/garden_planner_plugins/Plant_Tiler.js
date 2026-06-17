@@ -1537,7 +1537,7 @@ Draw.loadPlugin(function (ui) {
 
 
         registerTrellisContextMenuContributor({ // CHANGE
-            id: "gardenLayout", // NEW
+            id: "plantTiler", // CHANGE
             priority: 300, // NEW
             addItems: function (menu, cell, evt) { // CHANGE
             try {

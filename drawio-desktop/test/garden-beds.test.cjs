@@ -14,7 +14,7 @@ const PLUGIN_PATH = path.join( // NEW
     "webapp", // NEW
     "plugins", // NEW
     "garden_planner_plugins", // NEW
-    "Garden_Bed_Conditions.js" // NEW
+    "Garden_Beds.js" // CHANGE
 ); // NEW
 
 class TestCell { // NEW
@@ -37,6 +37,7 @@ class TestModel { // NEW
     constructor(root) { // NEW
         this.root = root; // NEW
         this.valuesWritten = 0; // NEW
+        this.listeners = new Map(); // NEW
     } // NEW
 
     getRoot() { return this.root; } // NEW
@@ -46,7 +47,11 @@ class TestModel { // NEW
     setValue(cell, value) { cell.value = value; this.valuesWritten++; } // NEW
     beginUpdate() {} // NEW
     endUpdate() {} // NEW
-    addListener() {} // NEW
+    addListener(name, fn) { // CHANGE
+        if (!this.listeners.has(name)) this.listeners.set(name, []); // NEW
+        this.listeners.get(name).push(fn); // NEW
+    } // CHANGE
+    fire(name) { (this.listeners.get(name) || []).forEach(fn => fn(this, {})); } // NEW
 } // NEW
 
 function appendChild(parent, child) { // NEW
@@ -123,7 +128,7 @@ function loadPlugin(options = {}) { // NEW
     }; // NEW
 
     vm.runInNewContext(fs.readFileSync(PLUGIN_PATH, "utf8"), context, { filename: PLUGIN_PATH }); // NEW
-    return { api: dom.window.TrellisBedConditions, contributors, graph, model, root, moduleCell, bed, bed2, ui, document }; // NEW
+    return { api: dom.window.TrellisGardenBeds, legacyApi: dom.window.TrellisBedConditions, contributors, graph, model, root, moduleCell, bed, bed2, ui, document }; // CHANGE
 } // NEW
 
 function getDialogButton(ui, label) { // NEW
@@ -137,10 +142,11 @@ function getDialogButtonLabels(ui) { // NEW
     return Array.from(ui.lastDialog.querySelectorAll("button")).map(button => button.textContent); // NEW
 } // NEW
 
-test("context menu contributor registers bed and module actions", () => { // NEW
-    const { contributors, bed, moduleCell } = loadPlugin(); // CHANGE
+test("context menu contributor registers only garden bed actions", () => { // CHANGE
+    const { api, legacyApi, contributors, bed, moduleCell } = loadPlugin(); // CHANGE
     assert.equal(contributors.length, 1); // NEW
-    assert.equal(contributors[0].id, "gardenBedConditions"); // NEW
+    assert.equal(contributors[0].id, "gardenBeds"); // CHANGE
+    assert.equal(legacyApi, api); // NEW
 
     const bedMenu = new TestMenu(); // CHANGE
     contributors[0].addItems(bedMenu, bed, null); // CHANGE
@@ -152,10 +158,7 @@ test("context menu contributor registers bed and module actions", () => { // NEW
 
     const moduleMenu = new TestMenu(); // NEW
     contributors[0].addItems(moduleMenu, moduleCell, null); // NEW
-    assert.deepEqual(moduleMenu.labels(), [ // NEW
-        "Set Default Bed Conditions...", // NEW
-        "Review Bed Conditions" // NEW
-    ]); // NEW
+    assert.deepEqual(moduleMenu.labels(), []); // CHANGE
 }); // NEW
 
 test("bed and default conditions persist, mirror, merge, and clear safely", () => { // NEW
@@ -195,6 +198,28 @@ test("bed and default conditions persist, mirror, merge, and clear safely", () =
     assert.equal(bed.getAttribute("label"), "Bed 1"); // NEW
 }); // NEW
 
+test("newly created garden beds inherit module default conditions", () => { // NEW
+    const { api, moduleCell, bed, model, document } = loadPlugin(); // NEW
+    api.writeDefaultBedConditions(moduleCell, { // NEW
+        sunExposure: "full_sun", // NEW
+        soilMoisture: "moderate", // NEW
+        irrigation: "drip", // NEW
+        trellis: "available" // NEW
+    }); // NEW
+
+    assert.equal(bed.getAttribute("bed_conditions_json"), null); // NEW
+    const newBed = appendChild(moduleCell, makeXmlCell(document, "newBed", { garden_bed: "1", label: "New Bed" })); // NEW
+    model.fire("change"); // NEW
+
+    const stored = JSON.parse(newBed.getAttribute("bed_conditions_json")); // NEW
+    assert.equal(stored.sunExposure, "full_sun"); // NEW
+    assert.equal(stored.soilMoisture, "moderate"); // NEW
+    assert.equal(stored.irrigation, "drip"); // NEW
+    assert.equal(newBed.getAttribute("sun_exposure"), "full_sun"); // NEW
+    assert.equal(newBed.getAttribute("irrigation"), "drip"); // NEW
+    assert.equal(bed.getAttribute("bed_conditions_json"), null); // NEW
+}); // NEW
+
 test("invalid JSON and invalid enum values normalize to non-throwing defaults", () => { // NEW
     const { api, bed } = loadPlugin(); // NEW
     bed.value.setAttribute("bed_conditions_json", "{not-json"); // NEW
@@ -205,16 +230,18 @@ test("invalid JSON and invalid enum values normalize to non-throwing defaults", 
     assert.equal(api._test.normalizeProfile({ sunExposure: "lava", trellis: "maybe" }).trellis, "none"); // NEW
 }); // NEW
 
-test("bed dialog exposes copy, paste, and clear actions", () => { // CHANGE
+test("bed dialog exposes copy, paste, set-default, and clear actions", () => { // CHANGE
     const setup = loadPlugin(); // NEW
-    const { api, contributors, bed, bed2, ui } = setup; // CHANGE
+    const { api, contributors, moduleCell, bed, bed2, ui } = setup; // CHANGE
     api.writeBedConditions(bed, { sunExposure: "full_sun", irrigation: "drip", trellis: "available" }); // NEW
 
     const copyMenu = new TestMenu(); // NEW
     contributors[0].addItems(copyMenu, bed, null); // NEW
     copyMenu.click("Set Bed Conditions..."); // CHANGE
-    assert.deepEqual(getDialogButtonLabels(ui), ["Copy", "Paste", "Clear Overrides", "Cancel", "Save"]); // NEW
+    assert.deepEqual(getDialogButtonLabels(ui), ["Copy", "Paste", "Set as Default", "Clear", "Cancel", "Save"]); // CHANGE
     getDialogButton(ui, "Copy").click(); // CHANGE
+    getDialogButton(ui, "Set as Default").click(); // NEW
+    assert.equal(JSON.parse(moduleCell.getAttribute("default_bed_conditions_json")).sunExposure, "full_sun"); // NEW
 
     setup.graph.getSelectionCells = () => [bed, bed2]; // NEW
     const pasteMenu = new TestMenu(); // NEW
@@ -230,29 +257,18 @@ test("bed dialog exposes copy, paste, and clear actions", () => { // CHANGE
     const clearMenu = new TestMenu(); // NEW
     contributors[0].addItems(clearMenu, bed2, null); // NEW
     clearMenu.click("Set Bed Conditions..."); // NEW
-    getDialogButton(ui, "Clear Overrides").click(); // NEW
+    getDialogButton(ui, "Clear").click(); // CHANGE
     assert.equal(bed2.getAttribute("bed_conditions_json"), null); // NEW
 }); // NEW
 
-test("default dialog exposes apply-to-empty and badge visibility actions", () => { // NEW
-    const { api, contributors, moduleCell, bed2, ui } = loadPlugin(); // NEW
+test("default conditions can still be applied to empty beds without module context options", () => { // CHANGE
+    const { api, contributors, moduleCell, bed2 } = loadPlugin(); // CHANGE
     api.writeDefaultBedConditions(moduleCell, { sunExposure: "full_sun", irrigation: "manual" }); // NEW
 
     const menu = new TestMenu(); // NEW
     contributors[0].addItems(menu, moduleCell, null); // NEW
-    menu.click("Set Default Bed Conditions..."); // NEW
-
-    assert.deepEqual(getDialogButtonLabels(ui), ["Apply to Empty Beds", "Cancel", "Save"]); // NEW
-    const checkbox = ui.lastDialog.querySelector("input[type='checkbox']"); // NEW
-    assert.ok(checkbox, "missing badge visibility checkbox"); // NEW
-    checkbox.checked = true; // NEW
-    getDialogButton(ui, "Save").click(); // NEW
-    assert.equal(moduleCell.getAttribute("show_bed_condition_badges"), "1"); // NEW
-
-    const applyMenu = new TestMenu(); // NEW
-    contributors[0].addItems(applyMenu, moduleCell, null); // NEW
-    applyMenu.click("Set Default Bed Conditions..."); // NEW
-    getDialogButton(ui, "Apply to Empty Beds").click(); // NEW
+    assert.deepEqual(menu.labels(), []); // CHANGE
+    api._test.applyDefaultsToEmptyBeds(moduleCell); // CHANGE
     assert.equal(JSON.parse(bed2.getAttribute("bed_conditions_json")).sunExposure, "full_sun"); // NEW
 }); // NEW
 

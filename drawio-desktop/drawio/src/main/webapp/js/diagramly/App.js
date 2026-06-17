@@ -286,7 +286,7 @@ App.startTime = new Date();
  */
 App.pluginRegistry = {    'trellisContextMenu': 'plugins/garden_planner_plugins/Trellis_Context_Menu.js',              // NEW
     'gardenSuccession': 'plugins/garden_planner_plugins/Bed_Succession_Navigator.js',           // CHANGE
-    'gardenLayout': 'plugins/garden_planner_plugins/Garden_Layout.js',                          // CHANGE
+    'plantTiler': 'plugins/garden_planner_plugins/Plant_Tiler.js',                               // CHANGE
     'gardenTasks': 'plugins/garden_planner_plugins/Garden_Task_Manager.js',                     // CHANGE
     'gardenModules': 'plugins/garden_planner_plugins/Modules_Standalone.js',                    // CHANGE
     'gardenParenting': 'plugins/garden_planner_plugins/Planting_Group_Parenting_Controls.js',   // CHANGE
@@ -298,12 +298,12 @@ App.pluginRegistry = {    'trellisContextMenu': 'plugins/garden_planner_plugins/
     'gardenDashboard': 'plugins/garden_planner_plugins/Garden_Dashboard.js',                     // NEW
     'gardenPlanner': 'plugins/garden_planner_plugins/Year_Planner.js',                           // CHANGE
     'gardenScale': 'plugins/garden_planner_plugins/Garden_Scale.js',                             // CHANGE
-    'gardenBedConditions': 'plugins/garden_planner_plugins/Garden_Bed_Conditions.js' };           // NEW
+    'gardenBeds': 'plugins/garden_planner_plugins/Garden_Beds.js' };                              // CHANGE
 
 App.publicPlugin = [
     'trellisContextMenu',                                    // NEW
     'gardenSuccession',                                       // CHANGE
-    'gardenLayout',                                           // CHANGE
+    'plantTiler',                                             // CHANGE
     'gardenTasks',                                            // CHANGE
     'gardenModules',                                          // CHANGE
     'gardenParenting',                                        // CHANGE
@@ -315,7 +315,7 @@ App.publicPlugin = [
     'gardenDashboard',                                        // NEW
     'gardenPlanner',                                          // NEW
     'gardenScale',                                            // CHANGE
-    'gardenBedConditions'                                     // NEW
+    'gardenBeds'                                              // CHANGE
 ];
 
 /**
