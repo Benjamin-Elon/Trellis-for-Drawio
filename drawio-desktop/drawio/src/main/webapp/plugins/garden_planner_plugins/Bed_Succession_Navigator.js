@@ -277,6 +277,24 @@ Draw.loadPlugin(function (ui) {
         return (!r) ? null : { x: r.x + r.w / 2, y: r.y + r.h / 2 };
     }
 
+    function findSmallestContainingBed(beds, bedBounds, point) { // NEW
+        if (!point) return null; // NEW
+        let chosen = null; // NEW
+        let chosenArea = Infinity; // NEW
+        for (let k = 0; k < beds.length; k++) { // NEW
+            const bb = bedBounds[k]; // NEW
+            if (!bb) continue; // NEW
+            if (rectContainsPoint(bb, point.x, point.y)) { // NEW
+                const a = rectArea(bb); // NEW
+                if (a > 0 && a < chosenArea) { // NEW
+                    chosenArea = a; // NEW
+                    chosen = beds[k]; // NEW
+                } // NEW
+            } // NEW
+        } // NEW
+        return chosen; // NEW
+    } // NEW
+
     function bedsForCluster(key) {
         const st = clusterStates.get(key);
         if (!st || !st.order || !st.order.length) return [];
@@ -294,21 +312,7 @@ Draw.loadPlugin(function (ui) {
         for (const tg of st.order) {
             const b = getAbsBounds(tg);
             const c = rectCenter(b);
-            if (!c) continue;
-
-            let chosen = null;
-            let chosenArea = Infinity;
-            for (let k = 0; k < beds.length; k++) {
-                const bb = bedBounds[k];
-                if (!bb) continue;
-                if (rectContainsPoint(bb, c.x, c.y)) {
-                    const a = rectArea(bb);
-                    if (a > 0 && a < chosenArea) {
-                        chosenArea = a;
-                        chosen = beds[k];
-                    }
-                }
-            }
+            const chosen = findSmallestContainingBed(beds, bedBounds, c); // CHANGE
             if (chosen && chosen.id) chosenIds.add(chosen.id);
         }
 
@@ -542,7 +546,7 @@ Draw.loadPlugin(function (ui) {
     function buildAllComponentsInParent(parent) {
         const nodes = getSiblingsInParent(parent);
         const n = nodes.length;
-        if (n < 2) return [];
+        if (n < 1) return []; // CHANGE
 
         const bounds = nodes.map(getAbsBounds);
 
@@ -556,23 +560,8 @@ Draw.loadPlugin(function (ui) {
         for (let i = 0; i < n; i++) {
             const b = bounds[i];
             const c = rectCenter(b);
-            if (!c) continue;
-
-            let chosen = null;
-            let chosenArea = Infinity;
-            for (let k = 0; k < beds.length; k++) {
-                const bb = bedBounds[k];
-                if (!bb) continue;
-                if (rectContainsPoint(bb, c.x, c.y)) {
-                    const a = rectArea(bb);
-                    // If multiple beds contain the point, pick the smallest bed (more specific)
-                    if (a > 0 && a < chosenArea) {
-                        chosenArea = a;
-                        chosen = beds[k].id;
-                    }
-                }
-            }
-            tgBedId[i] = chosen;
+            const chosen = findSmallestContainingBed(beds, bedBounds, c); // CHANGE
+            tgBedId[i] = chosen ? chosen.id : null; // CHANGE
         }
 
         const adj = Array.from({ length: n }, () => []);
@@ -599,7 +588,11 @@ Draw.loadPlugin(function (ui) {
                 comp.push(nodes[v]);
                 for (const w of adj[v]) if (!seen[w]) { seen[w] = true; stack.push(w); }
             }
-            if (comp.length >= 2) comps.push(comp);
+            const hasBedMappedMember = comp.some(cell => { // NEW
+                const idx = nodes.indexOf(cell); // NEW
+                return idx >= 0 && !!tgBedId[idx]; // NEW
+            }); // NEW
+            if (comp.length >= 2 || hasBedMappedMember) comps.push(comp); // CHANGE
         }
         return comps;
     }
@@ -639,6 +632,10 @@ Draw.loadPlugin(function (ui) {
         }
         return { key, st };
     }
+
+    function hasSuccessionControls(st) { // NEW
+        return !!st && !!st.order && st.order.length >= 2; // NEW
+    } // NEW
 
 
     // Earliest start / latest end window for a group                                        
@@ -959,16 +956,22 @@ Draw.loadPlugin(function (ui) {
         if (!box) { hideUIFor(key); return; }
 
         const midY = box.y + box.h / 2;
-        st.btnPrev.style.left = Math.round(box.x - BTN_SIZE - BTN_INSET) + 'px';
-        st.btnPrev.style.top = Math.round(midY - BTN_SIZE / 2) + 'px';
-        st.btnNext.style.left = Math.round(box.x + box.w + BTN_INSET) + 'px';
-        st.btnNext.style.top = Math.round(midY - BTN_SIZE / 2) + 'px';
+        if (st.btnPrev) { // CHANGE
+            st.btnPrev.style.left = Math.round(box.x - BTN_SIZE - BTN_INSET) + 'px'; // CHANGE
+            st.btnPrev.style.top = Math.round(midY - BTN_SIZE / 2) + 'px'; // CHANGE
+        } // CHANGE
+        if (st.btnNext) { // CHANGE
+            st.btnNext.style.left = Math.round(box.x + box.w + BTN_INSET) + 'px'; // CHANGE
+            st.btnNext.style.top = Math.round(midY - BTN_SIZE / 2) + 'px'; // CHANGE
+        } // CHANGE
 
         const gap = 6, cx = box.x + box.w / 2;
-        st.badge.textContent = (st.currentIdx + 1) + ' / ' + st.order.length;
-        const bw = 54, bh = 18;
-        st.badge.style.left = Math.round(cx - bw / 2) + 'px';
-        st.badge.style.top = Math.round(box.y - bh - gap) + 'px';
+        if (st.badge) { // CHANGE
+            st.badge.textContent = (st.currentIdx + 1) + ' / ' + st.order.length; // CHANGE
+            const bw = 54, bh = 18; // CHANGE
+            st.badge.style.left = Math.round(cx - bw / 2) + 'px'; // CHANGE
+            st.badge.style.top = Math.round(box.y - bh - gap) + 'px'; // CHANGE
+        } // CHANGE
 
         // place select buttons at the top-left outside corner of the cluster bbox
         if (st.btnSelectAll || st.btnSelectBeds) {
@@ -988,8 +991,10 @@ Draw.loadPlugin(function (ui) {
             }
         }
 
-        updateOverlapValuesFor(key);
-        positionOverlapBadgesFor(key);
+        if (hasSuccessionControls(st)) { // NEW
+            updateOverlapValuesFor(key); // CHANGE
+            positionOverlapBadgesFor(key); // CHANGE
+        } // NEW
     }
 
     function updateControlsVisibilityFor(key) {
@@ -1174,9 +1179,11 @@ Draw.loadPlugin(function (ui) {
                 continue;
             }
 
-            ensureButtonsFor(key);
-            ensureBadgeFor(key);
-            ensureSelectAllFor(key);
+            if (members.length >= 2) { // NEW
+                ensureButtonsFor(key); // CHANGE
+                ensureBadgeFor(key); // CHANGE
+                ensureSelectAllFor(key); // CHANGE
+            } // NEW
             ensureSelectBedsFor(key);
             updateControlsVisibilityFor(key);
             positionUIFor(key);
@@ -1292,7 +1299,10 @@ Draw.loadPlugin(function (ui) {
     function repositionAllUI() {
         for (const [key, st] of clusterStates.entries()) {
             // Only reposition visible UI (selected cluster only)                      
-            if (!st.btnPrev || st.btnPrev.style.display === 'none') continue;
+            const hasVisibleUI = // NEW
+                (st.btnPrev && st.btnPrev.style.display !== 'none') || // NEW
+                (st.btnSelectBeds && st.btnSelectBeds.style.display !== 'none'); // NEW
+            if (!hasVisibleUI) continue; // CHANGE
             positionUIFor(key);
         }
     }
