@@ -14,6 +14,8 @@ Draw.loadPlugin(function (ui) {
     const GROUP_PADDING_PX = 4;
     const MAX_TILES = 1000; // hard cap to avoid freezes
     const RESIZE_DEBOUNCE_MS = 120; // debounce tiling during resize // RESTORE
+    const ROTATION_RETILE_DEBOUNCE_MS = 150; // CHANGE
+    const DEBUG_PLANT_TILER = false; // CHANGE
 
     const GROUP_LABEL_FONT_PX = 12;
     const GROUP_LABEL_LINE_HEIGHT = 1.25;
@@ -46,8 +48,8 @@ Draw.loadPlugin(function (ui) {
 
     // -------------------- Debug helper ------------------
     function log(...args) {
+        if (!DEBUG_PLANT_TILER) return; // CHANGE
         try {
-            mxLog.show();
             mxLog.debug("[PlantTiler]", ...args);
         } catch (_) { }
     }
@@ -765,6 +767,153 @@ Draw.loadPlugin(function (ui) {
         graph.refresh(groupCell);
     }
 
+    function geometryNearlyEqual(a, b) { // NEW
+        if (!a || !b) return false; // NEW
+        return Math.abs((Number(a.x) || 0) - (Number(b.x) || 0)) < 0.001 && // NEW
+            Math.abs((Number(a.y) || 0) - (Number(b.y) || 0)) < 0.001 && // NEW
+            Math.abs((Number(a.width) || 0) - (Number(b.width) || 0)) < 0.001 && // NEW
+            Math.abs((Number(a.height) || 0) - (Number(b.height) || 0)) < 0.001; // NEW
+    } // NEW
+
+    function setGeometryIfChanged(model, cell, nextGeo) { // NEW
+        const cur = cell && cell.getGeometry ? cell.getGeometry() : null; // NEW
+        if (!cur || !nextGeo || geometryNearlyEqual(cur, nextGeo)) return false; // NEW
+        model.setGeometry(cell, nextGeo); // NEW
+        return true; // NEW
+    } // NEW
+
+    function setStyleIfChanged(model, cell, nextStyle) { // NEW
+        if (getStyleSafe(cell) === nextStyle) return false; // NEW
+        model.setStyle(cell, nextStyle); // NEW
+        return true; // NEW
+    } // NEW
+
+    function setTileAttrsIfChanged(model, cell, attrs) { // NEW
+        for (const [key, value] of Object.entries(attrs || {})) { // NEW
+            if (String(cell.getAttribute(key) || "") !== String(value)) { // NEW
+                setCellAttrsNoTxn(model, cell, attrs); // NEW
+                return true; // NEW
+            } // NEW
+        } // NEW
+        return false; // NEW
+    } // NEW
+
+    function syncAutoTileGeometriesInPlace(graph, groupCell, abbr, spacingXpx, spacingYpx, iconDiamPx, opts = {}) { // NEW
+        if (!groupCell || !isTilerGroup(groupCell) || isCollapsedLOD(groupCell)) return { changed: false, fallback: true, reason: "not-expanded" }; // NEW
+
+        const model = graph.getModel(); // NEW
+        const { bandPx } = groupLabelMetrics(groupCell); // NEW
+        const fontPx = tileFontPx(iconDiamPx); // NEW
+        const nextStyle = plantCircleStyle(fontPx || tileFontPx(iconDiamPx)); // NEW
+        const { rows, cols, count } = computeGridStatsXY(groupCell, spacingXpx, spacingYpx); // NEW
+        if (count > MAX_TILES) return { changed: false, fallback: true, reason: "max-tiles" }; // NEW
+
+        const kids = graph.getChildVertices(groupCell) || []; // NEW
+        const slotMap = new Map(); // NEW
+        const occupiedDisabledAutoTiles = []; // NEW
+        const disabledSet = readDisabledSet(groupCell); // NEW
+        const snapObj = resolveLayoutSnapshot(graph, groupCell, opts); // NEW
+        const snapMap = snapshotTileMap(snapObj); // NEW
+
+        for (const k of kids) { // NEW
+            if (k && k.getAttribute && k.getAttribute("lod_summary") === "1") return { changed: false, fallback: true, reason: "summary-child" }; // NEW
+            if (!isPlantCircle(k)) continue; // NEW
+            if (!hasTileRC(k)) return { changed: false, fallback: true, reason: "missing-slot" }; // NEW
+
+            const r = Number(k.getAttribute("tile_r")); // NEW
+            const c = Number(k.getAttribute("tile_c")); // NEW
+            if (!Number.isFinite(r) || !Number.isFinite(c) || r < 0 || c < 0) return { changed: false, fallback: true, reason: "bad-slot" }; // NEW
+
+            const key = `${r},${c}`; // NEW
+            if (slotMap.has(key)) return { changed: false, fallback: true, reason: "duplicate-slot" }; // NEW
+            slotMap.set(key, k); // NEW
+
+            if (disabledSet.has(key)) { // NEW
+                if (isAutoTile(k) && !isDirty(k)) occupiedDisabledAutoTiles.push(k); // NEW
+                else return { changed: false, fallback: true, reason: "manual-disabled-slot" }; // NEW
+            } // NEW
+
+            if (!(isAutoTile(k) && !isDirty(k)) && !snapMap.has(key)) { // NEW
+                return { changed: false, fallback: true, reason: "manual-without-snapshot" }; // NEW
+            } // NEW
+            if (!(isAutoTile(k) && !isDirty(k))) { // NEW
+                const snap = snapMap.get(key); // NEW
+                if (!Number.isFinite(Number(snap.x)) || !Number.isFinite(Number(snap.y))) { // NEW
+                    return { changed: false, fallback: true, reason: "bad-snapshot" }; // NEW
+                } // NEW
+            } // NEW
+        } // NEW
+
+        let changed = false; // NEW
+        const toRemove = occupiedDisabledAutoTiles.slice(); // NEW
+        const ownsUpdate = !opts.inTransaction; // NEW
+        if (ownsUpdate) model.beginUpdate(); // NEW
+        try {
+            pruneDisabledToGrid(model, groupCell, rows, cols); // NEW
+            const disabledSet2 = readDisabledSet(groupCell); // NEW
+            const { actual } = applyCounts(model, groupCell, count, disabledSet2); // NEW
+            updateGroupYield(model, groupCell, { abbr, countOverride: actual }); // NEW
+
+            for (const [key, tile] of slotMap.entries()) { // NEW
+                const parts = key.split(","); // NEW
+                const r = Number(parts[0]); // NEW
+                const c = Number(parts[1]); // NEW
+                if (r >= rows || c >= cols || disabledSet2.has(key)) { // NEW
+                    if (isAutoTile(tile) && !isDirty(tile)) toRemove.push(tile); // NEW
+                    else if (isChildOutOfGroupBounds(groupCell, tile)) toRemove.push(tile); // NEW
+                    continue; // NEW
+                } // NEW
+
+                const snap = snapMap.get(key); // NEW
+                let geo = null; // NEW
+                let autoAttr = "1"; // NEW
+                let dirtyAttr = "0"; // NEW
+
+                if (snap && !(isAutoTile(tile) && !isDirty(tile))) { // NEW
+                    const sx = Number(snap.x); // NEW
+                    const sy = Number(snap.y); // NEW
+                    geo = visualGeometryFromLogicalGeometry(groupCell, { x: sx, y: sy, w: iconDiamPx, h: iconDiamPx }); // NEW
+                    autoAttr = String(snap.auto || "0"); // NEW
+                    dirtyAttr = String(snap.dirty || "1"); // NEW
+                } else {
+                    geo = tileGeometryAtSlot(groupCell, r, c, spacingXpx, spacingYpx, iconDiamPx, bandPx); // NEW
+                }
+
+                changed = setGeometryIfChanged(model, tile, geo) || changed; // NEW
+                changed = setStyleIfChanged(model, tile, nextStyle) || changed; // NEW
+                changed = setTileAttrsIfChanged(model, tile, { // NEW
+                    plant_tiler: "1", // NEW
+                    auto: autoAttr, // NEW
+                    abbr: abbr, // NEW
+                    label: abbr, // NEW
+                    tile_r: String(r), // NEW
+                    tile_c: String(c), // NEW
+                    dirty: dirtyAttr // NEW
+                }) || changed; // NEW
+            } // NEW
+
+            if (toRemove.length) { // NEW
+                graph.removeCells(Array.from(new Set(toRemove))); // NEW
+                changed = true; // NEW
+            } // NEW
+
+            for (let r = 0; r < rows; r++) { // NEW
+                for (let c = 0; c < cols; c++) { // NEW
+                    const key = `${r},${c}`; // NEW
+                    if (disabledSet2.has(key) || slotMap.has(key)) continue; // NEW
+                    const v = addTileAtSlot(graph, groupCell, abbr, r, c, spacingXpx, spacingYpx, iconDiamPx, disabledSet2, bandPx, fontPx); // NEW
+                    if (v) changed = true; // NEW
+                } // NEW
+            } // NEW
+
+            setCollapsedFlag(model, groupCell, false); // NEW
+        } finally {
+            if (ownsUpdate) model.endUpdate(); // NEW
+        }
+
+        return { changed, fallback: false }; // NEW
+    } // NEW
+
 
     // -------------------- Palette (XML value) --------------------
     function createXmlValue(tag, attrs) {
@@ -1378,11 +1527,7 @@ Draw.loadPlugin(function (ui) {
             const x = Number(inputX.value),
                 y = Number(inputY.value);
             if (!isFinite(x) || !isFinite(y) || x <= 0 || y <= 0) {
-                try {
-                    mxLog.debug(
-                        "[PlantTiler][spacing] invalid " + JSON.stringify({ x, y })
-                    );
-                } catch (_) { }
+                log("[spacing] invalid " + JSON.stringify({ x, y })); // CHANGE
                 return;
             }
             ui.hideDialog();
@@ -1411,9 +1556,7 @@ Draw.loadPlugin(function (ui) {
 
     function runSetGroupSpacingOn(graph, groupCell) {
         if (!groupCell || !isTilerGroup(groupCell)) {
-            try {
-                mxLog.debug("[PlantTiler][spacing] not a tiler group");
-            } catch (_) { }
+            log("[spacing] not a tiler group"); // CHANGE
             return;
         }
         const curX = Number(
@@ -1445,11 +1588,7 @@ Draw.loadPlugin(function (ui) {
             }
             graph.refresh(groupCell);
 
-            try {
-                mxLog.debug(
-                    "[PlantTiler][spacing] applied " + JSON.stringify({ x, y })
-                );
-            } catch (_) { }
+            log("[spacing] applied " + JSON.stringify({ x, y })); // CHANGE
         });
     }
 
@@ -1573,9 +1712,7 @@ Draw.loadPlugin(function (ui) {
     // ---------- Popup menu: register deterministic Trellis contributor ---------- // CHANGE
     if (graph && graph.popupMenuHandler) {
         graph.popupMenuHandler.selectOnPopup = false;
-        try {
-            mxLog.debug("[PlantTiler] Registering ordered popup contributor"); // CHANGE
-        } catch (_) { }
+        log("Registering ordered popup contributor"); // CHANGE
 
         function registerTrellisContextMenuContributor(contributor) { // NEW
             function finishRegistration() { // NEW
@@ -1600,24 +1737,10 @@ Draw.loadPlugin(function (ui) {
                 const gx = pt.x / s - tr.x,
                     gy = pt.y / s - tr.y;
                 const hit = graph.getCellAt(gx, gy);
-                try {
-                    mxLog.debug(
-                        "[PlantTiler][hitTest] " +
-                        JSON.stringify({
-                            clientX: evt.clientX,
-                            clientY: evt.clientY,
-                            gx,
-                            gy,
-                            s,
-                            tr: { x: tr.x, y: tr.y },
-                        })
-                    );
-                } catch (_) { }
+                log("[hitTest] " + JSON.stringify({ clientX: evt.clientX, clientY: evt.clientY, gx, gy, s, tr: { x: tr.x, y: tr.y } })); // CHANGE
                 return hit;
             } catch (e) {
-                try {
-                    mxLog.debug("[PlantTiler][hitTest] error " + e.message);
-                } catch (_) { }
+                log("[hitTest] error " + e.message); // CHANGE
                 return null;
             }
         }
@@ -1631,17 +1754,7 @@ Draw.loadPlugin(function (ui) {
                 const parentGroup = findTilerGroupAncestor(graph, t);
                 if (parentGroup) t = parentGroup;
             }
-            try {
-                mxLog.debug(
-                    "[PlantTiler][popup] cells " +
-                    JSON.stringify({
-                        byParam: dbgCellInfo(byParam),
-                        byHit: dbgCellInfo(byHit),
-                        bySel: dbgCellInfo(bySel),
-                        target: dbgCellInfo(t),
-                    })
-                );
-            } catch (_) { }
+            log("[popup] cells " + JSON.stringify({ byParam: dbgCellInfo(byParam), byHit: dbgCellInfo(byHit), bySel: dbgCellInfo(bySel), target: dbgCellInfo(t) })); // CHANGE
             return t;
         }
 
@@ -1651,14 +1764,7 @@ Draw.loadPlugin(function (ui) {
             const bySel = graph.getSelectionCell() || null;
             const cand = byParam || byHit || bySel;
             const t = cand ? findModuleAncestor(graph, cand) : null;
-            try {
-                mxLog.debug(
-                    "[PlantTiler][popup][module] cand=" +
-                    JSON.stringify(dbgCellInfo(cand)) +
-                    " -> target=" +
-                    JSON.stringify(dbgCellInfo(t))
-                );
-            } catch (_) { }
+            log("[popup][module] cand=" + JSON.stringify(dbgCellInfo(cand)) + " -> target=" + JSON.stringify(dbgCellInfo(t))); // CHANGE
             return t;
         }
 
@@ -1698,12 +1804,7 @@ Draw.loadPlugin(function (ui) {
             id: "plantTiler", // CHANGE
             priority: 300, // NEW
             addItems: function (menu, cell, evt) { // CHANGE
-                try {
-                    mxLog.debug(
-                        "[PlantTiler][popup] start " +
-                        JSON.stringify({ orderedContributor: true }) // CHANGE
-                    );
-                } catch (_) { }
+                log("[popup] start " + JSON.stringify({ orderedContributor: true })); // CHANGE
 
                 // ----- Tiler group item -----
                 const target = resolveTarget(cell, evt);
@@ -1723,38 +1824,23 @@ Draw.loadPlugin(function (ui) {
                         )
                     );
                     const label = `Set Plant Spacing (cm)…  [${curX} × ${curY}]`;
-                    try {
-                        mxLog.debug(
-                            "[PlantTiler][popup] adding spacing item " +
-                            JSON.stringify({ curX, curY })
-                        );
-                    } catch (_) { }
+                    log("[popup] adding spacing item " + JSON.stringify({ curX, curY })); // CHANGE
                     menu.addItem(label, null, function () {
                         try {
                             const act = ui.actions.get("setGroupSpacing");
                             if (act && typeof act.funct === "function") {
-                                try {
-                                    mxLog.debug("[PlantTiler][popup] invoking action setGroupSpacing");
-                                } catch (_) { }
+                                log("[popup] invoking action setGroupSpacing"); // CHANGE
                                 act.funct();
                             } else {
-                                try {
-                                    mxLog.debug(
-                                        "[PlantTiler][popup] action missing; using direct invoker"
-                                    );
-                                } catch (_) { }
+                                log("[popup] action missing; using direct invoker"); // CHANGE
                                 runSetGroupSpacingOn(graph, target);
                             }
                         } catch (e) {
-                            try {
-                                mxLog.debug("[PlantTiler][popup] action error " + e.message);
-                            } catch (_) { }
+                            log("[popup] action error " + e.message); // CHANGE
                         }
                     });
                 } else {
-                    try {
-                        mxLog.debug("[PlantTiler][popup] no tiler group under cursor");
-                    } catch (_) { }
+                    log("[popup] no tiler group under cursor"); // CHANGE
                 }
 
                 // ----- MODULE CONTEXT MENU -----
@@ -1843,7 +1929,7 @@ Draw.loadPlugin(function (ui) {
                             }
 
                             // Keep selection stable; refresh is already done per group. 
-                            try { mxLog.debug(`[PlantTiler][trim] groups=${trimmedGroups}/${candidates.length} removed=${totalRemoved}`); } catch (_) { }
+                            log(`[trim] groups=${trimmedGroups}/${candidates.length} removed=${totalRemoved}`); // CHANGE
                         });
                     }
                 } catch (_) { }
@@ -1935,7 +2021,7 @@ Draw.loadPlugin(function (ui) {
                             try {
                                 const pt = graph.getPointForEvent(evt);
                                 createEmptyTilerGroup(graph, targetMod, pt.x, pt.y);
-                                mxLog.debug("[PlantTiler][module] empty tiler group created");
+                                log("[module] empty tiler group created"); // CHANGE
                             } catch (e) {
                                 mxUtils.alert("Error creating tiler group: " + e.message);
                             }
@@ -1948,19 +2034,9 @@ Draw.loadPlugin(function (ui) {
             } // CHANGE
         }); // CHANGE
 
-        try {
-            mxLog.debug(
-                "[PlantTiler] Popup contributor registered " + // CHANGE
-                JSON.stringify({
-                    hasPopup: !!graph.popupMenuHandler,
-                    hasAction: !!ui.actions.get("setGroupSpacing"),
-                })
-            );
-        } catch (_) { }
+        log("Popup contributor registered " + JSON.stringify({ hasPopup: !!graph.popupMenuHandler, hasAction: !!ui.actions.get("setGroupSpacing") })); // CHANGE
     } else {
-        try {
-            mxLog.debug("[PlantTiler] popupMenuHandler not available");
-        } catch (_) { }
+        log("popupMenuHandler not available"); // CHANGE
     }
 
     // -------------------- Group wrapping & events --------------------
@@ -2229,21 +2305,7 @@ Draw.loadPlugin(function (ui) {
         }
     }
 
-    let SCROLL_TIMER = null;
-    ui.editor.graph.container.addEventListener(
-        "scroll",
-        () => {
-            if (SCROLL_TIMER) clearTimeout(SCROLL_TIMER);
-            SCROLL_TIMER = setTimeout(() => retileVisibleExpandedGroups(graph), 100);
-        },
-        { passive: true }
-    );
-
-    let PAN_TIMER = null;
-    graph.addListener(mxEvent.PAN, function () {
-        if (PAN_TIMER) clearTimeout(PAN_TIMER);
-        PAN_TIMER = setTimeout(() => retileVisibleExpandedGroups(graph), 100);
-    });
+    // Viewport-only scroll/pan must not mutate tiler geometry. // CHANGE
 
     function updateGroupYield(model, groupCell, opts = {}) {
         const abbr = opts.abbr != null ? String(opts.abbr) : getXmlAttr(groupCell, "plant_abbr", "?");
@@ -2276,12 +2338,14 @@ Draw.loadPlugin(function (ui) {
 
     function retileGroup(graph, groupCell, opts = {}) {
 
+        if (opts.duringResize) return; // CHANGE
         const model = graph.getModel();
-        model.beginUpdate();
+        const ownsTitleUpdate = !opts.inTransaction; // CHANGE
+        if (ownsTitleUpdate) model.beginUpdate(); // CHANGE
         try {
             syncGroupTitle(model, groupCell);
         } finally {
-            model.endUpdate();
+            if (ownsTitleUpdate) model.endUpdate(); // CHANGE
         }
         const abbr = groupCell.getAttribute("plant_abbr") || "?";
         const spacingXcm = Number(groupCell.getAttribute("spacing_x_cm") ||
@@ -2290,22 +2354,6 @@ Draw.loadPlugin(function (ui) {
             groupCell.getAttribute("spacing_cm") || "30");
         const spacingXpx = toPx(spacingXcm);
         const spacingYpx = toPx(spacingYcm);
-
-        const duringResize = !!opts.duringResize;
-        if (duringResize) {
-            const { count } = computeGridStatsXY(groupCell, spacingXpx, spacingYpx);
-
-            const { rows, cols } = computeGridStatsXY(groupCell, spacingXpx, spacingYpx);
-            const pruned = pruneDisabledToGrid(model, groupCell, rows, cols);
-            const disabledSet = pruned.set || readDisabledSet(groupCell);
-            const { actual } = applyCounts(model, groupCell, count, disabledSet);
-            updateGroupYield(model, groupCell, { abbr, countOverride: actual });
-
-            if (count > MAX_TILES || count > LOD_TILE_THRESHOLD) {
-                collapseToSummary(graph, groupCell, abbr, spacingXpx, spacingYpx);
-            }
-            return;
-        }
 
         const vegDiamCm = Number(groupCell.getAttribute("veg_diameter_cm") || 0);
         let iconDiam = vegDiamCm > 0 ? toPx(vegDiamCm)
@@ -2343,6 +2391,15 @@ Draw.loadPlugin(function (ui) {
 
         // Default path: keep current state; only refresh contents/summary        
         if (!collapsed) {
+            if (opts.preferInPlace && hasEffectiveRotation(groupCell)) { // NEW
+                const synced = syncAutoTileGeometriesInPlace(graph, groupCell, abbr, spacingXpx, spacingYpx, iconDiam, { // NEW
+                    layoutSnapshot: opts.layoutSnapshot, // NEW
+                    previousRotationDeg: opts.previousRotationDeg, // NEW
+                    useLiveSnapshot: opts.useLiveSnapshot, // NEW
+                    inTransaction: opts.inTransaction // NEW
+                }); // NEW
+                if (!synced.fallback) return; // NEW
+            } // NEW
             expandTiles(graph, groupCell, abbr, spacingXpx, spacingYpx, iconDiam, { layoutSnapshot: opts.layoutSnapshot, previousRotationDeg: opts.previousRotationDeg, useLiveSnapshot: opts.useLiveSnapshot }); // CHANGE
         } else {
             collapseToSummary(graph, groupCell, abbr, spacingXpx, spacingYpx, { layoutSnapshot: opts.layoutSnapshot, previousRotationDeg: opts.previousRotationDeg, useLiveSnapshot: opts.useLiveSnapshot }); // CHANGE
@@ -2370,24 +2427,31 @@ Draw.loadPlugin(function (ui) {
         function schedule(groupCell, layoutSnapshot) { // CHANGE
             if (!groupCell || !groupCell.id) return; // NEW
             if (!queue.has(groupCell.id)) queue.set(groupCell.id, { groupCell, layoutSnapshot }); // CHANGE
-            if (timer) return; // NEW
+            if (timer) clearTimeout(timer); // CHANGE
             timer = setTimeout(function () { // NEW
                 const items = Array.from(queue.values()); // NEW
                 queue.clear(); // NEW
                 timer = null; // NEW
                 guard = true; // NEW
+                const groupsNeedingRefresh = []; // NEW
                 try { // NEW
                     withUndoSuppressed(function () { // NEW
-                        for (const item of items) { // NEW
-                            if (!item.groupCell || !isTilerGroup(item.groupCell)) continue; // NEW
-                            retileGroup(graph, item.groupCell, { layoutSnapshot: item.layoutSnapshot, useLiveSnapshot: false }); // CHANGE
-                            graph.refresh(item.groupCell); // NEW
-                        } // NEW
+                        model.beginUpdate(); // CHANGE
+                        try { // NEW
+                            for (const item of items) { // NEW
+                                if (!item.groupCell || !isTilerGroup(item.groupCell)) continue; // NEW
+                                retileGroup(graph, item.groupCell, { layoutSnapshot: item.layoutSnapshot, useLiveSnapshot: false, preferInPlace: true, inTransaction: true }); // CHANGE
+                                groupsNeedingRefresh.push(item.groupCell); // NEW
+                            } // NEW
+                        } finally {
+                            model.endUpdate(); // CHANGE
+                        }
                     }); // NEW
                 } finally { // NEW
                     guard = false; // NEW
                 } // NEW
-            }, 0); // NEW
+                for (const group of groupsNeedingRefresh) graph.refresh(group); // NEW
+            }, ROTATION_RETILE_DEBOUNCE_MS); // CHANGE
         } // NEW
 
         model.addListener(mxEvent.CHANGE, function (_sender, evt) { // NEW
@@ -2398,6 +2462,10 @@ Draw.loadPlugin(function (ui) {
             for (const change of changes) { // NEW
                 const rotationChange = rotationChangedFromStyleChange(change); // NEW
                 if (!rotationChange) continue; // NEW
+                if (rotationChange.cell && rotationChange.cell.id && queue.has(rotationChange.cell.id)) { // NEW
+                    schedule(rotationChange.cell, null); // NEW
+                    continue; // NEW
+                } // NEW
                 const snap = rotationLayoutSnapshot(rotationChange.cell, rotationChange.before, geometryByCellId); // NEW
                 schedule(rotationChange.cell, snap); // CHANGE
             } // NEW
@@ -2481,6 +2549,27 @@ Draw.loadPlugin(function (ui) {
         return { minW, minH };
     }
 
+    function buildResizeSnapshot(graph, groupCell, includeLayout) { // NEW
+        const sx = toPx(Number(groupCell.getAttribute("spacing_x_cm") || groupCell.getAttribute("spacing_cm") || "30")); // NEW
+        const sy = toPx(Number(groupCell.getAttribute("spacing_y_cm") || groupCell.getAttribute("spacing_cm") || "30")); // NEW
+        const vegDiamCm = Number(groupCell.getAttribute("veg_diameter_cm") || 0); // NEW
+        let iconDiam = vegDiamCm > 0 // NEW
+            ? toPx(vegDiamCm) // NEW
+            : clamp(DEFAULT_ICON_DIAM_RATIO * Math.min(sx, sy), MIN_ICON_DIAM_PX, MAX_ICON_DIAM_PX); // NEW
+        iconDiam = Math.max(iconDiam, 6); // NEW
+
+        const { bandPx } = groupLabelMetrics(groupCell); // NEW
+        return { // NEW
+            prev: includeLayout ? gridSnapshot(groupCell, sx, sy) : null, // CHANGE
+            spacingXpx: sx, // NEW
+            spacingYpx: sy, // NEW
+            iconDiamPx: iconDiam, // NEW
+            bandPx, // NEW
+            rotated: includeLayout ? hasEffectiveRotation(groupCell) : false, // CHANGE
+            layoutSnapshot: includeLayout ? resolveLayoutSnapshot(graph, groupCell) : null // CHANGE
+        }; // NEW
+    } // NEW
+
     function asBoundsArray(bounds, n) {
         if (Array.isArray(bounds)) return bounds;
         // mxGraph often passes a single mxRectangle for single-cell resizes;             
@@ -2535,7 +2624,7 @@ Draw.loadPlugin(function (ui) {
         return { rows, cols, count };
     }
 
-    function ensureLineSlotsPresent(graph, groupCell, abbr, rows, cols, spacingXpx, spacingYpx, iconDiamPx) {
+    function ensureLineSlotsPresent(graph, groupCell, abbr, rows, cols, spacingXpx, spacingYpx, iconDiamPx, opts = {}) { // CHANGE
         // Only needed for 1×N or N×1 shapes
         if (isCollapsedLOD(groupCell)) return 0;
         if (!(rows === 1 || cols === 1)) return 0;
@@ -2549,7 +2638,8 @@ Draw.loadPlugin(function (ui) {
         const fontPx = tileFontPx(iconDiamPx);
 
         let added = 0;
-        model.beginUpdate();
+        const ownsUpdate = !opts.inTransaction; // CHANGE
+        if (ownsUpdate) model.beginUpdate(); // CHANGE
         try {
             const disabledSet = readDisabledSet(groupCell);
 
@@ -2579,7 +2669,7 @@ Draw.loadPlugin(function (ui) {
                 }
             }
         } finally {
-            model.endUpdate();
+            if (ownsUpdate) model.endUpdate(); // CHANGE
         }
 
         return added;
@@ -2610,7 +2700,7 @@ Draw.loadPlugin(function (ui) {
         return v;
     }
 
-    function applyResizeDelta(graph, groupCell, prev, next, spacingXpx, spacingYpx, iconDiamPx) {
+    function applyResizeDelta(graph, groupCell, prev, next, spacingXpx, spacingYpx, iconDiamPx, opts = {}) { // CHANGE
         const model = graph.getModel();
         const abbr = groupCell.getAttribute("plant_abbr") || "?";
 
@@ -2624,7 +2714,8 @@ Draw.loadPlugin(function (ui) {
 
         const slotMap = buildSlotMap(graph, groupCell);
 
-        model.beginUpdate();
+        const ownsUpdate = !opts.inTransaction; // CHANGE
+        if (ownsUpdate) model.beginUpdate(); // CHANGE
         try {
             // ---- Add new rows ----
             if (next.rows > prev.rows) {
@@ -2677,18 +2768,19 @@ Draw.loadPlugin(function (ui) {
             if (toRemove.length) graph.removeCells(toRemove);
 
         } finally {
-            model.endUpdate();
+            if (ownsUpdate) model.endUpdate(); // CHANGE
         }
     }
 
-    function shiftGroupChildrenByDeltaBand(graph, groupCell, deltaY) {                 // NEW
+    function shiftGroupChildrenByDeltaBand(graph, groupCell, deltaY, opts = {}) {      // CHANGE
         if (!deltaY || !Number.isFinite(deltaY)) return;                               // NEW
         if (!groupCell || isCollapsedLOD(groupCell)) return;                           // NEW
 
         const model = graph.getModel();                                                // NEW
         const kids = graph.getChildVertices(groupCell) || [];                          // NEW
 
-        model.beginUpdate();                                                           // NEW
+        const ownsUpdate = !opts.inTransaction;                                        // NEW
+        if (ownsUpdate) model.beginUpdate();                                           // CHANGE
         try {
             for (const k of kids) {
                 if (!k) continue;
@@ -2703,7 +2795,7 @@ Draw.loadPlugin(function (ui) {
                 model.setGeometry(k, ng);                                              // NEW
             }
         } finally {
-            model.endUpdate();                                                         // NEW
+            if (ownsUpdate) model.endUpdate();                                         // CHANGE
         }
     }
 
@@ -2791,6 +2883,7 @@ Draw.loadPlugin(function (ui) {
 
         graph.resizeCells = function (cells, bounds, recurse) {
             const model = graph.getModel();
+            const duringResize = !!graph.isMouseDown; // CHANGE
 
             // Collect affected tiler groups and snapshot BEFORE resize
             const groups = new Map();
@@ -2803,34 +2896,13 @@ Draw.loadPlugin(function (ui) {
 
             const snapshots = new Map(); // groupId -> { prev, spacingXpx, spacingYpx, iconDiamPx, bandPx, rotated, layoutSnapshot } // CHANGE
             for (const g of groups.values()) {
-                const sx = toPx(Number(g.getAttribute("spacing_x_cm") || g.getAttribute("spacing_cm") || "30"));
-                const sy = toPx(Number(g.getAttribute("spacing_y_cm") || g.getAttribute("spacing_cm") || "30"));
-
-                const vegDiamCm = Number(g.getAttribute("veg_diameter_cm") || 0);
-                let iconDiam = vegDiamCm > 0
-                    ? toPx(vegDiamCm)
-                    : clamp(DEFAULT_ICON_DIAM_RATIO * Math.min(sx, sy), MIN_ICON_DIAM_PX, MAX_ICON_DIAM_PX);
-                iconDiam = Math.max(iconDiam, 6);
-
-                const { bandPx } = groupLabelMetrics(g);
-
-                snapshots.set(g.id, {
-                    prev: gridSnapshot(g, sx, sy),
-                    spacingXpx: sx,
-                    spacingYpx: sy,
-                    iconDiamPx: iconDiam,
-                    bandPx,
-                    rotated: hasEffectiveRotation(g), // NEW
-                    layoutSnapshot: resolveLayoutSnapshot(graph, g) // NEW
-                });
+                snapshots.set(g.id, buildResizeSnapshot(graph, g, !duringResize)); // CHANGE
             }
 
             // Clamp tiler group bounds to minimum 1×1 capacity
             if (hasTiler) {
                 bounds = clampTilerBounds(cells, bounds, snapshots);
             }
-
-            const duringResize = !!graph.isMouseDown;
 
             // During drag: do ONLY the geometry resize (lightweight)                         // CHANGED
             if (duringResize || !hasTiler) {                                                 // CHANGED
@@ -2860,7 +2932,7 @@ Draw.loadPlugin(function (ui) {
                     const deltaBandY = (Number(nextBandPx) || 0) - (Number(snap.bandPx) || 0);
                     if (deltaBandY) {
                         if (snap.rotated) shiftLayoutSnapshotByDeltaY(snap.layoutSnapshot, deltaBandY); // NEW
-                        else shiftGroupChildrenByDeltaBand(graph, g, deltaBandY); // CHANGE
+                        else shiftGroupChildrenByDeltaBand(graph, g, deltaBandY, { inTransaction: true }); // CHANGE
                         snap.bandPx = nextBandPx;
                     }
 
@@ -2894,13 +2966,14 @@ Draw.loadPlugin(function (ui) {
                     }
 
                     if (snap.rotated) { // NEW
-                        expandTiles(graph, g, abbr, snap.spacingXpx, snap.spacingYpx, snap.iconDiamPx, { layoutSnapshot: snap.layoutSnapshot, useLiveSnapshot: false }); // NEW
+                        const synced = syncAutoTileGeometriesInPlace(graph, g, abbr, snap.spacingXpx, snap.spacingYpx, snap.iconDiamPx, { layoutSnapshot: snap.layoutSnapshot, useLiveSnapshot: false, inTransaction: true }); // CHANGE
+                        if (synced.fallback) expandTiles(graph, g, abbr, snap.spacingXpx, snap.spacingYpx, snap.iconDiamPx, { layoutSnapshot: snap.layoutSnapshot, useLiveSnapshot: false }); // CHANGE
                         groupsNeedingRefresh.push(g); // NEW
                         continue; // NEW
                     } // NEW
 
                     // Delta slot maintenance (add/remove)
-                    applyResizeDelta(graph, g, snap.prev, next, snap.spacingXpx, snap.spacingYpx, snap.iconDiamPx);
+                    applyResizeDelta(graph, g, snap.prev, next, snap.spacingXpx, snap.spacingYpx, snap.iconDiamPx, { inTransaction: true }); // CHANGE
 
                     ensureLineSlotsPresent(
                         graph,
@@ -2910,7 +2983,8 @@ Draw.loadPlugin(function (ui) {
                         next.cols,
                         snap.spacingXpx,
                         snap.spacingYpx,
-                        snap.iconDiamPx
+                        snap.iconDiamPx,
+                        { inTransaction: true } // CHANGE
                     );
 
                     groupsNeedingRefresh.push(g);
