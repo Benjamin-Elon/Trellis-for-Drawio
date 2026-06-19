@@ -255,6 +255,186 @@ Draw.loadPlugin(function (ui) {
     graph.getView().addListener(mxEvent.SCALE_AND_TRANSLATE, invalidateBoundsCache);
 
 
+    // -------------------- Rotation-aware geometry -------------------- // NEW
+    const GEOM_EPS = 0.000001; // NEW
+
+    function toRad(deg) { // NEW
+        return (Number(deg) || 0) * Math.PI / 180; // NEW
+    } // NEW
+
+    function rotateModelPoint(point, center, angleRad) { // NEW
+        const dx = point.x - center.x; // NEW
+        const dy = point.y - center.y; // NEW
+        const cos = Math.cos(angleRad); // NEW
+        const sin = Math.sin(angleRad); // NEW
+        return { // NEW
+            x: center.x + dx * cos - dy * sin, // NEW
+            y: center.y + dx * sin + dy * cos // NEW
+        }; // NEW
+    } // NEW
+
+    function getCellRotationDeg(cell) { // NEW
+        if (!cell) return 0; // NEW
+        const style = graph.getCellStyle(cell) || {}; // NEW
+        const raw = style[mxConstants.STYLE_ROTATION] != null ? style[mxConstants.STYLE_ROTATION] : style.rotation; // NEW
+        const n = Number(raw); // NEW
+        return Number.isFinite(n) ? n : 0; // NEW
+    } // NEW
+
+    function setCellRotationDeg(cell, angleDeg) { // NEW
+        if (!cell) return false; // NEW
+        const n = Number(angleDeg); // NEW
+        const next = Number.isFinite(n) ? n : 0; // NEW
+        if (nearlySameNumber(getCellRotationDeg(cell), next)) return false; // NEW
+        graph.setCellStyles(mxConstants.STYLE_ROTATION, String(next), [cell]); // NEW
+        return true; // NEW
+    } // NEW
+
+    function getRotatedRectModel(cell) { // NEW
+        const rect = getModelRect(cell); // NEW
+        if (!rect || rect.w <= 0 || rect.h <= 0) return null; // NEW
+        const center = rectCenterModel(rect); // NEW
+        const angleDeg = getCellRotationDeg(cell); // NEW
+        return { // NEW
+            x: rect.x, y: rect.y, w: rect.w, h: rect.h, // NEW
+            cx: center.x, cy: center.y, center: center, // NEW
+            angleDeg: angleDeg, angleRad: toRad(angleDeg) // NEW
+        }; // NEW
+    } // NEW
+
+    function rotatedRectCorners(rotatedRect) { // NEW
+        if (!rotatedRect) return []; // NEW
+        const center = rotatedRect.center || { x: rotatedRect.cx, y: rotatedRect.cy }; // NEW
+        const corners = [ // NEW
+            { x: rotatedRect.x, y: rotatedRect.y }, // NEW
+            { x: rotatedRect.x + rotatedRect.w, y: rotatedRect.y }, // NEW
+            { x: rotatedRect.x + rotatedRect.w, y: rotatedRect.y + rotatedRect.h }, // NEW
+            { x: rotatedRect.x, y: rotatedRect.y + rotatedRect.h } // NEW
+        ]; // NEW
+        return corners.map(p => rotateModelPoint(p, center, rotatedRect.angleRad)); // NEW
+    } // NEW
+
+    function pointInRotatedRectModel(point, rotatedRect) { // NEW
+        if (!point || !rotatedRect) return false; // NEW
+        const center = rotatedRect.center || { x: rotatedRect.cx, y: rotatedRect.cy }; // NEW
+        const local = rotateModelPoint(point, center, -rotatedRect.angleRad); // NEW
+        return local.x >= rotatedRect.x - GEOM_EPS && // NEW
+            local.x <= rotatedRect.x + rotatedRect.w + GEOM_EPS && // NEW
+            local.y >= rotatedRect.y - GEOM_EPS && // NEW
+            local.y <= rotatedRect.y + rotatedRect.h + GEOM_EPS; // NEW
+    } // NEW
+
+    function polygonSignedArea(poly) { // NEW
+        if (!poly || poly.length < 3) return 0; // NEW
+        let sum = 0; // NEW
+        for (let i = 0; i < poly.length; i++) { // NEW
+            const a = poly[i]; // NEW
+            const b = poly[(i + 1) % poly.length]; // NEW
+            sum += a.x * b.y - a.y * b.x; // NEW
+        } // NEW
+        return sum / 2; // NEW
+    } // NEW
+
+    function polygonArea(poly) { // NEW
+        return Math.abs(polygonSignedArea(poly)); // NEW
+    } // NEW
+
+    function edgeCross(edgeStart, edgeEnd, point) { // NEW
+        return (edgeEnd.x - edgeStart.x) * (point.y - edgeStart.y) - (edgeEnd.y - edgeStart.y) * (point.x - edgeStart.x); // NEW
+    } // NEW
+
+    function isInsideClipEdge(point, edgeStart, edgeEnd, clipSign) { // NEW
+        const cross = edgeCross(edgeStart, edgeEnd, point); // NEW
+        return clipSign >= 0 ? cross >= -GEOM_EPS : cross <= GEOM_EPS; // NEW
+    } // NEW
+
+    function lineIntersection(a, b, c, d) { // NEW
+        const abx = b.x - a.x; // NEW
+        const aby = b.y - a.y; // NEW
+        const cdx = d.x - c.x; // NEW
+        const cdy = d.y - c.y; // NEW
+        const denom = abx * cdy - aby * cdx; // NEW
+        if (Math.abs(denom) <= GEOM_EPS) return b; // NEW
+        const t = ((c.x - a.x) * cdy - (c.y - a.y) * cdx) / denom; // NEW
+        return { x: a.x + abx * t, y: a.y + aby * t }; // NEW
+    } // NEW
+
+    function convexPolygonIntersection(subject, clip) { // NEW
+        if (!subject || subject.length < 3 || !clip || clip.length < 3) return []; // NEW
+        let output = subject.slice(); // NEW
+        const clipSign = polygonSignedArea(clip) >= 0 ? 1 : -1; // NEW
+        for (let i = 0; i < clip.length; i++) { // NEW
+            const edgeStart = clip[i]; // NEW
+            const edgeEnd = clip[(i + 1) % clip.length]; // NEW
+            const input = output; // NEW
+            output = []; // NEW
+            if (!input.length) break; // NEW
+            let prev = input[input.length - 1]; // NEW
+            let prevInside = isInsideClipEdge(prev, edgeStart, edgeEnd, clipSign); // NEW
+            for (const curr of input) { // NEW
+                const currInside = isInsideClipEdge(curr, edgeStart, edgeEnd, clipSign); // NEW
+                if (currInside) { // NEW
+                    if (!prevInside) output.push(lineIntersection(prev, curr, edgeStart, edgeEnd)); // NEW
+                    output.push(curr); // NEW
+                } else if (prevInside) { // NEW
+                    output.push(lineIntersection(prev, curr, edgeStart, edgeEnd)); // NEW
+                } // NEW
+                prev = curr; // NEW
+                prevInside = currInside; // NEW
+            } // NEW
+        } // NEW
+        return output; // NEW
+    } // NEW
+
+    function rotatedRectIntersectionArea(a, b) { // NEW
+        const pa = rotatedRectCorners(a); // NEW
+        const pb = rotatedRectCorners(b); // NEW
+        const intersection = convexPolygonIntersection(pa, pb); // NEW
+        const area = polygonArea(intersection); // NEW
+        return area > GEOM_EPS ? area : 0; // NEW
+    } // NEW
+
+    function significantOverlapRotatedRects(a, b) { // NEW
+        if (!a || !b) return false; // NEW
+        const ia = rotatedRectIntersectionArea(a, b); // NEW
+        if (ia <= 0) return false; // NEW
+        const aa = rectAreaModel(a), ab = rectAreaModel(b); // NEW
+        if (aa <= 0 || ab <= 0) return false; // NEW
+
+        let denom; // NEW
+        if (OVERLAP_PCT_MODE === 'union') { // NEW
+            denom = aa + ab - ia; // NEW
+        } else { // NEW
+            denom = Math.min(aa, ab); // NEW
+        } // NEW
+        if (denom <= 0) return false; // NEW
+        return ia / denom >= OVERLAP_MIN_PCT; // NEW
+    } // NEW
+
+    function significantOverlapCells(a, b) { // NEW
+        return significantOverlapRotatedRects(getRotatedRectModel(a), getRotatedRectModel(b)); // NEW
+    } // NEW
+
+    function rotationValueFromStyleString(styleText) { // NEW
+        if (typeof styleText !== 'string') return null; // NEW
+        const parts = styleText.split(';'); // NEW
+        for (const part of parts) { // NEW
+            const idx = part.indexOf('='); // NEW
+            if (idx <= 0) continue; // NEW
+            const key = part.slice(0, idx); // NEW
+            if (key === mxConstants.STYLE_ROTATION || key === 'rotation') return part.slice(idx + 1); // NEW
+        } // NEW
+        return null; // NEW
+    } // NEW
+
+    function styleChangeTouchesRotation(change) { // NEW
+        if (!change) return false; // NEW
+        if (change.key === mxConstants.STYLE_ROTATION || change.key === 'rotation') return true; // NEW
+        const before = rotationValueFromStyleString(change.previous); // NEW
+        const after = rotationValueFromStyleString(change.style); // NEW
+        return before !== after; // NEW
+    } // NEW
+
     // -------------------- Significant overlap (area-based) -------------------- 
     function rectArea(r) {
         return (!r) ? 0 : Math.max(0, r.w) * Math.max(0, r.h);
@@ -288,18 +468,20 @@ Draw.loadPlugin(function (ui) {
         return (!r) ? null : { x: r.x + r.w / 2, y: r.y + r.h / 2 };
     }
 
-    function findSmallestContainingBed(beds, bedBounds, point) { // NEW
+    function findSmallestContainingBed(beds, bedBounds, point) { // CHANGE
         if (!point) return null; // NEW
         let chosen = null; // NEW
         let chosenArea = Infinity; // NEW
         for (let k = 0; k < beds.length; k++) { // NEW
-            const bb = bedBounds[k]; // NEW
-            if (!bb) continue; // NEW
-            if (rectContainsPoint(bb, point.x, point.y)) { // NEW
-                const a = rectArea(bb); // NEW
+            const bed = beds[k]; // CHANGE
+            const rr = getRotatedRectModel(bed); // CHANGE
+            if (!rr && !bedBounds[k]) continue; // CHANGE
+            const contains = rr ? pointInRotatedRectModel(point, rr) : rectContainsPoint(bedBounds[k], point.x, point.y); // CHANGE
+            if (contains) { // CHANGE
+                const a = rr ? rectAreaModel(rr) : rectArea(bedBounds[k]); // CHANGE
                 if (a > 0 && a < chosenArea) { // NEW
                     chosenArea = a; // NEW
-                    chosen = beds[k]; // NEW
+                    chosen = bed; // CHANGE
                 } // NEW
             } // NEW
         } // NEW
@@ -317,13 +499,16 @@ Draw.loadPlugin(function (ui) {
         const beds = sibVerts.filter(isGardenBed);
         if (!beds.length) return [];
 
-        const bedBounds = beds.map(getAbsBounds); // CHANGE
         const chosenIds = new Set();
 
         for (const tg of st.order) {
-            const tgBounds = getAbsBounds(tg); // CHANGE
+            const tgRect = getRotatedRectModel(tg); // CHANGE
+            const tgCenter = tgRect ? tgRect.center : rectCenterModel(getModelRect(tg)); // CHANGE
             for (let i = 0; i < beds.length; i++) { // CHANGE
-                if (significantOverlap(tgBounds, bedBounds[i]) && beds[i].id) chosenIds.add(beds[i].id); // CHANGE
+                const bedRect = getRotatedRectModel(beds[i]); // CHANGE
+                const overlaps = significantOverlapRotatedRects(tgRect, bedRect); // CHANGE
+                const containsCenter = tgCenter && pointInRotatedRectModel(tgCenter, bedRect); // CHANGE
+                if ((overlaps || containsCenter) && beds[i].id) chosenIds.add(beds[i].id); // CHANGE
             } // CHANGE
         }
 
@@ -413,9 +598,9 @@ Draw.loadPlugin(function (ui) {
         let chosen = null; // NEW
         let chosenArea = Infinity; // NEW
         for (const bed of beds) { // NEW
-            const rect = getModelRect(bed); // NEW
-            if (!rect || !rectContainsPoint(rect, point.x, point.y)) continue; // NEW
-            const area = rectAreaModel(rect); // NEW
+            const rect = getRotatedRectModel(bed); // CHANGE
+            if (!rect || !pointInRotatedRectModel(point, rect)) continue; // CHANGE
+            const area = rectAreaModel(rect); // CHANGE
             if (area > 0 && area < chosenArea) { // NEW
                 chosen = bed; // NEW
                 chosenArea = area; // NEW
@@ -549,21 +734,49 @@ Draw.loadPlugin(function (ui) {
         return changed; // NEW
     } // NEW
 
+    function rotateVectorModel(vx, vy, angleRad) { // NEW
+        const cos = Math.cos(angleRad); // NEW
+        const sin = Math.sin(angleRad); // NEW
+        return { x: vx * cos - vy * sin, y: vx * sin + vy * cos }; // NEW
+    } // NEW
+
+    function positionGeometryForLocalPoint(next, localPoint, targetPoint, angleDeg) { // NEW
+        if (!next || !localPoint || !targetPoint) return false; // NEW
+        const centerOffset = { // NEW
+            x: localPoint.x - (Number(next.width) || 0) / 2, // NEW
+            y: localPoint.y - (Number(next.height) || 0) / 2 // NEW
+        }; // NEW
+        const rotatedOffset = rotateVectorModel(centerOffset.x, centerOffset.y, toRad(angleDeg)); // NEW
+        const groupCenter = { x: targetPoint.x - rotatedOffset.x, y: targetPoint.y - rotatedOffset.y }; // NEW
+        next.x = groupCenter.x - (Number(next.width) || 0) / 2; // NEW
+        next.y = groupCenter.y - (Number(next.height) || 0) / 2; // NEW
+        return true; // NEW
+    } // NEW
+
+    function plantingFrameLocalCenter(width, height) { // NEW
+        const w = Math.max(1, Number(width) || 1); // NEW
+        const h = Math.max(1, Number(height) || 1); // NEW
+        const bandPx = bedFitLabelBandPxForSize(w, h); // NEW
+        const frameH = Math.max(0, h - BED_FIT_GROUP_PADDING_PX * 2 - bandPx); // NEW
+        return { x: w / 2, y: BED_FIT_GROUP_PADDING_PX + bandPx + frameH / 2, bandPx: bandPx }; // NEW
+    } // NEW
+
     function buildAxisAwareTrimGeometry(tg, bed, bbox, fitWidth, fitHeight, finalWidth, finalHeight, bandPx) { // CHANGE
         const bedCenter = rectCenterModel(getModelRect(bed)); // NEW
         const current = model.getGeometry(tg); // NEW
         if (!bedCenter || !current) return null; // NEW
         const next = current.clone(); // NEW
         if (fitWidth) { // NEW
-            const localPlantCenterX = BED_FIT_GROUP_PADDING_PX + bbox.w / 2; // NEW
-            next.x = bedCenter.x - localPlantCenterX; // NEW
             next.width = finalWidth; // NEW
         } // NEW
         if (fitHeight) { // NEW
-            const localPlantCenterY = BED_FIT_GROUP_PADDING_PX + bandPx + bbox.h / 2; // NEW
-            next.y = bedCenter.y - localPlantCenterY; // NEW
             next.height = finalHeight; // NEW
         } // NEW
+        const localPlantCenter = { // NEW
+            x: fitWidth ? BED_FIT_GROUP_PADDING_PX + bbox.w / 2 : bbox.x + bbox.w / 2, // NEW
+            y: fitHeight ? BED_FIT_GROUP_PADDING_PX + bandPx + bbox.h / 2 : bbox.y + bbox.h / 2 // NEW
+        }; // NEW
+        positionGeometryForLocalPoint(next, localPlantCenter, bedCenter, getCellRotationDeg(bed)); // CHANGE
         return next; // NEW
     } // NEW
 
@@ -609,17 +822,20 @@ Draw.loadPlugin(function (ui) {
         if (!g) return null; // CHANGE
         const next = g.clone(); // NEW
         if (fitWidth) { // NEW
-            next.x = bedRect.x - overhang - BED_FIT_GROUP_PADDING_PX; // CHANGE
             next.width = targetFrameWidth + BED_FIT_GROUP_PADDING_PX * 2; // CHANGE
         } // NEW
         if (fitHeight) { // NEW
             const solved = solveOuterHeightForPlantingFrame(targetFrameHeight, next.width, next.height); // NEW
-            next.y = bedRect.y - overhang - BED_FIT_GROUP_PADDING_PX - solved.bandPx; // CHANGE
             next.height = solved.outerHeight; // CHANGE
         } // NEW
+        const bedRotation = getCellRotationDeg(bed); // NEW
+        const frameCenter = plantingFrameLocalCenter(next.width, next.height); // NEW
+        const bedCenter = rectCenterModel(bedRect); // NEW
+        positionGeometryForLocalPoint(next, frameCenter, bedCenter, bedRotation); // CHANGE
         const geometryChanged = !(nearlySameNumber(g.x, next.x) && nearlySameNumber(g.y, next.y) && nearlySameNumber(g.width, next.width) && nearlySameNumber(g.height, next.height)); // CHANGE
+        const rotationChanged = setCellRotationDeg(tg, bedRotation); // NEW
         if (geometryChanged) model.setGeometry(tg, next); // CHANGE
-        return { changed: geometryChanged, fitWidth: fitWidth, fitHeight: fitHeight, bed: bed }; // CHANGE
+        return { changed: geometryChanged || rotationChanged, fitWidth: fitWidth, fitHeight: fitHeight, bed: bed }; // CHANGE
     } // NEW
 
     function retileAfterBedFit(tg) { // NEW
@@ -865,19 +1081,15 @@ Draw.loadPlugin(function (ui) {
         const n = nodes.length;
         if (n < 1) return []; // CHANGE
 
-        const bounds = nodes.map(getAbsBounds);
-
         // --- NEW: collect beds in same parent and precompute bounds ---
         const sibVerts = graph.getChildVertices(parent) || [];
         const beds = sibVerts.filter(isGardenBed);
-        const bedBounds = beds.map(getAbsBounds);
 
         // Map each TG index -> chosen bed id (or null) based on center-in-bed
         const tgBedId = new Array(n).fill(null);
         for (let i = 0; i < n; i++) {
-            const b = bounds[i];
-            const c = rectCenter(b);
-            const chosen = findSmallestContainingBed(beds, bedBounds, c); // CHANGE
+            const rect = getRotatedRectModel(nodes[i]); // CHANGE
+            const chosen = rect ? findSmallestContainingBed(beds, [], rect.center) : null; // CHANGE
             tgBedId[i] = chosen ? chosen.id : null; // CHANGE
         }
 
@@ -886,7 +1098,7 @@ Draw.loadPlugin(function (ui) {
         for (let i = 0; i < n; i++) {
             for (let j = i + 1; j < n; j++) {
                 const sameBed = (tgBedId[i] && tgBedId[i] === tgBedId[j]);
-                const sigOv = significantOverlap(bounds[i], bounds[j]);
+                const sigOv = significantOverlapCells(nodes[i], nodes[j]); // CHANGE
                 if (sameBed || sigOv) {
                     adj[i].push(j);
                     adj[j].push(i);
@@ -1663,6 +1875,15 @@ Draw.loadPlugin(function (ui) {
 
     graph.addListener(mxEvent.ADD_CELLS, function () { rafDebounce(refreshAllForSelectionOrAnchor); });
     graph.addListener(mxEvent.REMOVE_CELLS, function () { rafDebounce(refreshAllForSelectionOrAnchor); });
+    graph.getModel().addListener(mxEvent.CHANGE, function (sender, evt) { // NEW
+        const edit = evt.getProperty('edit'); // NEW
+        const changes = edit && edit.changes ? edit.changes : []; // NEW
+        const rotationChanged = changes.some(styleChangeTouchesRotation); // CHANGE
+        if (rotationChanged) { // CHANGE
+            invalidateBoundsCache(); // NEW
+            rafDebounce(refreshAllForSelectionOrAnchor); // NEW
+        } // NEW
+    }); // NEW
     graph.getModel().addListener(mxEvent.UNDO, function () { rafDebounce(refreshAllForSelectionOrAnchor); });
     graph.getModel().addListener(mxEvent.REDO, function () { rafDebounce(refreshAllForSelectionOrAnchor); });
 
