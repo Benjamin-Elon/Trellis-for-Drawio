@@ -12,9 +12,15 @@ Draw.loadPlugin(function (ui) {
     const HL_TAG_KEY = 'manualLinkHL';
     const HL_OLD_COLOR = 'manualLinkOldColor';
     const HL_OLD_WIDTH = 'manualLinkOldWidth';
+    const DEBUG_VERTEX_LINKING_CONSOLE = false; // CHANGE
     graph.__ctrlToggleHandled = false;
 
     // -------------------- Helpers --------------------
+
+    function vertexLinkLog() { // CHANGE
+        if (!DEBUG_VERTEX_LINKING_CONSOLE) return; // CHANGE
+        try { console.log.apply(console, arguments); } catch (_) { } // CHANGE
+    } // CHANGE
 
     function asVertexArray(cells) {
         if (!cells) return [];
@@ -461,7 +467,7 @@ Draw.loadPlugin(function (ui) {
         if (!isKanbanCard(card)) return null;
         const lane = findLaneAncestor(card);
         if (!lane) {
-            console.log('[ManualLinker] getLaneColorForCard: no lane for card',
+            vertexLinkLog('[ManualLinker] getLaneColorForCard: no lane for card',
                 card && card.id);
             return null;
         }
@@ -476,7 +482,7 @@ Draw.loadPlugin(function (ui) {
         else if (isRealColor(laneFillColor)) picked = laneFillColor;
         else if (isRealColor(laneStroke)) picked = laneStroke;
 
-        console.log('[ManualLinker] getLaneColorForCard', {
+        vertexLinkLog('[ManualLinker] getLaneColorForCard', {
             cardId: card && card.id,
             laneId: lane && lane.id,
             laneStyle: style,
@@ -491,7 +497,7 @@ Draw.loadPlugin(function (ui) {
 
     function getLinkLaneColor(a, b) {
         const c = getLaneColorForCard(a) || getLaneColorForCard(b) || null;
-        console.log('[ManualLinker] getLinkLaneColor', {
+        vertexLinkLog('[ManualLinker] getLinkLaneColor', {
             aId: a && a.id,
             bId: b && b.id,
             color: c
@@ -834,13 +840,13 @@ Draw.loadPlugin(function (ui) {
 
         if (laneRaw) {
             const key = String(laneRaw).trim().toUpperCase();
-            console.log('[LaneStatus] from lane_key', { cardId: card.id, laneId: lane && lane.id, laneRaw, key });
+            vertexLinkLog('[LaneStatus] from lane_key', { cardId: card.id, laneId: lane && lane.id, laneRaw, key });
             return key || null;
         }
 
         const statusRaw = getAttr(card, 'status');
         const mapped = mapStatusToKey(statusRaw);
-        console.log('[LaneStatus] from status', { cardId: card.id, statusRaw, mapped });
+        vertexLinkLog('[LaneStatus] from status', { cardId: card.id, statusRaw, mapped });
         return mapped;
     }
 
@@ -879,7 +885,7 @@ Draw.loadPlugin(function (ui) {
         const sourceIsTiler = isTilerGroup(source);
         const targetIsTask = isKanbanCard(target);
 
-        console.log("[EdgePolicy] ENTER", {
+        vertexLinkLog("[EdgePolicy] ENTER", {
             sourceId: sid,
             targetId: tid,
             sourceIsTiler,
@@ -888,14 +894,14 @@ Draw.loadPlugin(function (ui) {
 
         // For anything other than tiler-group → task-card, always show edge:
         if (!sourceIsTiler || !targetIsTask) {
-            console.log("[EdgePolicy] NOT tiler→task → SHOW");
+            vertexLinkLog("[EdgePolicy] NOT tiler→task → SHOW");
             return true;
         }
 
         // Status is defined by the TARGET task (its lane/status), not the tiler.
         const key = getLaneStatusKeyForTask(target);
 
-        console.log("[EdgePolicy] laneKey", {
+        vertexLinkLog("[EdgePolicy] laneKey", {
             taskId: tid,
             laneKey: key,
             rawStatus: getAttr(target, 'status'),
@@ -906,13 +912,13 @@ Draw.loadPlugin(function (ui) {
         });
 
         if (!key) {
-            console.log("[EdgePolicy] NO LANE KEY → SHOW");
+            vertexLinkLog("[EdgePolicy] NO LANE KEY → SHOW");
             return true;
         }
 
         // ACTIVE lanes: always show edges to tasks in active lanes
         if (ACTIVE_LANES.has(key)) {
-            console.log("[EdgePolicy] ACTIVE lane → SHOW");
+            vertexLinkLog("[EdgePolicy] ACTIVE lane → SHOW");
             return true;
         }
 
@@ -963,7 +969,7 @@ Draw.loadPlugin(function (ui) {
         const bestDoneEntry = bestDoneByKey.get(key) ||
             (firstDoneByKey.has(key) ? { cell: firstDoneByKey.get(key), time: null } : null);
 
-        console.log("[EdgePolicy] BEST per lane", {
+        vertexLinkLog("[EdgePolicy] BEST per lane", {
             laneKey: key,
             bestUpcomingId: bestUpcomingEntry ? bestUpcomingEntry.cell.id : null,
             bestDoneId: bestDoneEntry ? bestDoneEntry.cell.id : null
@@ -972,19 +978,19 @@ Draw.loadPlugin(function (ui) {
         // UPCOMING lanes: only show edge to the chosen upcoming card for this lane 
         if (UPCOMING_LANES.has(key)) {
             const show = !!bestUpcomingEntry && bestUpcomingEntry.cell === target;
-            console.log("[EdgePolicy] UPCOMING lane →", show ? "SHOW" : "HIDE");
+            vertexLinkLog("[EdgePolicy] UPCOMING lane →", show ? "SHOW" : "HIDE");
             return show;
         }
 
         // DONE / ARCHIVED lanes: only show edge to the chosen done card for this lane 
         if (DONE_LANES.has(key)) {
             const show = !!bestDoneEntry && bestDoneEntry.cell === target;
-            console.log("[EdgePolicy] DONE lane →", show ? "SHOW" : "HIDE");
+            vertexLinkLog("[EdgePolicy] DONE lane →", show ? "SHOW" : "HIDE");
             return show;
         }
 
         // Fallback: hide
-        console.log("[EdgePolicy] FALLBACK → HIDE");
+        vertexLinkLog("[EdgePolicy] FALLBACK → HIDE");
         return false;
     }
 
@@ -2955,7 +2961,7 @@ Draw.loadPlugin(function (ui) {
                         try {
                             for (const v of verts) setPrimary(v, false);
                         } finally { model.endUpdate(); }
-                        console.log(`[Primary] Removed: ${verts.map(v => v.id).join(', ')}`);
+                        vertexLinkLog(`[Primary] Removed: ${verts.map(v => v.id).join(', ')}`);
                         const sel = graph.getSelectionCell();
                         if (sel && model.isVertex(sel)) highlightLinked(sel);
                     });
@@ -2967,7 +2973,7 @@ Draw.loadPlugin(function (ui) {
                         try {
                             for (const v of verts) setPrimary(v, true);
                         } finally { model.endUpdate(); }
-                        console.log(`[Primary] Marked: ${verts.map(v => v.id).join(', ')}`);
+                        vertexLinkLog(`[Primary] Marked: ${verts.map(v => v.id).join(', ')}`);
                         const sel = graph.getSelectionCell();
                         if (sel && model.isVertex(sel)) highlightLinked(sel);
                     });
@@ -2981,7 +2987,7 @@ Draw.loadPlugin(function (ui) {
                                 if (!isPrimary(v)) setPrimary(v, true);
                             }
                         } finally { model.endUpdate(); }
-                        console.log(`[Primary] Marked: ${verts.filter(v => !isPrimary(v)).map(v => v.id).join(', ')}`); // OPTIONAL (see note)
+                        vertexLinkLog(`[Primary] Marked: ${verts.filter(v => !isPrimary(v)).map(v => v.id).join(', ')}`); // OPTIONAL (see note)
                         const sel = graph.getSelectionCell();
                         if (sel && model.isVertex(sel)) highlightLinked(sel);
                     });
@@ -2993,12 +2999,12 @@ Draw.loadPlugin(function (ui) {
                                 if (isPrimary(v)) setPrimary(v, false);
                             }
                         } finally { model.endUpdate(); }
-                        console.log(`[Primary] Removed: ${verts.filter(v => isPrimary(v)).map(v => v.id).join(', ')}`); // OPTIONAL (see note)
+                        vertexLinkLog(`[Primary] Removed: ${verts.filter(v => isPrimary(v)).map(v => v.id).join(', ')}`); // OPTIONAL (see note)
                         const sel = graph.getSelectionCell();
                         if (sel && model.isVertex(sel)) highlightLinked(sel);
                     });
 
-                    console.log(`[Primary] Mixed selection: primary=${primCount}, nonPrimary=${nonPrimCount}`); // UNCHANGED
+                    vertexLinkLog(`[Primary] Mixed selection: primary=${primCount}, nonPrimary=${nonPrimCount}`); // UNCHANGED
                 }
             }
             // Single-selection: show Remove Links if the vertex has any links
@@ -3008,7 +3014,7 @@ Draw.loadPlugin(function (ui) {
                 if (linkCount > 0) {
                     menu.addItem(`Remove Links (from this vertex)`, null, function () {
                         const res = unlinkAllFor(v);
-                        console.log(`[UNLINK one] checked=${res.checked}, removed=${res.removed}`);
+                        vertexLinkLog(`[UNLINK one] checked=${res.checked}, removed=${res.removed}`);
                         // Repaint current highlight state
                         if (typeof refreshCurrentHighlight === 'function') refreshCurrentHighlight();
                         else {
@@ -3030,7 +3036,7 @@ Draw.loadPlugin(function (ui) {
                 if (linkedPairs === totalPairs && totalPairs > 0) {
                     menu.addItem(`Unlink Selected (${linkedPairs})`, null, function () {
                         const res = unlinkRespectingPrimaries(verts);
-                        console.log(`[BULK UNLINK] pairs=${res.pairs}, removed=${res.removed}`);
+                        vertexLinkLog(`[BULK UNLINK] pairs=${res.pairs}, removed=${res.removed}`);
                         const sel = graph.getSelectionCell();
                         if (sel && model.isVertex(sel)) highlightLinked(sel);
                     });
@@ -3039,7 +3045,7 @@ Draw.loadPlugin(function (ui) {
                 else if (missingPairs === totalPairs && totalPairs > 0) {
                     menu.addItem(`Link Selected (respect primaries) (${totalPairs})`, null, function () {
                         const res = linkRespectingPrimaries(verts);                     // UNCHANGED
-                        console.log(`[LINK P↔S] pairs=${res.pairs}, changed=${res.changes}`); // UNCHANGED
+                        vertexLinkLog(`[LINK P↔S] pairs=${res.pairs}, changed=${res.changes}`); // UNCHANGED
                         const sel = graph.getSelectionCell();                           // UNCHANGED
                         if (sel && model.isVertex(sel)) highlightLinked(sel);           // UNCHANGED
                     });
@@ -3048,14 +3054,14 @@ Draw.loadPlugin(function (ui) {
                 else if (totalPairs > 0) {
                     menu.addItem(`Link Selected (respect primaries) (${missingPairs})`, null, function () {
                         const res = linkRespectingPrimaries(verts);                     // UNCHANGED
-                        console.log(`[LINK P↔S] pairs=${res.pairs}, changed=${res.changes}`); // UNCHANGED
+                        vertexLinkLog(`[LINK P↔S] pairs=${res.pairs}, changed=${res.changes}`); // UNCHANGED
                         const sel = graph.getSelectionCell();                           // UNCHANGED
                         if (sel && model.isVertex(sel)) highlightLinked(sel);           // UNCHANGED
                     });
 
                     menu.addItem(`Unlink Selected (${linkedPairs})`, null, function () {
                         const res = unlinkRespectingPrimaries(verts);
-                        console.log(`[BULK UNLINK] pairs=${res.pairs}, removed=${res.removed}`);
+                        vertexLinkLog(`[BULK UNLINK] pairs=${res.pairs}, removed=${res.removed}`);
                         const sel = graph.getSelectionCell();
                         if (sel && model.isVertex(sel)) highlightLinked(sel);
                     });
@@ -3084,7 +3090,7 @@ Draw.loadPlugin(function (ui) {
                 addMenuItems(menu); // NEW
             } // CHANGE
         }); // CHANGE
-        console.log('[ManualLinker] Registered ordered context menu contributor'); // CHANGE
+        vertexLinkLog('[ManualLinker] Registered ordered context menu contributor'); // CHANGE
     })();
 
     // always read the current model inside helpers                    
@@ -3168,5 +3174,5 @@ Draw.loadPlugin(function (ui) {
     });
 
 
-    console.log('[ManualLinker] Plugin loaded.');
+    vertexLinkLog('[ManualLinker] Plugin loaded.');
 });

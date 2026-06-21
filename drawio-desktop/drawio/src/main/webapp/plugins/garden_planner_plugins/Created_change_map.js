@@ -1178,7 +1178,10 @@ Draw.loadPlugin(function (ui) {
   }
 
   // -------------------- Listen for model changes --------------------
+  const DEBUG_CCMAP_CONSOLE = false; // CHANGE
+
   function debugLogEdit(edit, label) {
+    if (!DEBUG_CCMAP_CONSOLE) return; // CHANGE
     try {
       const changes = (edit && edit.changes) || [];
       console.log(`[CCMap] ${label}: ${changes.length} change(s)`);
