@@ -95,17 +95,6 @@ Draw.loadPlugin(function (ui) {
     const PLANT_TAG = 'planting';            // optional: if you tag planting cells (recommended)
     const PLANT_TAG_ATTR = 'cellType';         // optional: 'planting'
     const REORDER_DEBOUNCE_MS = 80;
-    const BED_FIT_TOLERANCE = 0.25; // NEW
-    const EDGE_CIRCLE_CENTER_CONTAINED_PCT = 0.40; // NEW
-    const BED_AUTO_FIT_ATTR = 'bed_auto_fit'; // NEW
-    const PLANT_DIAGRAM_UNITS_PER_CM = 5 * 0.18; // NEW
-    const BED_FIT_GROUP_PADDING_PX = 4; // NEW
-    const BED_FIT_GROUP_BASE_AREA_PX2 = 240 * 240; // NEW
-    const BED_FIT_GROUP_LABEL_FONT_PX = 12; // NEW
-    const BED_FIT_GROUP_LABEL_FONT_MIN_PX = 10; // NEW
-    const BED_FIT_GROUP_LABEL_FONT_MAX_PX = 100; // NEW
-    const BED_FIT_GROUP_LABEL_LINE_HEIGHT = 1.25; // NEW
-    const BED_FIT_GROUP_LABEL_BAND_PAD_PX = 6; // NEW
 
     // -------------------- NEW: canopy ordering --------------------
     function isPlantingCell(cell) {
@@ -279,15 +268,6 @@ Draw.loadPlugin(function (ui) {
         const raw = style[mxConstants.STYLE_ROTATION] != null ? style[mxConstants.STYLE_ROTATION] : style.rotation; // NEW
         const n = Number(raw); // NEW
         return Number.isFinite(n) ? n : 0; // NEW
-    } // NEW
-
-    function setCellRotationDeg(cell, angleDeg) { // NEW
-        if (!cell) return false; // NEW
-        const n = Number(angleDeg); // NEW
-        const next = Number.isFinite(n) ? n : 0; // NEW
-        if (nearlySameNumber(getCellRotationDeg(cell), next)) return false; // NEW
-        graph.setCellStyles(mxConstants.STYLE_ROTATION, String(next), [cell]); // NEW
-        return true; // NEW
     } // NEW
 
     function getRotatedRectModel(cell) { // NEW
@@ -570,8 +550,7 @@ Draw.loadPlugin(function (ui) {
         return null;
     }
 
-    // -------------------- Bed-aware model-space auto-fit -------------------- // NEW
-    let bedFitInProgress = false; // NEW
+    // -------------------- Model-space geometry helpers -------------------- // CHANGE
 
     function getModelRect(cell) { // NEW
         const g = cell ? model.getGeometry(cell) : null; // NEW
@@ -590,308 +569,6 @@ Draw.loadPlugin(function (ui) {
 
     function rectAreaModel(rect) { // NEW
         return rect ? Math.max(0, rect.w) * Math.max(0, rect.h) : 0; // NEW
-    } // NEW
-
-    function findSmallestContainingBedModel(parent, point) { // NEW
-        if (!parent || !point) return null; // NEW
-        const beds = (graph.getChildVertices(parent) || []).filter(isGardenBed); // NEW
-        let chosen = null; // NEW
-        let chosenArea = Infinity; // NEW
-        for (const bed of beds) { // NEW
-            const rect = getRotatedRectModel(bed); // CHANGE
-            if (!rect || !pointInRotatedRectModel(point, rect)) continue; // CHANGE
-            const area = rectAreaModel(rect); // CHANGE
-            if (area > 0 && area < chosenArea) { // NEW
-                chosen = bed; // NEW
-                chosenArea = area; // NEW
-            } // NEW
-        } // NEW
-        return chosen; // NEW
-    } // NEW
-
-    function isPlantCircleCell(cell) { // NEW
-        return !!cell && cell.getAttribute && cell.getAttribute('plant_tiler') === '1'; // NEW
-    } // NEW
-
-    function largestChildPlantCircleDiameter(tg) { // NEW
-        let diameter = 0; // NEW
-        const childCount = model.getChildCount(tg); // NEW
-        for (let i = 0; i < childCount; i++) { // NEW
-            const child = model.getChildAt(tg, i); // NEW
-            if (!model.isVertex(child) || !isPlantCircleCell(child)) continue; // NEW
-            const cg = model.getGeometry(child); // NEW
-            if (!cg) continue; // NEW
-            diameter = Math.max(diameter, Number(cg.width) || 0, Number(cg.height) || 0); // NEW
-        } // NEW
-        return diameter; // NEW
-    } // NEW
-
-    function getPlantCircleDiameterPx(tg) { // NEW
-        const childDiameter = largestChildPlantCircleDiameter(tg); // NEW
-        if (childDiameter > 0) return childDiameter; // NEW
-        const vegDiameterCm = toNumOrNaN(tg && tg.getAttribute ? tg.getAttribute(DIAM_ATTR) : null); // NEW
-        return Number.isFinite(vegDiameterCm) && vegDiameterCm > 0 ? vegDiameterCm * PLANT_DIAGRAM_UNITS_PER_CM : 0; // NEW
-    } // NEW
-
-    function allowedOverhangForDiameter(diameter) { // NEW
-        return Math.max(0, diameter) * (1 - EDGE_CIRCLE_CENTER_CONTAINED_PCT) / 2; // NEW
-    } // NEW
-
-    function clampBedFitNumber(value, min, max) { // NEW
-        return Math.max(min, Math.min(max, value)); // NEW
-    } // NEW
-
-    function bedFitLabelBandPxForSize(width, height) { // NEW
-        const w = Math.max(1, Number(width) || 1); // NEW
-        const h = Math.max(1, Number(height) || 1); // NEW
-        const scale = Math.sqrt((w * h) / BED_FIT_GROUP_BASE_AREA_PX2); // NEW
-        const fontPx = clampBedFitNumber(Math.round(BED_FIT_GROUP_LABEL_FONT_PX * scale), BED_FIT_GROUP_LABEL_FONT_MIN_PX, BED_FIT_GROUP_LABEL_FONT_MAX_PX); // NEW
-        return Math.ceil(fontPx * BED_FIT_GROUP_LABEL_LINE_HEIGHT + BED_FIT_GROUP_LABEL_BAND_PAD_PX); // NEW
-    } // NEW
-
-    function getPlantingFrameRectModel(tgRect) { // NEW
-        if (!tgRect) return null; // NEW
-        const bandPx = bedFitLabelBandPxForSize(tgRect.w, tgRect.h); // NEW
-        return { // NEW
-            x: tgRect.x + BED_FIT_GROUP_PADDING_PX, // NEW
-            y: tgRect.y + BED_FIT_GROUP_PADDING_PX + bandPx, // NEW
-            w: Math.max(0, tgRect.w - BED_FIT_GROUP_PADDING_PX * 2), // NEW
-            h: Math.max(0, tgRect.h - BED_FIT_GROUP_PADDING_PX * 2 - bandPx), // NEW
-            bandPx: bandPx // NEW
-        }; // NEW
-    } // NEW
-
-    function solveOuterHeightForPlantingFrame(innerHeight, outerWidth, seedHeight) { // NEW
-        let bandPx = bedFitLabelBandPxForSize(outerWidth, seedHeight); // NEW
-        let outerHeight = Math.max(1, innerHeight + BED_FIT_GROUP_PADDING_PX * 2 + bandPx); // NEW
-        for (let i = 0; i < 5; i++) { // NEW
-            const nextBandPx = bedFitLabelBandPxForSize(outerWidth, outerHeight); // NEW
-            const nextOuterHeight = Math.max(1, innerHeight + BED_FIT_GROUP_PADDING_PX * 2 + nextBandPx); // NEW
-            if (nextBandPx === bandPx && nearlySameNumber(nextOuterHeight, outerHeight)) break; // NEW
-            bandPx = nextBandPx; // NEW
-            outerHeight = nextOuterHeight; // NEW
-        } // NEW
-        return { outerHeight: outerHeight, bandPx: bandPx }; // NEW
-    } // NEW
-
-    function collectTilerGroupCandidate(cell, out) { // NEW
-        const tg = findTilerGroupAncestor(cell); // NEW
-        if (tg && tg.id && !out.has(tg.id)) out.set(tg.id, tg); // NEW
-    } // NEW
-
-    function getTilerGroupsFromEventCells(cells) { // NEW
-        const out = new Map(); // NEW
-        const moved = (cells || []).filter(Boolean); // NEW
-        for (const cell of moved) collectTilerGroupCandidate(cell, out); // NEW
-        if (!moved.length) { // NEW
-            const selected = graph.getSelectionCells ? graph.getSelectionCells() : [graph.getSelectionCell()]; // NEW
-            for (const cell of (selected || [])) collectTilerGroupCandidate(cell, out); // NEW
-        } // NEW
-        return Array.from(out.values()); // NEW
-    } // NEW
-
-    function nearlySameNumber(a, b) { // NEW
-        return Math.abs((Number(a) || 0) - (Number(b) || 0)) < 0.001; // NEW
-    } // NEW
-
-    function getPlantCircleBBoxLocal(tg) { // NEW
-        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity; // NEW
-        const childCount = model.getChildCount(tg); // NEW
-        for (let i = 0; i < childCount; i++) { // NEW
-            const child = model.getChildAt(tg, i); // NEW
-            if (!model.isVertex(child) || !isPlantCircleCell(child)) continue; // NEW
-            const cg = model.getGeometry(child); // NEW
-            if (!cg) continue; // NEW
-            const x = Number(cg.x) || 0; // NEW
-            const y = Number(cg.y) || 0; // NEW
-            const w = Number(cg.width) || 0; // NEW
-            const h = Number(cg.height) || 0; // NEW
-            if (w <= 0 || h <= 0) continue; // NEW
-            minX = Math.min(minX, x); // NEW
-            minY = Math.min(minY, y); // NEW
-            maxX = Math.max(maxX, x + w); // NEW
-            maxY = Math.max(maxY, y + h); // NEW
-        } // NEW
-        if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) return null; // NEW
-        return { x: minX, y: minY, w: maxX - minX, h: maxY - minY }; // NEW
-    } // NEW
-
-    function shiftPlantCircleChildren(tg, dx, dy) { // NEW
-        if (nearlySameNumber(dx, 0) && nearlySameNumber(dy, 0)) return false; // NEW
-        let changed = false; // NEW
-        const childCount = model.getChildCount(tg); // NEW
-        for (let i = 0; i < childCount; i++) { // NEW
-            const child = model.getChildAt(tg, i); // NEW
-            if (!model.isVertex(child) || !isPlantCircleCell(child)) continue; // NEW
-            const cg = model.getGeometry(child); // NEW
-            if (!cg) continue; // NEW
-            const next = cg.clone(); // NEW
-            next.x = (Number(cg.x) || 0) + dx; // NEW
-            next.y = (Number(cg.y) || 0) + dy; // NEW
-            model.setGeometry(child, next); // NEW
-            changed = true; // NEW
-        } // NEW
-        return changed; // NEW
-    } // NEW
-
-    function rotateVectorModel(vx, vy, angleRad) { // NEW
-        const cos = Math.cos(angleRad); // NEW
-        const sin = Math.sin(angleRad); // NEW
-        return { x: vx * cos - vy * sin, y: vx * sin + vy * cos }; // NEW
-    } // NEW
-
-    function positionGeometryForLocalPoint(next, localPoint, targetPoint, angleDeg) { // NEW
-        if (!next || !localPoint || !targetPoint) return false; // NEW
-        const centerOffset = { // NEW
-            x: localPoint.x - (Number(next.width) || 0) / 2, // NEW
-            y: localPoint.y - (Number(next.height) || 0) / 2 // NEW
-        }; // NEW
-        const rotatedOffset = rotateVectorModel(centerOffset.x, centerOffset.y, toRad(angleDeg)); // NEW
-        const groupCenter = { x: targetPoint.x - rotatedOffset.x, y: targetPoint.y - rotatedOffset.y }; // NEW
-        next.x = groupCenter.x - (Number(next.width) || 0) / 2; // NEW
-        next.y = groupCenter.y - (Number(next.height) || 0) / 2; // NEW
-        return true; // NEW
-    } // NEW
-
-    function plantingFrameLocalCenter(width, height) { // NEW
-        const w = Math.max(1, Number(width) || 1); // NEW
-        const h = Math.max(1, Number(height) || 1); // NEW
-        const bandPx = bedFitLabelBandPxForSize(w, h); // NEW
-        const frameH = Math.max(0, h - BED_FIT_GROUP_PADDING_PX * 2 - bandPx); // NEW
-        return { x: w / 2, y: BED_FIT_GROUP_PADDING_PX + bandPx + frameH / 2, bandPx: bandPx }; // NEW
-    } // NEW
-
-    function buildAxisAwareTrimGeometry(tg, bed, bbox, fitWidth, fitHeight, finalWidth, finalHeight, bandPx) { // CHANGE
-        const bedCenter = rectCenterModel(getModelRect(bed)); // NEW
-        const current = model.getGeometry(tg); // NEW
-        if (!bedCenter || !current) return null; // NEW
-        const next = current.clone(); // NEW
-        if (fitWidth) { // NEW
-            next.width = finalWidth; // NEW
-        } // NEW
-        if (fitHeight) { // NEW
-            next.height = finalHeight; // NEW
-        } // NEW
-        const localPlantCenter = { // NEW
-            x: fitWidth ? BED_FIT_GROUP_PADDING_PX + bbox.w / 2 : bbox.x + bbox.w / 2, // NEW
-            y: fitHeight ? BED_FIT_GROUP_PADDING_PX + bandPx + bbox.h / 2 : bbox.y + bbox.h / 2 // NEW
-        }; // NEW
-        positionGeometryForLocalPoint(next, localPlantCenter, bedCenter, getCellRotationDeg(bed)); // CHANGE
-        return next; // NEW
-    } // NEW
-
-    function trimGroupToPlantFootprint(tg, bed, bbox, fitWidth, fitHeight) { // CHANGE
-        if (!tg || !bed || !bbox || bbox.w <= 0 || bbox.h <= 0) return false; // NEW
-        if (!fitWidth && !fitHeight) return false; // NEW
-        const current = model.getGeometry(tg); // NEW
-        if (!current) return false; // NEW
-        const finalWidth = fitWidth ? Math.max(1, bbox.w + BED_FIT_GROUP_PADDING_PX * 2) : current.width; // CHANGE
-        const solved = fitHeight // CHANGE
-            ? solveOuterHeightForPlantingFrame(bbox.h, finalWidth, current.height) // CHANGE
-            : { outerHeight: current.height, bandPx: bedFitLabelBandPxForSize(finalWidth, current.height) }; // CHANGE
-        const next = buildAxisAwareTrimGeometry(tg, bed, bbox, fitWidth, fitHeight, finalWidth, solved.outerHeight, solved.bandPx); // CHANGE
-        if (!next) return false; // NEW
-        const dx = fitWidth ? BED_FIT_GROUP_PADDING_PX - bbox.x : 0; // CHANGE
-        const dy = fitHeight ? BED_FIT_GROUP_PADDING_PX + solved.bandPx - bbox.y : 0; // CHANGE
-        const childrenChanged = shiftPlantCircleChildren(tg, dx, dy); // NEW
-        const groupChanged = !(nearlySameNumber(current.x, next.x) && nearlySameNumber(current.y, next.y) && nearlySameNumber(current.width, next.width) && nearlySameNumber(current.height, next.height)); // NEW
-        if (groupChanged) model.setGeometry(tg, next); // NEW
-        return childrenChanged || groupChanged; // NEW
-    } // NEW
-
-    function applyBedFitGeometry(tg, bed, allowDragIntoBedFit) { // NEW
-        if (!tg || !bed || tg.getAttribute(BED_AUTO_FIT_ATTR) === '0') return null; // CHANGE
-        const tgRect = getModelRect(tg); // NEW
-        const bedRect = getModelRect(bed); // NEW
-        if (!tgRect || !bedRect || bedRect.w <= 0 || bedRect.h <= 0) return null; // CHANGE
-
-        const diameter = getPlantCircleDiameterPx(tg); // NEW
-        const overhang = allowedOverhangForDiameter(diameter); // NEW
-        const frameRect = getPlantingFrameRectModel(tgRect); // NEW
-        if (!frameRect) return null; // CHANGE
-        const targetFrameWidth = bedRect.w + overhang * 2; // CHANGE
-        const targetFrameHeight = bedRect.h + overhang * 2; // CHANGE
-        const widthClose = Math.abs(frameRect.w - targetFrameWidth) <= bedRect.w * BED_FIT_TOLERANCE; // CHANGE
-        const heightClose = Math.abs(frameRect.h - targetFrameHeight) <= bedRect.h * BED_FIT_TOLERANCE; // CHANGE
-        const canDragFit = allowDragIntoBedFit && diameter < bedRect.w && diameter < bedRect.h; // NEW
-        const fitWidth = widthClose || canDragFit; // NEW
-        const fitHeight = heightClose || canDragFit; // NEW
-        if (!fitWidth && !fitHeight) return null; // CHANGE
-
-        const g = model.getGeometry(tg); // NEW
-        if (!g) return null; // CHANGE
-        const next = g.clone(); // NEW
-        if (fitWidth) { // NEW
-            next.width = targetFrameWidth + BED_FIT_GROUP_PADDING_PX * 2; // CHANGE
-        } // NEW
-        if (fitHeight) { // NEW
-            const solved = solveOuterHeightForPlantingFrame(targetFrameHeight, next.width, next.height); // NEW
-            next.height = solved.outerHeight; // CHANGE
-        } // NEW
-        const bedRotation = getCellRotationDeg(bed); // NEW
-        const frameCenter = plantingFrameLocalCenter(next.width, next.height); // NEW
-        const bedCenter = rectCenterModel(bedRect); // NEW
-        positionGeometryForLocalPoint(next, frameCenter, bedCenter, bedRotation); // CHANGE
-        const geometryChanged = !(nearlySameNumber(g.x, next.x) && nearlySameNumber(g.y, next.y) && nearlySameNumber(g.width, next.width) && nearlySameNumber(g.height, next.height)); // CHANGE
-        const rotationChanged = setCellRotationDeg(tg, bedRotation); // NEW
-        if (geometryChanged) model.setGeometry(tg, next); // CHANGE
-        return { changed: geometryChanged || rotationChanged, fitWidth: fitWidth, fitHeight: fitHeight, bed: bed }; // CHANGE
-    } // NEW
-
-    function retileAfterBedFit(tg) { // NEW
-        const retile = window.USL && window.USL.tiler && window.USL.tiler.retileGroup; // NEW
-        if (typeof retile === 'function') { // NEW
-            try { retile(graph, tg); return; } catch (e) { try { mxLog.debug('[BedFit] retile failed:', e && e.message ? e.message : e); } catch (_) { } } // NEW
-        } // NEW
-        graph.refresh(tg); // NEW
-    } // NEW
-
-    function finiteMoveDelta(value) { // NEW
-        const n = Number(value); // NEW
-        return Number.isFinite(n) ? n : null; // NEW
-    } // NEW
-
-    function movedWithinSameBed(parent, center, currentBed, moveDx, moveDy) { // NEW
-        if (!parent || !center || !currentBed || moveDx == null || moveDy == null) return false; // NEW
-        const previousCenter = { x: center.x - moveDx, y: center.y - moveDy }; // NEW
-        const previousBed = findSmallestContainingBedModel(parent, previousCenter); // NEW
-        return !!previousBed && !!previousBed.id && previousBed.id === currentBed.id; // NEW
-    } // NEW
-
-    function normalizeMovedTilerGroupsToBeds(cells, opts) { // NEW
-        if (bedFitInProgress) return 0; // NEW
-        const groups = getTilerGroupsFromEventCells(cells); // NEW
-        if (!groups.length) return 0; // NEW
-        const allowDragIntoBedFit = !!(opts && opts.allowDragIntoBedFit); // NEW
-        const skipSameBedMoveFit = !!(opts && opts.skipSameBedMoveFit); // NEW
-        const moveDx = finiteMoveDelta(opts && opts.moveDx); // NEW
-        const moveDy = finiteMoveDelta(opts && opts.moveDy); // NEW
-        const changed = []; // NEW
-        let trimmed = false; // NEW
-        bedFitInProgress = true; // NEW
-        model.beginUpdate(); // NEW
-        try { // NEW
-            for (const tg of groups) { // NEW
-                const parent = model.getParent(tg); // NEW
-                const center = rectCenterModel(getModelRect(tg)); // NEW
-                const bed = findSmallestContainingBedModel(parent, center); // NEW
-                if (skipSameBedMoveFit && movedWithinSameBed(parent, center, bed, moveDx, moveDy)) continue; // NEW
-                const fitResult = applyBedFitGeometry(tg, bed, allowDragIntoBedFit); // CHANGE
-                if (fitResult) changed.push({ tg: tg, bed: fitResult.bed, fitWidth: fitResult.fitWidth, fitHeight: fitResult.fitHeight }); // CHANGE
-            } // NEW
-            for (const item of changed) retileAfterBedFit(item.tg); // CHANGE
-            for (const item of changed) { // NEW
-                const bbox = getPlantCircleBBoxLocal(item.tg); // NEW
-                if (trimGroupToPlantFootprint(item.tg, item.bed, bbox, item.fitWidth, item.fitHeight)) trimmed = true; // CHANGE
-            } // NEW
-        } finally { // NEW
-            model.endUpdate(); // NEW
-            bedFitInProgress = false; // NEW
-        } // NEW
-        if (trimmed) { // NEW
-            for (const item of changed) graph.refresh(item.tg); // NEW
-        } // NEW
-        return changed.length; // NEW
     } // NEW
 
     // 1) Primary: block drop target at drag-time                                                  
@@ -953,13 +630,10 @@ Draw.loadPlugin(function (ui) {
     graph.addListener(mxEvent.CELLS_MOVED, function (sender, evt) {
         const cells = evt.getProperty('cells');
         enforceBedsNotInTilerGroups(cells);
-        normalizeMovedTilerGroupsToBeds(cells, { allowDragIntoBedFit: true, skipSameBedMoveFit: true, moveDx: evt.getProperty('dx'), moveDy: evt.getProperty('dy') }); // CHANGE
         rafDebounce(refreshAllForSelectionOrAnchor); // CHANGE
     });
 
-    graph.addListener(mxEvent.CELLS_RESIZED, function (sender, evt) { // NEW
-        const cells = evt.getProperty('cells'); // NEW
-        normalizeMovedTilerGroupsToBeds(cells, { allowDragIntoBedFit: false }); // NEW
+    graph.addListener(mxEvent.CELLS_RESIZED, function () { // CHANGE
         rafDebounce(refreshAllForSelectionOrAnchor); // NEW
     });
 
