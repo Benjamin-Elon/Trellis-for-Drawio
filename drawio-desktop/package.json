@@ -12,9 +12,11 @@
   },
   "scripts": {
     "test": "npm run test:plugins",
-    "test:plugins": "node --test ./test/planting-scheduler-reliability.test.cjs ./test/year-planner.test.cjs ./test/year-planner-dom.test.cjs ./test/trellis-context-menu.test.cjs ./test/tidy-context-menu.test.cjs ./test/garden-beds.test.cjs ./test/bed-succession-navigator.test.cjs",
+    "test:plugins": "node --test ./test/planting-scheduler-reliability.test.cjs ./test/year-planner.test.cjs ./test/year-planner-dom.test.cjs ./test/trellis-context-menu.test.cjs ./test/tidy-context-menu.test.cjs ./test/garden-beds.test.cjs ./test/bed-succession-navigator.test.cjs ./test/release-prepare.test.mjs",
+    "test:release-prepare": "node --test ./test/release-prepare.test.mjs",
     "start": "electron .",
     "sync": "node ./sync.cjs",
+    "release:prepare": "node ./scripts/release-prepare.mjs",
     "test:year-planner": "node --test ./test/year-planner.test.cjs ./test/year-planner-dom.test.cjs",
     "test:year-planner:model": "node --test ./test/year-planner.test.cjs",
     "test:year-planner:dom": "node --test ./test/year-planner-dom.test.cjs",
