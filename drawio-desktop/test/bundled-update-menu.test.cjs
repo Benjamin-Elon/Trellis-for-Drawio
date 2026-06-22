@@ -13,6 +13,18 @@ function readBundledFile(fileName) {
 	return fs.readFileSync(path.join(projectRoot, fileName), 'utf8');
 }
 
+test('production Electron bootstrap loads desktop hooks before App.main', () => {
+	const source = readBundledFile('drawio/src/main/webapp/js/bootstrap.js');
+	const electronBranch = source.substring(source.indexOf('if (mxIsElectron)'));
+	const electronAppLoad = electronBranch.indexOf("mxscript('js/diagramly/ElectronApp.js'");
+	const readyGate = electronBranch.indexOf('mxScriptsLoaded = true;');
+
+	// Trellis packages app.min.js directly, so ElectronApp.js must patch desktop methods before App.main builds menus.
+	assert.notEqual(electronAppLoad, -1, 'bootstrap should load ElectronApp.js in packaged Electron mode');
+	assert.notEqual(readyGate, -1, 'bootstrap should still mark scripts loaded in packaged Electron mode');
+	assert.ok(electronAppLoad < readyGate, 'ElectronApp.js should load before App.main can run');
+});
+
 test('bundled desktop update menu action falls back to Electron IPC', () => {
 	for (const fileName of bundledFiles) {
 		const source = readBundledFile(fileName);

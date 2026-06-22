@@ -1,6 +1,7 @@
 /**
  * Copyright (c) 2020-2025, JGraph Holdings Ltd
  * Copyright (c) 2020-2025, draw.io AG
+ * Trellis change: load Electron desktop hooks before App.main.
  */
 /**
  * URL Parameters and protocol description are here:
@@ -290,9 +291,6 @@ else
         {
             mxscript('js/app.min.js', function()
             {
-                mxScriptsLoaded = true;
-                checkAllLoaded();
-                
                 // Electron
                 if (mxIsElectron)
                 {
@@ -300,6 +298,9 @@ else
                     {
                         mxscript('js/diagramly/ElectronApp.js', function()
                         {
+                            mxScriptsLoaded = true; // Trellis change: Electron methods must exist before App.main creates menus.
+                            checkAllLoaded();
+
                             mxscript('js/extensions.min.js', function()
                             {
                                 mxscript('js/stencils.min.js', function()
@@ -315,7 +316,15 @@ else
                 }
                 else if (!supportedDomain || navigator.onLine)
                 {
+                    mxScriptsLoaded = true;
+                    checkAllLoaded();
+
                     mxscript('js/PostConfig.js');
+                }
+                else
+                {
+                    mxScriptsLoaded = true;
+                    checkAllLoaded();
                 }
             });
         };
