@@ -8,7 +8,7 @@
   "type": "module",
   "main": "src/main/electron.js",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.12.0"
   },
   "scripts": {
     "test": "npm run test:plugins",
