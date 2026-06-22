@@ -22,6 +22,7 @@ class TestCell { // NEW
         this.id = id; // NEW
         this.attrs = { ...attrs }; // NEW
         this.children = []; // NEW
+        this.geometry = null; // NEW
     } // NEW
 
     getAttribute(key) { return this.attrs[key] || null; } // NEW
@@ -35,8 +36,8 @@ class TestModel { // NEW
     getChildAt(cell, index) { return cell.children[index]; } // NEW
     getCell(id) { return this.findCell(this.root, id); } // NEW
     isVertex(cell) { return !!cell && cell !== this.root; } // NEW
-    getGeometry() { return null; } // NEW
-    setGeometry() {} // NEW
+    getGeometry(cell) { return cell && cell.geometry ? cell.geometry : null; } // CHANGE
+    setGeometry(cell, geometry) { if (cell) cell.geometry = geometry; } // CHANGE
     beginUpdate() {} // NEW
     endUpdate() {} // NEW
     addListener() {} // NEW
@@ -87,6 +88,15 @@ function makeHarness(options = {}) { // NEW
         addListener(event, listener) { if (event === "change") selectionChangeListeners.push(listener); } // NEW
     }; // NEW
     function fireSelectionChange() { selectionChangeListeners.forEach(listener => listener()); } // NEW
+    function makeGeometry(state) { // NEW
+        return { // NEW
+            x: state.x, // NEW
+            y: state.y, // NEW
+            width: state.width, // NEW
+            height: state.height, // NEW
+            clone() { return makeGeometry(this); } // NEW
+        }; // NEW
+    } // NEW
     const states = new Map([ // NEW
         [bed, { x: 0, y: 0, width: 100, height: 100 }], // NEW
         [tiler1, options.tilerOutsideBed ? { x: 130, y: 20, width: 20, height: 20 } : { x: 10, y: 10, width: 20, height: 20 }] // NEW
@@ -94,6 +104,7 @@ function makeHarness(options = {}) { // NEW
 
     if (extraBeds[0]) states.set(extraBeds[0], { x: 40, y: 40, width: 100, height: 100 }); // NEW
     if (extraCells[0]) states.set(extraCells[0], { x: 50, y: 50, width: 20, height: 20 }); // NEW
+    states.forEach((state, cell) => { cell.geometry = makeGeometry(state); }); // NEW
 
     const graph = { // NEW
         container: document.getElementById("graph"), // NEW
@@ -110,6 +121,7 @@ function makeHarness(options = {}) { // NEW
         setSelectionCell(cell) { selectedCells = cell ? [cell] : []; fireSelectionChange(); }, // CHANGE
         setSelectionCells(cells) { selectedCells = cells.slice(); fireSelectionChange(); }, // CHANGE
         getChildVertices(parent) { return (parent.children || []).filter(child => model.isVertex(child)); }, // NEW
+        getCellStyle() { return { rotation: 0 }; }, // NEW
         getSelectionModel() { return selectionModel; }, // CHANGE
         addListener() {}, // NEW
         refresh() {}, // NEW
@@ -137,7 +149,8 @@ function makeHarness(options = {}) { // NEW
             SCALE_AND_TRANSLATE: "scaleAndTranslate", // NEW
             UNDO: "undo", // NEW
             consume(evt) { if (evt && evt.preventDefault) evt.preventDefault(); } // NEW
-        } // NEW
+        }, // CHANGE
+        mxConstants: { STYLE_ROTATION: "rotation" } // NEW
     }; // NEW
 
     vm.runInNewContext(fs.readFileSync(PLUGIN_PATH, "utf8"), context, { filename: PLUGIN_PATH }); // NEW
