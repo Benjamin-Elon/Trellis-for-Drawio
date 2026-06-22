@@ -68,8 +68,5 @@
     "electron-builder": "^26.0.20",
     "jsdom": "^26.1.0",
     "sumchecker": "^3.0.1"
-  },
-  "directories": {
-    "doc": "doc"
   }
 }

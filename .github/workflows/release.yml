@@ -171,7 +171,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgnome-keyring-dev icnsutils graphicsmagick xz-utils rpm
+          sudo apt-get install -y libsecret-1-dev icnsutils graphicsmagick xz-utils rpm
 
       - name: Install Yarn
         run: npm install -g yarn@1.22.22

@@ -6,9 +6,6 @@
     "**/*",
     "!**/WEB-INF{,/**}"
   ],
-  "directories": {
-    "output": "./dist/"
-  },
   "npmRebuild": false,
   "publish": {
       "provider": "github"

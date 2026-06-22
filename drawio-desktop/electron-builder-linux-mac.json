@@ -7,9 +7,6 @@
     "!**/WEB-INF{,/**}"
   ],
   "artifactName": "${productName}-${arch}-${version}.${ext}",
-  "directories": {
-    "output": "./dist/"
-  },
   "npmRebuild": false,
   "publish": {
       "provider": "github"
