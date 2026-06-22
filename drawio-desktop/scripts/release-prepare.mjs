@@ -150,30 +150,88 @@ function resolvePaths() {
 	};
 }
 
-function commandName(name) {
-	return process.platform === 'win32' && name === 'yarn' ? 'yarn.cmd' : name;
+export function resolveCommand(command, args, platform = process.platform, env = process.env) {
+	if (platform === 'win32' && command === 'yarn') {
+		return {
+			command: env.ComSpec || 'cmd.exe',
+			args: ['/d', '/s', '/c', 'yarn', ...args],
+			displayCommand: `yarn ${args.join(' ')}`.trim(),
+			resolvedCommand: `${env.ComSpec || 'cmd.exe'} /d /s /c yarn ${args.join(' ')}`.trim(),
+			windowsYarn: true,
+		}; // Release CLI: Windows cannot reliably spawn yarn.cmd directly from Node.
+	}
+
+	return {
+		command,
+		args,
+		displayCommand: `${command} ${args.join(' ')}`.trim(),
+		resolvedCommand: `${command} ${args.join(' ')}`.trim(),
+		windowsYarn: false,
+	};
+}
+
+function cleanOutput(value) {
+	return value == null ? '' : String(value).trim();
+}
+
+export function formatCommandFailure({ command, args, cwd, resolved, result, captured = false }) {
+	const lines = [
+		`Command failed: ${command} ${args.join(' ')}`.trim(),
+		`cwd: ${cwd}`,
+		`resolved: ${resolved.resolvedCommand}`,
+	];
+
+	if (result.error != null) {
+		lines.push(`spawn error: ${result.error.code || 'UNKNOWN'} ${result.error.message}`);
+	}
+
+	if (result.status != null) {
+		lines.push(`exit status: ${result.status}`);
+	}
+
+	if (result.signal != null) {
+		lines.push(`signal: ${result.signal}`);
+	}
+
+	const stderr = cleanOutput(result.stderr);
+	const stdout = cleanOutput(result.stdout);
+
+	if (captured && stderr.length > 0) {
+		lines.push(`stderr:\n${stderr}`);
+	}
+	else if (captured && stdout.length > 0) {
+		lines.push(`stdout:\n${stdout}`);
+	}
+
+	if (resolved.windowsYarn && result.error != null) {
+		lines.push('hint: Yarn must be run through cmd.exe on Windows.');
+	}
+
+	return lines.join('\n');
 }
 
 function runCommand(command, args, cwd) {
 	console.log(`> ${command} ${args.join(' ')}`);
+	const resolved = resolveCommand(command, args);
 
-	const result = spawnSync(commandName(command), args, {
+	const result = spawnSync(resolved.command, resolved.args, {
 		cwd,
 		stdio: 'inherit',
 		shell: false,
 	});
 
 	if (result.error != null) {
-		throw result.error;
+		throw new Error(formatCommandFailure({ command, args, cwd, resolved, result }));
 	}
 
 	if (result.status !== 0) {
-		throw new Error(`Command failed: ${command} ${args.join(' ')}`);
+		throw new Error(formatCommandFailure({ command, args, cwd, resolved, result }));
 	}
 }
 
 function captureCommand(command, args, cwd, allowFailure = false) {
-	const result = spawnSync(commandName(command), args, {
+	const resolved = resolveCommand(command, args);
+	const result = spawnSync(resolved.command, resolved.args, {
 		cwd,
 		encoding: 'utf8',
 		stdio: ['ignore', 'pipe', 'pipe'],
@@ -181,12 +239,11 @@ function captureCommand(command, args, cwd, allowFailure = false) {
 	});
 
 	if (result.error != null) {
-		throw result.error;
+		throw new Error(formatCommandFailure({ command, args, cwd, resolved, result, captured: true }));
 	}
 
 	if (!allowFailure && result.status !== 0) {
-		const stderr = result.stderr.trim();
-		throw new Error(stderr || `Command failed: ${command} ${args.join(' ')}`);
+		throw new Error(formatCommandFailure({ command, args, cwd, resolved, result, captured: true }));
 	}
 
 	return result;

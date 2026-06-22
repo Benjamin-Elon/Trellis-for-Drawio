@@ -2,11 +2,13 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
 	bumpVersion,
+	formatCommandFailure,
 	formatTag,
 	isExpectedRemote,
 	isValidReleaseVersion,
 	normalizeRemoteUrl,
 	parseArgs,
+	resolveCommand,
 } from '../scripts/release-prepare.mjs';
 
 test('validates Trellis release semver strings', () => {
@@ -63,4 +65,73 @@ test('normalizes supported GitHub remotes', () => {
 	);
 	assert.equal(isExpectedRemote('https://github.com/Benjamin-Elon/Trellis-for-Drawio.git'), true);
 	assert.equal(isExpectedRemote('https://github.com/jgraph/drawio-desktop.git'), false);
+});
+
+test('resolves Yarn through cmd.exe on Windows', () => {
+	assert.deepEqual(
+		resolveCommand('yarn', ['install', '--frozen-lockfile'], 'win32', { ComSpec: 'C:\\Windows\\System32\\cmd.exe' }),
+		{
+			command: 'C:\\Windows\\System32\\cmd.exe',
+			args: ['/d', '/s', '/c', 'yarn', 'install', '--frozen-lockfile'],
+			displayCommand: 'yarn install --frozen-lockfile',
+			resolvedCommand: 'C:\\Windows\\System32\\cmd.exe /d /s /c yarn install --frozen-lockfile',
+			windowsYarn: true,
+		},
+	);
+});
+
+test('keeps non-Yarn commands direct', () => {
+	assert.deepEqual(resolveCommand('git', ['status', '--porcelain'], 'win32', {}), {
+		command: 'git',
+		args: ['status', '--porcelain'],
+		displayCommand: 'git status --porcelain',
+		resolvedCommand: 'git status --porcelain',
+		windowsYarn: false,
+	});
+});
+
+test('formats explicit command failures', () => {
+	const spawnError = new Error('spawnSync yarn.cmd EINVAL');
+	spawnError.code = 'EINVAL';
+	const message = formatCommandFailure({
+		command: 'yarn',
+		args: ['install', '--frozen-lockfile'],
+		cwd: 'C:\\repo\\drawio-desktop',
+		resolved: resolveCommand('yarn', ['install', '--frozen-lockfile'], 'win32', { ComSpec: 'cmd.exe' }),
+		result: {
+			error: spawnError,
+			status: null,
+			signal: null,
+			stdout: '',
+			stderr: '',
+		},
+		captured: true,
+	});
+
+	assert.match(message, /Command failed: yarn install --frozen-lockfile/);
+	assert.match(message, /cwd: C:\\repo\\drawio-desktop/);
+	assert.match(message, /resolved: cmd\.exe \/d \/s \/c yarn install --frozen-lockfile/);
+	assert.match(message, /spawn error: EINVAL spawnSync yarn\.cmd EINVAL/);
+	assert.match(message, /hint: Yarn must be run through cmd\.exe on Windows\./);
+});
+
+test('formats captured stderr before stdout', () => {
+	const message = formatCommandFailure({
+		command: 'git',
+		args: ['status', '--porcelain'],
+		cwd: '/repo',
+		resolved: resolveCommand('git', ['status', '--porcelain'], 'linux', {}),
+		result: {
+			error: null,
+			status: 128,
+			signal: null,
+			stdout: 'stdout details',
+			stderr: 'stderr details',
+		},
+		captured: true,
+	});
+
+	assert.match(message, /exit status: 128/);
+	assert.match(message, /stderr:\nstderr details/);
+	assert.doesNotMatch(message, /stdout:\nstdout details/);
 });
