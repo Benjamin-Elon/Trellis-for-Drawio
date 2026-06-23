@@ -59,9 +59,19 @@ if (window.location.hash != null && window.location.hash.substring(0, 2) == '#P'
     }
 }
 
+function isElectronRuntime()
+{
+    var versions = window.process != null ? window.process.versions : null;
+    var userAgent = navigator.userAgent || '';
+
+    return (versions != null && versions.electron != null) ||
+        window.electron != null ||
+        (userAgent.toLowerCase().indexOf(' electron/') > -1 &&
+            userAgent.indexOf(' draw.io/') > -1); // Trellis change: retain old draw.io UA fallback without requiring it.
+};
+
 // Global variable for desktop
-var mxIsElectron = navigator.userAgent != null && navigator.userAgent.toLowerCase().indexOf(' electron/') > -1 && 
-                    navigator.userAgent.indexOf(' draw.io/') > -1;
+var mxIsElectron = isElectronRuntime(); // Trellis change: detect Trellis Electron through the preload bridge, not branding.
 
 // Redirects page if required
 if (urlParams['dev'] != '1')
