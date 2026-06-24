@@ -50,8 +50,7 @@ Draw.loadPlugin(function (ui) {
         else obj.setAttribute('label', '');
 
         // Make this change undoable                                                   
-        const change = new mxValueChange(cell, obj);
-        model.execute(change);
+        model.setValue(cell, obj); // CHANGE
         return cell.value;
     }
 
@@ -1396,6 +1395,34 @@ Draw.loadPlugin(function (ui) {
             return cropTitle ? 'Linked Task Schedule - ' + cropTitle : 'Linked Task Schedule'; // CHANGE
         } // CHANGE
 
+        function getScheduleOnlyTitle(entry) { // ADDED
+            const source = entry && entry.sourceId ? model.getCell(entry.sourceId) : null; // ADDED
+            const cropTitle = getSourceCropTitle(source); // ADDED
+            return cropTitle ? 'Plant Schedule - ' + cropTitle : 'Plant Schedule'; // ADDED
+        } // ADDED
+
+        function hasTilerSchedule(cell) { // ADDED
+            const start = getAttr(cell, 'sow_date'); // ADDED
+            return start != null && String(start).trim() !== ''; // ADDED
+        } // ADDED
+
+        function getScheduleDialogOpener() { // ADDED
+            return window.USL && window.USL.scheduler && typeof window.USL.scheduler.openScheduleDialog === 'function' // ADDED
+                ? window.USL.scheduler.openScheduleDialog // ADDED
+                : null; // ADDED
+        } // ADDED
+
+        function getSetPlantDialogOpener() { // ADDED
+            return window.USL && window.USL.scheduler && typeof window.USL.scheduler.openSetPlantDialog === 'function' // ADDED
+                ? window.USL.scheduler.openSetPlantDialog // ADDED
+                : null; // ADDED
+        } // ADDED
+
+        function hasAssignedPlant(cell) { // ADDED
+            const plantName = getAttr(cell, 'plant_name'); // ADDED
+            return plantName != null && String(plantName).trim() !== ''; // ADDED
+        } // ADDED
+
         function getTaskLinkLabelBadge(entry, card) { // CHANGE
             if (!entry || !entry.linkLabels || !card) return ''; // CHANGE
             const label = normalizeBadgeText(entry.linkLabels.get(card.id)); // CHANGE
@@ -1481,6 +1508,94 @@ Draw.loadPlugin(function (ui) {
             button.style.lineHeight = '18px'; // CHANGE
             return button; // CHANGE
         } // CHANGE
+
+        function consumeOverlayControlEvent(evt) { // ADDED
+            try { mxEvent.consume(evt); } catch (_) { } // ADDED
+            if (evt && evt.stopPropagation) evt.stopPropagation(); // ADDED
+            if (evt && evt.preventDefault) evt.preventDefault(); // ADDED
+        } // ADDED
+
+        function createScheduleActionButton(entry) { // ADDED
+            const source = entry && entry.sourceId ? model.getCell(entry.sourceId) : null; // ADDED
+            if (!isTilerGroup(source)) return null; // ADDED
+            const opener = getScheduleDialogOpener(); // ADDED
+            const button = document.createElement('button'); // ADDED
+            button.type = 'button'; // ADDED
+            button.textContent = hasTilerSchedule(source) ? 'Edit schedule' : 'Set schedule'; // ADDED
+            button.title = opener ? button.textContent : 'Scheduler plugin is unavailable.'; // ADDED
+            button.disabled = !opener; // ADDED
+            button.style.border = '1px solid #2563eb'; // ADDED
+            button.style.borderRadius = '5px'; // ADDED
+            button.style.background = opener ? '#ffffff' : '#f1f3f4'; // ADDED
+            button.style.color = opener ? '#1d4ed8' : '#9aa0a6'; // ADDED
+            button.style.cursor = opener ? 'pointer' : 'default'; // ADDED
+            button.style.fontSize = '10px'; // ADDED
+            button.style.fontWeight = 'bold'; // ADDED
+            button.style.padding = '4px 7px'; // ADDED
+            button.style.whiteSpace = 'nowrap'; // ADDED
+            mxEvent.addListener(button, 'mousedown', consumeOverlayControlEvent); // ADDED
+            mxEvent.addListener(button, 'dblclick', consumeOverlayControlEvent); // ADDED
+            mxEvent.addListener(button, 'click', async function (evt) { // ADDED
+                consumeOverlayControlEvent(evt); // ADDED
+                if (!opener) return; // ADDED
+                const liveSource = model.getCell(entry.sourceId); // ADDED
+                if (!isTilerGroup(liveSource)) return; // ADDED
+                try { // ADDED
+                    await opener(ui, liveSource); // ADDED
+                    setTimeout(refresh, 0); // ADDED
+                } catch (e) { // ADDED
+                    mxUtils.alert('Scheduling error: ' + (e && e.message ? e.message : String(e))); // ADDED
+                } // ADDED
+            }); // ADDED
+            return button; // ADDED
+        } // ADDED
+
+        function createSetPlantActionButton(entry) { // ADDED
+            const source = entry && entry.sourceId ? model.getCell(entry.sourceId) : null; // ADDED
+            if (!isTilerGroup(source) || hasAssignedPlant(source)) return null; // ADDED
+            const opener = getSetPlantDialogOpener(); // ADDED
+            const button = document.createElement('button'); // ADDED
+            button.type = 'button'; // ADDED
+            button.textContent = 'Set plant'; // ADDED
+            button.title = opener ? 'Set plant' : 'Scheduler plant picker is unavailable.'; // ADDED
+            button.disabled = !opener; // ADDED
+            button.style.border = '1px solid #188038'; // ADDED
+            button.style.borderRadius = '5px'; // ADDED
+            button.style.background = opener ? '#ffffff' : '#f1f3f4'; // ADDED
+            button.style.color = opener ? '#137333' : '#9aa0a6'; // ADDED
+            button.style.cursor = opener ? 'pointer' : 'default'; // ADDED
+            button.style.fontSize = '10px'; // ADDED
+            button.style.fontWeight = 'bold'; // ADDED
+            button.style.padding = '4px 7px'; // ADDED
+            button.style.whiteSpace = 'nowrap'; // ADDED
+            mxEvent.addListener(button, 'mousedown', consumeOverlayControlEvent); // ADDED
+            mxEvent.addListener(button, 'dblclick', consumeOverlayControlEvent); // ADDED
+            mxEvent.addListener(button, 'click', async function (evt) { // ADDED
+                consumeOverlayControlEvent(evt); // ADDED
+                if (!opener) return; // ADDED
+                const liveSource = model.getCell(entry.sourceId); // ADDED
+                if (!isTilerGroup(liveSource) || hasAssignedPlant(liveSource)) return; // ADDED
+                try { // ADDED
+                    await opener(ui, liveSource); // ADDED
+                    setTimeout(refresh, 0); // ADDED
+                } catch (e) { // ADDED
+                    mxUtils.alert('Set Plant error: ' + (e && e.message ? e.message : String(e))); // ADDED
+                } // ADDED
+            }); // ADDED
+            return button; // ADDED
+        } // ADDED
+
+        function createSecondaryActionRow(entry) { // ADDED
+            const setPlantButton = createSetPlantActionButton(entry); // ADDED
+            if (!setPlantButton) return null; // ADDED
+            const row = document.createElement('div'); // ADDED
+            row.style.gridColumn = '1 / span 2'; // ADDED
+            row.style.display = 'flex'; // ADDED
+            row.style.justifyContent = 'flex-end'; // ADDED
+            row.style.marginTop = '7px'; // ADDED
+            row.appendChild(setPlantButton); // ADDED
+            return row; // ADDED
+        } // ADDED
 
         function applyOverlayYearFilter(entry, year) { // CHANGE
             if (!entry || !Number.isFinite(Number(year))) return; // CHANGE
@@ -1598,6 +1713,13 @@ Draw.loadPlugin(function (ui) {
             titleWrap.appendChild(subtitle); // CHANGE
             header.appendChild(titleWrap); // CHANGE
 
+            const actions = document.createElement('div'); // ADDED
+            actions.style.display = 'inline-flex'; // ADDED
+            actions.style.alignItems = 'center'; // ADDED
+            actions.style.gap = '6px'; // ADDED
+            actions.style.flexWrap = 'wrap'; // ADDED
+            actions.style.justifyContent = 'flex-end'; // ADDED
+
             const toggle = document.createElement('div'); // CHANGE
             toggle.style.display = 'inline-flex'; // CHANGE
             toggle.style.border = '1px solid rgba(60, 64, 67, 0.28)'; // CHANGE
@@ -1605,11 +1727,45 @@ Draw.loadPlugin(function (ui) {
             toggle.style.overflow = 'hidden'; // CHANGE
             toggle.appendChild(createModeButton(entry, 'Cards', MODE_CARDS)); // CHANGE
             toggle.appendChild(createModeButton(entry, 'Schedule', MODE_SCHEDULE)); // CHANGE
-            header.appendChild(toggle); // CHANGE
+            actions.appendChild(toggle); // CHANGED
+            const scheduleButton = createScheduleActionButton(entry); // ADDED
+            if (scheduleButton) actions.appendChild(scheduleButton); // ADDED
+            header.appendChild(actions); // ADDED
+            const secondaryActionRow = createSecondaryActionRow(entry); // ADDED
+            if (secondaryActionRow) header.appendChild(secondaryActionRow); // ADDED
             const yearControls = createYearControls(entry); // CHANGE
             if (yearControls) header.appendChild(yearControls); // CHANGE
             return header; // CHANGE
         } // CHANGE
+
+        function createScheduleOnlyHeader(entry) { // ADDED
+            const header = document.createElement('div'); // ADDED
+            header.style.display = 'flex'; // CHANGED
+            header.style.flexDirection = 'column'; // ADDED
+            header.style.alignItems = 'stretch'; // CHANGED
+            header.style.gap = '7px'; // ADDED
+
+            const title = document.createElement('div'); // ADDED
+            title.textContent = getScheduleOnlyTitle(entry); // ADDED
+            title.style.fontWeight = 'bold'; // ADDED
+            title.style.fontSize = '12px'; // ADDED
+            title.style.overflow = 'hidden'; // ADDED
+            title.style.textOverflow = 'ellipsis'; // ADDED
+            title.style.whiteSpace = 'nowrap'; // ADDED
+            header.appendChild(title); // ADDED
+
+            const scheduleButton = createScheduleActionButton(entry); // ADDED
+            if (scheduleButton) { // ADDED
+                scheduleButton.style.alignSelf = 'flex-start'; // ADDED
+                header.appendChild(scheduleButton); // ADDED
+            } // ADDED
+            const setPlantButton = createSetPlantActionButton(entry); // ADDED
+            if (setPlantButton) { // ADDED
+                setPlantButton.style.alignSelf = 'flex-start'; // ADDED
+                header.appendChild(setPlantButton); // ADDED
+            } // ADDED
+            return header; // ADDED
+        } // ADDED
 
         function createModeButton(entry, label, mode) { // CHANGE
             const button = document.createElement('button'); // CHANGE
@@ -2159,9 +2315,29 @@ Draw.loadPlugin(function (ui) {
                 entry.linkLabels = liveLabels; // CHANGE
             } // CHANGE
             if (cards.length === 0) { // CHANGE
-                removeEntry(entry); // CHANGE
-                return; // CHANGE
+                if (!entry.scheduleOnly) { // ADDED
+                    removeEntry(entry); // CHANGE
+                    return; // CHANGE
+                } // ADDED
             } // CHANGE
+
+            if (entry.scheduleOnly) { // ADDED
+                if (!entry.panel) { // ADDED
+                    entry.panel = document.createElement('div'); // ADDED
+                    entry.panel.className = 'manual-link-task-schedule-overlay manual-link-task-schedule-only'; // ADDED
+                    applyPanelStyle(entry.panel); // ADDED
+                    host.appendChild(entry.panel); // ADDED
+                } // ADDED
+                while (entry.panel.firstChild) entry.panel.removeChild(entry.panel.firstChild); // ADDED
+                entry.visibleItems = []; // ADDED
+                entry.panel.appendChild(createScheduleOnlyHeader(entry)); // ADDED
+                if (!positionPanel(entry, source)) { // ADDED
+                    removeEntry(entry); // ADDED
+                    return; // ADDED
+                } // ADDED
+                refreshLines(entry); // ADDED
+                return; // ADDED
+            } // ADDED
 
             entry.years = getTaskOverlayYears(cards); // CHANGE
             if (entry.years.length) { // CHANGE
@@ -2232,6 +2408,24 @@ Draw.loadPlugin(function (ui) {
             renderEntry(entry); // CHANGE
         } // CHANGE
 
+        function showScheduleOnly(source) { // ADDED
+            clear(); // ADDED
+            if (!source || !source.id || !isTilerGroup(source)) return; // ADDED
+            const entry = { // ADDED
+                sourceId: source.id, // ADDED
+                targetIds: [], // ADDED
+                linkLabels: new Map(), // ADDED
+                scheduleOnly: true, // ADDED
+                panel: null, // ADDED
+                panelLeft: 0, // ADDED
+                panelTop: 0, // ADDED
+                visibleItems: [], // ADDED
+                lines: new Map() // ADDED
+            }; // ADDED
+            registry.set(source.id, entry); // ADDED
+            renderEntry(entry); // ADDED
+        } // ADDED
+
         function clear() { // CHANGE
             for (const entry of Array.from(registry.values())) removeEntry(entry, true); // CHANGE
         } // CHANGE
@@ -2247,6 +2441,7 @@ Draw.loadPlugin(function (ui) {
 
         return { // CHANGE
             show, // CHANGE
+            showScheduleOnly, // ADDED
             clear, // CHANGE
             refresh, // CHANGE
             setMode // CHANGE
@@ -2721,6 +2916,13 @@ Draw.loadPlugin(function (ui) {
             let linkedIds = getLinkSet(cell);
             const selIsPrimary = isPrimary(cell);
             const hasLinks = linkedIds.size > 0;
+            const selectedIsTilerGroup = isTilerGroup(cell); // ADDED
+
+            if (!hasLinks && selectedIsTilerGroup) { // ADDED
+                highlight(cell, selIsPrimary ? YELLOW : RED); // CHANGED
+                taskScheduleOverlay.showScheduleOnly(cell); // ADDED
+                return; // ADDED
+            } // ADDED
 
             if (!hasLinks && !(ALLOW_PRIMARY_WHEN_UNLINKED && selIsPrimary)) {
                 return;
@@ -2743,6 +2945,8 @@ Draw.loadPlugin(function (ui) {
             const taskOverlayLinkLabels = new Map(); // CHANGE
             if (taskOverlayActive) { // CHANGE
                 taskScheduleOverlay.show(cell, linkedTaskCards, taskOverlayLinkLabels); // CHANGE
+            } else if (selectedIsTilerGroup) { // ADDED
+                taskScheduleOverlay.showScheduleOnly(cell); // ADDED
             } else { // CHANGE
                 taskScheduleOverlay.clear(); // CHANGE
             } // CHANGE

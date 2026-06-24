@@ -1,6 +1,6 @@
 // USL Draw.io Plugin: Plant Scheduling (GDD-based, class-refactor)
 //
-// - Right-click tiler group -> "Set schedule…"
+// - Schedule entry is rendered by Vertex_Linking_Standalone.js
 // - Fetches plant/city from SQLite via window.dbBridge
 // - Computes schedule, plants, timelines, and writes attrs
 //
@@ -2045,11 +2045,6 @@ Draw.loadPlugin(function (ui) {
     }
     function getAttr(cell, k) { return cell && cell.getAttribute ? cell.getAttribute(k) : null; }
     function isTilerGroup(cell) { return !!cell && cell.getAttribute && cell.getAttribute('tiler_group') === '1'; }
-    // --- NEW: tiny helper to detect schedule -----------------------------------
-    function hasTilerSchedule(cell) {
-        const start = getAttr(cell, 'sow_date');
-        return start != null && String(start).trim() !== ''; // FIX: perennial schedules intentionally have no harvest_start
-    }
     // --- helpers: find garden module ancestor & scoped board lookup ---
     function isGardenModule(cell) {
         return !!(cell && cell.getAttribute && cell.getAttribute('garden_module') === '1');
@@ -5801,7 +5796,7 @@ Draw.loadPlugin(function (ui) {
         tasksTab.appendChild(taskPreviewSection); // ADDED
 
         // "Add Task" button
-        const addTaskBtn = mxUtils.button("Add Task", () => openTaskEditor(null, null));
+        const addTaskBtn = mxUtils.button("Add Task", () => openTaskEditor(null, null, addTaskBtn)); // CHANGED
         addTaskBtn.style.marginTop = "12px";
         tasksTab.appendChild(addTaskBtn);
 
@@ -5810,6 +5805,7 @@ Draw.loadPlugin(function (ui) {
         const previewRuleSelections = new Map(); // ADDED
         let generatedPreviewTasks = []; // ADDED
         let taskPreviewScheduleRange = null; // ADDED
+        let taskPreviewCutoffOmittedRuleKeys = new Set(); // ADDED
         let taskPreviewVersion = 0; // ADDED
 
         function restoreFocus(el) { // FIX: restore keyboard focus after task-list DOM updates
@@ -5862,7 +5858,7 @@ Draw.loadPlugin(function (ui) {
                 btnWrap.style.display = "flex";
                 btnWrap.style.gap = "6px";
 
-                const editBtn = mxUtils.button("Edit", () => openTaskEditor(rule, originalIndex)); // CHANGED
+                const editBtn = mxUtils.button("Edit", () => openTaskEditor(rule, originalIndex, wrap)); // CHANGED
                 const delBtn = mxUtils.button("Delete", () => {
 
                     const isBuiltIn = isCanonicalTaskRule(rule);
@@ -5894,6 +5890,12 @@ Draw.loadPlugin(function (ui) {
         // 3. Task editor (inline)
         const taskEditorDiv = document.createElement("div");
         tasksTab.appendChild(taskEditorDiv);
+
+        function placeTaskEditorAfter(anchorEl) { // ADDED
+            if (anchorEl?.parentNode) { // ADDED
+                anchorEl.parentNode.insertBefore(taskEditorDiv, anchorEl.nextSibling); // ADDED
+            } // ADDED
+        } // ADDED
 
         function selectedPreviewRuleKeys() { // ADDED
             return new Set( // ADDED
@@ -5943,6 +5945,10 @@ Draw.loadPlugin(function (ui) {
             taskPreviewStatus.textContent = visible.length // ADDED
                 ? `${visible.length} task occurrence${visible.length === 1 ? '' : 's'} shown.` // ADDED
                 : ''; // ADDED
+            const cutoffOmittedCount = Array.from(selectedKeys).filter(key => taskPreviewCutoffOmittedRuleKeys.has(key)).length; // ADDED
+            if (cutoffOmittedCount > 0 && !error) { // ADDED
+                taskPreviewStatus.textContent += `${taskPreviewStatus.textContent ? ' ' : ''}${cutoffOmittedCount} selected repeated rule${cutoffOmittedCount === 1 ? '' : 's'} omitted because the cutoff is on or before the first occurrence.`; // ADDED
+            } // ADDED
         } // ADDED
 
         async function updateTaskPreview() { // ADDED
@@ -5952,12 +5958,14 @@ Draw.loadPlugin(function (ui) {
             if (!taskRules.length) { // ADDED
                 generatedPreviewTasks = []; // ADDED
                 taskPreviewScheduleRange = null; // ADDED
+                taskPreviewCutoffOmittedRuleKeys = new Set(); // ADDED
                 renderCachedTaskPreview({ message: 'No task rules are defined.' }); // ADDED
                 return; // ADDED
             } // ADDED
             if (!mode.perennial && !formState.windowFeasible) { // ADDED
                 generatedPreviewTasks = []; // ADDED
                 taskPreviewScheduleRange = null; // ADDED
+                taskPreviewCutoffOmittedRuleKeys = new Set(); // ADDED
                 renderCachedTaskPreview({ error: 'No feasible sowing window is available for task generation.' }); // ADDED
                 return; // ADDED
             } // ADDED
@@ -5975,14 +5983,20 @@ Draw.loadPlugin(function (ui) {
                 if (requestVersion !== taskPreviewVersion) return; // ADDED
                 generatedPreviewTasks = tasks; // ADDED
                 taskPreviewScheduleRange = resolveTaskPreviewScheduleRange(result); // ADDED
+                taskPreviewCutoffOmittedRuleKeys = findRepeatCutoffOmittedRuleKeys({ // ADDED
+                    taskTemplate: { version: 2, rules: taskRules }, // ADDED
+                    schedule: result.schedule, // ADDED
+                    timelines: result.timelines // ADDED
+                }); // ADDED
                 renderTaskPreviewRuleSelectors(); // ADDED
                 const selectedKeys = selectedPreviewRuleKeys(); // ADDED
                 const generatedKeys = new Set(tasks.map(task => task.previewRuleKey)); // ADDED
-                const missingAnchorCount = Array.from(selectedKeys).filter(key => !generatedKeys.has(key)).length; // ADDED
+                const selectedCutoffOmitted = Array.from(selectedKeys).filter(key => taskPreviewCutoffOmittedRuleKeys.has(key)); // ADDED
+                const missingAnchorCount = Array.from(selectedKeys).filter(key => !generatedKeys.has(key) && !taskPreviewCutoffOmittedRuleKeys.has(key)).length; // CHANGED
                 renderCachedTaskPreview({ // ADDED
                     message: tasks.length // ADDED
                         ? '' // ADDED
-                        : 'No tasks could be generated. Required schedule anchors may be unavailable.' // ADDED
+                        : (selectedCutoffOmitted.length ? 'No tasks could be generated. Repeat cutoff excluded the selected rule before its first occurrence.' : 'No tasks could be generated. Required schedule anchors may be unavailable.') // CHANGED
                 }); // ADDED
                 if (missingAnchorCount > 0 && tasks.length) { // ADDED
                     taskPreviewStatus.textContent += ` ${missingAnchorCount} selected rule${missingAnchorCount === 1 ? '' : 's'} omitted because schedule anchors are unavailable.`; // ADDED
@@ -5991,6 +6005,7 @@ Draw.loadPlugin(function (ui) {
                 if (requestVersion !== taskPreviewVersion) return; // ADDED
                 generatedPreviewTasks = []; // ADDED
                 taskPreviewScheduleRange = null; // ADDED
+                taskPreviewCutoffOmittedRuleKeys = new Set(); // ADDED
                 renderCachedTaskPreview({ error: `Task preview error: ${e?.message || String(e)}` }); // ADDED
             } // ADDED
         } // ADDED
@@ -6060,8 +6075,9 @@ Draw.loadPlugin(function (ui) {
             taskTemplateSource
         });
 
-        async function openTaskEditor(rule, index) {
+        async function openTaskEditor(rule, index, anchorEl = null) { // CHANGED
             taskEditorDiv.innerHTML = "";
+            placeTaskEditorAfter(anchorEl); // ADDED
 
             const editing = !!rule;
 
@@ -6106,7 +6122,9 @@ Draw.loadPlugin(function (ui) {
                     repeatEveryDays: 1,
                     repeatUntilMode: "x_times",
                     repeatTimes: 1, // CHANGED
-                    repeatUntilAnchorStage: null
+                    repeatUntilAnchorStage: "HARVEST_END", // CHANGED
+                    repeatCutoffOffsetDays: 0, // ADDED
+                    repeatCutoffOffsetDirection: "after" // ADDED
                 }
             );
 
@@ -6155,10 +6173,10 @@ Draw.loadPlugin(function (ui) {
                 { value: "anchor_range", label: "Until anchor" }
             ], r.endMode);
 
-            const endModeRow = row("End mode", endModeSel).row; // CHANGED
+            const endModeRow = row("Duration mode", endModeSel).row; // CHANGED
 
             const durationNum = makeNumber(r.durationDays ?? 1); // CHANGED
-            const durationRow = row("Duration (days)", durationNum).row;
+            const durationRow = row("Duration days", durationNum).row; // CHANGED
 
             const endAnchorOffsetNum = makeNumber(r.endAnchorOffsetDays ?? 0); // CHANGED
             const endAnchorOffsetDir = makeSelect([ // CHANGED
@@ -6178,11 +6196,8 @@ Draw.loadPlugin(function (ui) {
             endAnchorWrap.appendChild(endAnchorSel);
             const endAnchorRow = row("End anchor", endAnchorWrap).row; // CHANGED
 
-            const repeatModeSel = makeSelect([ // CHANGED
-                { value: "none", label: "Do not repeat" },
-                { value: "interval", label: "Repeat every N days" }
-            ], r.repeatMode);
-            const repeatModeRow = row("Repeat", repeatModeSel).row; // CHANGED
+            const repeatCheck = makeCheckbox(r.repeatMode === "interval"); // CHANGED
+            const repeatModeRow = row("Repeat", repeatCheck).row; // CHANGED
 
             const repeatConfigDiv = document.createElement("div");
             repeatConfigDiv.style.marginLeft = "20px";
@@ -6194,45 +6209,60 @@ Draw.loadPlugin(function (ui) {
                 { value: "x_times", label: "Repeat X total times" },
                 { value: "until_anchor", label: "Repeat until anchor" }
             ], r.repeatUntilMode);
-            const repeatUntilModeRow = row("Until", repeatUntilModeSel).row; // CHANGED
+            const repeatUntilModeRow = row("Stop mode", repeatUntilModeSel).row; // CHANGED
 
             const repeatTimesNum = makeNumber(r.repeatTimes ?? 1); // CHANGED
             const repeatTimesRow = row("Times", repeatTimesNum).row;
 
+            const repeatCutoffOffsetNum = makeNumber(r.repeatCutoffOffsetDays ?? 0); // ADDED
+            const repeatCutoffOffsetDir = makeSelect([ // ADDED
+                { value: "before", label: "before" }, // ADDED
+                { value: "after", label: "after" } // ADDED
+            ], r.repeatCutoffOffsetDirection || "after"); // ADDED
             const repeatUntilAnchorSel = makeSelect(
                 repeatUntilStageOptions,
                 r.repeatUntilAnchorStage || "HARVEST_END"
             );
 
-            const repeatUntilAnchorRow = row("Until anchor", repeatUntilAnchorSel).row; // CHANGED
+            const repeatCutoffAnchorWrap = document.createElement("div"); // ADDED
+            repeatCutoffAnchorWrap.style.display = "flex"; // ADDED
+            repeatCutoffAnchorWrap.style.gap = "8px"; // ADDED
+            repeatCutoffAnchorWrap.appendChild(repeatCutoffOffsetNum); // ADDED
+            repeatCutoffAnchorWrap.appendChild(repeatCutoffOffsetDir); // ADDED
+            repeatCutoffAnchorWrap.appendChild(repeatUntilAnchorSel); // ADDED
+            const repeatUntilAnchorRow = row("Cutoff anchor", repeatCutoffAnchorWrap).row; // CHANGED
 
             repeatConfigDiv.appendChild(repeatEveryRow);
             repeatConfigDiv.appendChild(repeatUntilModeRow);
             repeatConfigDiv.appendChild(repeatTimesRow);
             repeatConfigDiv.appendChild(repeatUntilAnchorRow);
 
+            function setTaskEditorRowVisible(rowEl, visible) { // ADDED
+                rowEl.style.setProperty("display", visible ? "flex" : "none", "important"); // ADDED
+            } // ADDED
+
             function syncTaskEditorVisibility() {
                 const endMode = endModeSel.value;
                 const anchorRange = endMode === "anchor_range";
             
-                durationRow.style.display = (endMode === "fixed_days") ? "" : "none";
-                endAnchorRow.style.display = anchorRange ? "" : "none";
+                setTaskEditorRowVisible(durationRow, endMode === "fixed_days"); // CHANGED
+                setTaskEditorRowVisible(endAnchorRow, anchorRange); // CHANGED
             
-                if (anchorRange && repeatModeSel.value === "interval") {
-                    repeatModeSel.value = "none";
+                if (anchorRange && repeatCheck.checked) { // CHANGED
+                    repeatCheck.checked = false; // CHANGED
                 }
-                repeatModeSel.disabled = anchorRange;
+                repeatCheck.disabled = anchorRange; // CHANGED
             
-                const repeating = !anchorRange && repeatModeSel.value === "interval";
+                const repeating = !anchorRange && repeatCheck.checked; // CHANGED
                 repeatConfigDiv.style.display = repeating ? "" : "none";
             
                 const untilMode = repeatUntilModeSel.value;
-                repeatTimesRow.style.display = (repeating && untilMode === "x_times") ? "" : "none";
-                repeatUntilAnchorRow.style.display = (repeating && untilMode === "until_anchor") ? "" : "none";
+                setTaskEditorRowVisible(repeatTimesRow, repeating && untilMode === "x_times"); // CHANGED
+                setTaskEditorRowVisible(repeatUntilAnchorRow, repeating); // CHANGED
             }
 
             endModeSel.addEventListener("change", syncTaskEditorVisibility); // CHANGED
-            repeatModeSel.addEventListener("change", syncTaskEditorVisibility); // CHANGED
+            repeatCheck.addEventListener("change", syncTaskEditorVisibility); // CHANGED
             repeatUntilModeSel.addEventListener("change", syncTaskEditorVisibility); // CHANGED
 
             editorBody.appendChild(titleRow);
@@ -6264,18 +6294,27 @@ Draw.loadPlugin(function (ui) {
                     r.endAnchorOffsetDays = (r.endMode === "anchor_range") ? Number(endAnchorOffsetNum.value) : 0; // CHANGED
                     r.endAnchorOffsetDirection = (r.endMode === "anchor_range") ? endAnchorOffsetDir.value : "after"; // CHANGED
 
-                    r.repeatMode = repeatModeSel.value; // CHANGED
+                    r.repeatMode = (repeatCheck.checked && r.endMode === "fixed_days") ? "interval" : "none"; // CHANGED
                     r.repeatEveryDays = Number(repeatEveryNum.value); // CHANGED
                     r.repeatUntilMode = repeatUntilModeSel.value; // CHANGED
                     r.repeatTimes = (r.repeatMode === "interval" && r.repeatUntilMode === "x_times")
                         ? Number(repeatTimesNum.value)
                         : 1; // CHANGED
-                    r.repeatUntilAnchorStage = (r.repeatMode === "interval" && r.repeatUntilMode === "until_anchor")
+                    r.repeatUntilAnchorStage = (r.repeatMode === "interval") // CHANGED
                         ? repeatUntilAnchorSel.value
-                        : null; // CHANGED
+                        : "HARVEST_END"; // CHANGED
+                    r.repeatCutoffOffsetDays = (r.repeatMode === "interval") ? Number(repeatCutoffOffsetNum.value) : 0; // ADDED
+                    r.repeatCutoffOffsetDirection = (r.repeatMode === "interval") ? repeatCutoffOffsetDir.value : "after"; // ADDED
 
                     const allowedStages = await getAllowedAnchorStagesForMethod(formState.methodId);
                     const normalized = validateTaskRule(r, { allowedStages });
+                    try { // ADDED
+                        const { inputs } = await buildScheduleContextFromForm(formState, selPlant, { currentVarieties }); // ADDED
+                        const result = computeScheduleResult(inputs); // ADDED
+                        validateTaskRuleAnchorOrder(normalized, { schedule: result.schedule, timelines: result.timelines }); // ADDED
+                    } catch (orderErr) { // ADDED
+                        if (/^Start must/.test(String(orderErr?.message || ""))) throw orderErr; // ADDED
+                    } // ADDED
 
                     if (!editing && isCanonicalTaskId(r.id)) {
                         throw new Error("Canonical task IDs are reserved.");
@@ -6689,7 +6728,9 @@ Draw.loadPlugin(function (ui) {
         r.repeatEveryDays = Number(r.repeatEveryDays ?? 1); // CHANGED
         r.repeatUntilMode = (r.repeatUntilMode === "until_anchor") ? "until_anchor" : "x_times"; // CHANGED
         r.repeatTimes = Number(r.repeatTimes ?? r.repeatUntilValue ?? 1); // CHANGED
-        r.repeatUntilAnchorStage = r.repeatUntilAnchorStage ?? null; // CHANGED
+        r.repeatUntilAnchorStage = String(r.repeatUntilAnchorStage || "HARVEST_END"); // CHANGED
+        r.repeatCutoffOffsetDays = Number(r.repeatCutoffOffsetDays ?? 0); // ADDED
+        r.repeatCutoffOffsetDirection = (r.repeatCutoffOffsetDirection === "before") ? "before" : "after"; // ADDED
 
         return r; // CHANGED
     }
@@ -6702,6 +6743,7 @@ Draw.loadPlugin(function (ui) {
 
     function validateTaskRule(rule, { allowedStages = null } = {}) {
         const r = normalizeTaskRule(rule);
+        const rawRepeatUntilMode = rule && Object.prototype.hasOwnProperty.call(rule, "repeatUntilMode") ? String(rule.repeatUntilMode || "") : ""; // ADDED
 
         if (!String(r.title || "").trim()) throw new Error("Task title is required.");
         if (!String(r.startAnchorStage || "").trim()) throw new Error("Start anchor is required.");
@@ -6733,8 +6775,22 @@ Draw.loadPlugin(function (ui) {
         }
 
         if (r.repeatMode === "interval") {
+            if (rawRepeatUntilMode && rawRepeatUntilMode !== "x_times" && rawRepeatUntilMode !== "until_anchor") { // ADDED
+                throw new Error("Invalid repeat-until mode."); // ADDED
+            } // ADDED
             if (!Number.isFinite(r.repeatEveryDays) || r.repeatEveryDays < 1) {
                 throw new Error("Repeat every days must be at least 1.");
+            }
+            if (!String(r.repeatUntilAnchorStage || "").trim()) { // CHANGED
+                throw new Error("Cutoff anchor is required for repeated tasks."); // CHANGED
+            }
+            if (!Number.isFinite(r.repeatCutoffOffsetDays) || r.repeatCutoffOffsetDays < 0) { // ADDED
+                throw new Error("Cutoff offset must be 0 or greater."); // ADDED
+            }
+            if (Array.isArray(allowedStages) && allowedStages.length) { // CHANGED
+                if (!allowedStages.includes(r.repeatUntilAnchorStage)) { // CHANGED
+                    throw new Error("Cutoff anchor is not available for the current method."); // CHANGED
+                }
             }
 
             if (r.repeatUntilMode === "x_times") {
@@ -6742,14 +6798,7 @@ Draw.loadPlugin(function (ui) {
                     throw new Error("Repeat times must be at least 1.");
                 }
             } else if (r.repeatUntilMode === "until_anchor") {
-                if (!String(r.repeatUntilAnchorStage || "").trim()) {
-                    throw new Error("Repeat-until anchor is required.");
-                }
-                if (Array.isArray(allowedStages) && allowedStages.length) {
-                    if (!allowedStages.includes(r.repeatUntilAnchorStage)) {
-                        throw new Error("Repeat-until anchor is not available for the current method.");
-                    }
-                }
+                // The cutoff anchor already supplies the stop date for this mode. // CHANGED
             } else {
                 throw new Error("Invalid repeat-until mode.");
             }
@@ -6810,9 +6859,14 @@ Draw.loadPlugin(function (ui) {
         }
 
         if (r.repeatMode === "interval") {
+            const cutoffTxt = fmtOffset( // ADDED
+                r.repeatCutoffOffsetDays, // ADDED
+                r.repeatCutoffOffsetDirection, // ADDED
+                r.repeatUntilAnchorStage // ADDED
+            ); // ADDED
             const repeatTxt = (r.repeatUntilMode === "x_times")
-                ? `repeat every ${r.repeatEveryDays} days (${r.repeatTimes} times)`
-                : `repeat every ${r.repeatEveryDays} days until ${humanStageLabel(r.repeatUntilAnchorStage)}`;
+                ? `repeat every ${r.repeatEveryDays} days, up to ${r.repeatTimes} time${r.repeatTimes === 1 ? "" : "s"}, until ${cutoffTxt}` // CHANGED
+                : `repeat every ${r.repeatEveryDays} days until ${cutoffTxt}`; // CHANGED
 
             parts.push(repeatTxt);
         }
@@ -6885,6 +6939,111 @@ Draw.loadPlugin(function (ui) {
         return appendCropDisplayNameToTaskAction(actionTitle, cropDisplayName); // CHANGED
     } // ADDED
 
+    function taskAnchorDatesForTimeline(currentTimeline, currentSowDate) { // ADDED
+        return { // ADDED
+            SOW: iso(currentSowDate), // ADDED
+            GERM: iso(currentTimeline.germ), // ADDED
+            TRANSPLANT: iso(currentTimeline.transplant), // ADDED
+            HARVEST_START: iso(currentTimeline.harvestStart), // ADDED
+            HARVEST_END: iso(currentTimeline.harvestEnd) // ADDED
+        }; // ADDED
+    } // ADDED
+
+    function resolveTaskAnchorISO(anchors, stage) { // ADDED
+        let anchorISO = anchors[String(stage || '').trim()] || null; // ADDED
+        if (!anchorISO && stage === 'GERM') anchorISO = anchors.SOW || null; // ADDED
+        return anchorISO; // ADDED
+    } // ADDED
+
+    function applyTaskAnchorOffset(anchorISO, days, direction) { // ADDED
+        if (!anchorISO) return null; // ADDED
+        const count = Number(days ?? 0); // ADDED
+        return Number.isFinite(count) ? shiftDays(anchorISO, (direction === 'before' ? -1 : 1) * count) : null; // ADDED
+    } // ADDED
+
+    function resolveTaskRuleRange(rule, anchors) { // ADDED
+        const startAnchorISO = resolveTaskAnchorISO(anchors, rule.startAnchorStage); // ADDED
+        if (!startAnchorISO) return null; // ADDED
+        const startISO = applyTaskAnchorOffset(startAnchorISO, rule.startOffsetDays, rule.startOffsetDirection); // ADDED
+        if (!startISO) return null; // ADDED
+
+        let endISO = startISO; // ADDED
+        if (rule.endMode === 'fixed_days') { // ADDED
+            const duration = Number(rule.durationDays ?? 0); // ADDED
+            endISO = Number.isFinite(duration) && duration >= 0 ? shiftDays(startISO, duration) : startISO; // ADDED
+        } else if (rule.endMode === 'anchor_range') { // ADDED
+            const endAnchorISO = resolveTaskAnchorISO(anchors, rule.endAnchorStage); // ADDED
+            if (!endAnchorISO) return null; // ADDED
+            endISO = applyTaskAnchorOffset(endAnchorISO, rule.endAnchorOffsetDays, rule.endAnchorOffsetDirection); // ADDED
+            if (!endISO) return null; // ADDED
+        } else { // ADDED
+            return null; // ADDED
+        } // ADDED
+
+        let rangeStartISO = startISO; // ADDED
+        let rangeEndISO = endISO; // ADDED
+        if (rangeEndISO < rangeStartISO) { // ADDED
+            [rangeStartISO, rangeEndISO] = [rangeEndISO, rangeStartISO]; // ADDED
+        } // ADDED
+        return { rangeStartISO, rangeEndISO }; // ADDED
+    } // ADDED
+
+    function resolveRepeatCutoffISO(rule, anchors) { // ADDED
+        const cutoffAnchorISO = resolveTaskAnchorISO(anchors, rule.repeatUntilAnchorStage); // ADDED
+        return applyTaskAnchorOffset(cutoffAnchorISO, rule.repeatCutoffOffsetDays, rule.repeatCutoffOffsetDirection); // ADDED
+    } // ADDED
+
+    function validateTaskRuleAnchorOrder(rule, { schedule, timelines } = {}) { // ADDED
+        const r = normalizeTaskRule(rule); // ADDED
+        const sowDate = Array.isArray(schedule) ? schedule[0] : schedule; // ADDED
+        const timeline = Array.isArray(timelines) ? timelines[0] : timelines; // ADDED
+        if (!sowDate || !timeline) return r; // ADDED
+        const anchors = taskAnchorDatesForTimeline(timeline, sowDate); // ADDED
+        const startAnchorISO = resolveTaskAnchorISO(anchors, r.startAnchorStage); // ADDED
+        const startISO = applyTaskAnchorOffset(startAnchorISO, r.startOffsetDays, r.startOffsetDirection); // ADDED
+        if (!startISO) return r; // ADDED
+
+        if (r.endMode === "anchor_range") { // ADDED
+            const endAnchorISO = resolveTaskAnchorISO(anchors, r.endAnchorStage); // ADDED
+            const endISO = applyTaskAnchorOffset(endAnchorISO, r.endAnchorOffsetDays, r.endAnchorOffsetDirection); // ADDED
+            if (endISO && startISO > endISO) { // ADDED
+                throw new Error("Start must be on or before the end anchor."); // ADDED
+            } // ADDED
+        } // ADDED
+
+        if (r.repeatMode === "interval") { // ADDED
+            const cutoffISO = resolveRepeatCutoffISO(r, anchors); // ADDED
+            if (cutoffISO && startISO > cutoffISO) { // ADDED
+                throw new Error("Start must be on or before the cutoff anchor."); // ADDED
+            } // ADDED
+        } // ADDED
+
+        return r; // ADDED
+    } // ADDED
+
+    function findRepeatCutoffOmittedRuleKeys({ taskTemplate, schedule, timelines } = {}) { // ADDED
+        const omitted = new Set(); // ADDED
+        const tpl = normalizeTaskTemplate(taskTemplate ?? null); // ADDED
+        const rules = Array.isArray(tpl?.rules) ? tpl.rules : []; // ADDED
+        const sowDate = Array.isArray(schedule) ? schedule[0] : schedule; // ADDED
+        const timeline = Array.isArray(timelines) ? timelines[0] : timelines; // ADDED
+        if (!sowDate || !timeline) return omitted; // ADDED
+        const anchors = taskAnchorDatesForTimeline(timeline, sowDate); // ADDED
+
+        rules.forEach((sourceRule, ruleIndex) => { // ADDED
+            const rule = normalizeTaskRule(sourceRule); // ADDED
+            if (rule.repeatMode !== 'interval') return; // ADDED
+            const range = resolveTaskRuleRange(rule, anchors); // ADDED
+            const cutoffISO = resolveRepeatCutoffISO(rule, anchors); // ADDED
+            if (!range || !cutoffISO) return; // ADDED
+            if (range.rangeStartISO >= cutoffISO) { // ADDED
+                omitted.add(getTaskPreviewRuleKey(rule, ruleIndex)); // ADDED
+            } // ADDED
+        }); // ADDED
+
+        return omitted; // ADDED
+    } // ADDED
+
     async function buildTasksForPlan({ // ADDED
         plant, // ADDED
         schedule, // ADDED
@@ -6906,54 +7065,13 @@ Draw.loadPlugin(function (ui) {
             return buildGeneratedTaskTitle(template, cropDisplayName, plantName, varietyName); // CHANGED
         } // ADDED
 
-        function anchorDatesForTimeline(currentTimeline, currentSowDate) { // ADDED
-            return { // ADDED
-                SOW: iso(currentSowDate), // ADDED
-                GERM: iso(currentTimeline.germ), // ADDED
-                TRANSPLANT: iso(currentTimeline.transplant), // ADDED
-                HARVEST_START: iso(currentTimeline.harvestStart), // ADDED
-                HARVEST_END: iso(currentTimeline.harvestEnd) // ADDED
-            }; // ADDED
-        } // ADDED
-
-        function resolveAnchorISO(anchors, stage) { // ADDED
-            let anchorISO = anchors[String(stage || '').trim()] || null; // ADDED
-            if (!anchorISO && stage === 'GERM') anchorISO = anchors.SOW || null; // ADDED
-            return anchorISO; // ADDED
-        } // ADDED
-
-        function applyOffset(anchorISO, days, direction) { // ADDED
-            if (!anchorISO) return null; // ADDED
-            const count = Number(days ?? 0); // ADDED
-            return shiftDays(anchorISO, (direction === 'before' ? -1 : 1) * count); // ADDED
-        } // ADDED
-
-        const anchors = anchorDatesForTimeline(timeline, sowDate); // ADDED
+        const anchors = taskAnchorDatesForTimeline(timeline, sowDate); // CHANGED
         for (let ruleIndex = 0; ruleIndex < rules.length; ruleIndex++) { // ADDED
             const rule = normalizeTaskRule(rules[ruleIndex]); // ADDED
-            const startAnchorISO = resolveAnchorISO(anchors, rule.startAnchorStage); // ADDED
-            if (!startAnchorISO) continue; // ADDED
-            const startISO = applyOffset(startAnchorISO, rule.startOffsetDays, rule.startOffsetDirection); // ADDED
-            if (!startISO) continue; // ADDED
-
-            let endISO = startISO; // ADDED
-            if (rule.endMode === 'fixed_days') { // ADDED
-                const duration = Number(rule.durationDays ?? 0); // ADDED
-                endISO = Number.isFinite(duration) && duration >= 0 ? shiftDays(startISO, duration) : startISO; // ADDED
-            } else if (rule.endMode === 'anchor_range') { // ADDED
-                const endAnchorISO = resolveAnchorISO(anchors, rule.endAnchorStage); // ADDED
-                if (!endAnchorISO) continue; // ADDED
-                endISO = applyOffset(endAnchorISO, rule.endAnchorOffsetDays, rule.endAnchorOffsetDirection); // ADDED
-                if (!endISO) continue; // ADDED
-            } else { // ADDED
-                continue; // ADDED
-            } // ADDED
-
-            let rangeStartISO = startISO; // ADDED
-            let rangeEndISO = endISO; // ADDED
-            if (rangeEndISO < rangeStartISO) { // ADDED
-                [rangeStartISO, rangeEndISO] = [rangeEndISO, rangeStartISO]; // ADDED
-            } // ADDED
+            validateTaskRuleAnchorOrder(rule, { schedule: sowDate, timelines: timeline }); // ADDED
+            const range = resolveTaskRuleRange(rule, anchors); // CHANGED
+            if (!range) continue; // ADDED
+            const { rangeStartISO, rangeEndISO } = range; // ADDED
 
             const occurrences = []; // ADDED
             if (rule.repeatMode !== 'interval') { // ADDED
@@ -6961,22 +7079,23 @@ Draw.loadPlugin(function (ui) {
             } else { // ADDED
                 const every = Number(rule.repeatEveryDays ?? 0); // ADDED
                 if (!Number.isFinite(every) || every < 1) continue; // ADDED
+                const cutoffISO = resolveRepeatCutoffISO(rule, anchors); // ADDED
+                if (!cutoffISO) continue; // ADDED
                 if (rule.repeatUntilMode === 'x_times') { // ADDED
                     const times = Number(rule.repeatTimes ?? 1); // ADDED
                     if (!Number.isFinite(times) || times < 1) continue; // ADDED
                     let currentStart = rangeStartISO; // ADDED
                     let currentEnd = rangeEndISO; // ADDED
                     for (let occurrenceIndex = 0; occurrenceIndex < times; occurrenceIndex++) { // ADDED
+                        if (currentStart >= cutoffISO) break; // ADDED
                         occurrences.push({ startISO: currentStart, endISO: currentEnd }); // ADDED
                         currentStart = shiftDays(currentStart, every); // ADDED
                         currentEnd = shiftDays(currentEnd, every); // ADDED
                     } // ADDED
                 } else if (rule.repeatUntilMode === 'until_anchor') { // ADDED
-                    const untilAnchorISO = resolveAnchorISO(anchors, rule.repeatUntilAnchorStage); // ADDED
-                    if (!untilAnchorISO) continue; // ADDED
                     let currentStart = rangeStartISO; // ADDED
                     let currentEnd = rangeEndISO; // ADDED
-                    while (currentStart <= untilAnchorISO) { // ADDED
+                    while (currentStart < cutoffISO) { // CHANGED
                         occurrences.push({ startISO: currentStart, endISO: currentEnd }); // ADDED
                         currentStart = shiftDays(currentStart, every); // ADDED
                         currentEnd = shiftDays(currentEnd, every); // ADDED
@@ -7306,7 +7425,9 @@ Draw.loadPlugin(function (ui) {
                 repeatEveryDays: 1, // CHANGED
                 repeatUntilMode: "x_times", // CHANGED
                 repeatTimes: 1, // CHANGED
-                repeatUntilAnchorStage: null // CHANGED
+                repeatUntilAnchorStage: "HARVEST_END", // CHANGED
+                repeatCutoffOffsetDays: 0, // ADDED
+                repeatCutoffOffsetDirection: "after" // ADDED
             },
             sow: {
                 id: "sow",
@@ -7323,7 +7444,9 @@ Draw.loadPlugin(function (ui) {
                 repeatEveryDays: 1, // CHANGED
                 repeatUntilMode: "x_times", // CHANGED
                 repeatTimes: 1, // CHANGED
-                repeatUntilAnchorStage: null // CHANGED
+                repeatUntilAnchorStage: "HARVEST_END", // CHANGED
+                repeatCutoffOffsetDays: 0, // ADDED
+                repeatCutoffOffsetDirection: "after" // ADDED
             },
             start: {
                 id: "start",
@@ -7340,7 +7463,9 @@ Draw.loadPlugin(function (ui) {
                 repeatEveryDays: 1, // CHANGED
                 repeatUntilMode: "x_times", // CHANGED
                 repeatTimes: 1, // CHANGED
-                repeatUntilAnchorStage: null // CHANGED
+                repeatUntilAnchorStage: "HARVEST_END", // CHANGED
+                repeatCutoffOffsetDays: 0, // ADDED
+                repeatCutoffOffsetDirection: "after" // ADDED
             },
             harden: {
                 id: "harden",
@@ -7357,7 +7482,9 @@ Draw.loadPlugin(function (ui) {
                 repeatEveryDays: 1, // CHANGED
                 repeatUntilMode: "x_times", // CHANGED
                 repeatTimes: 1, // CHANGED
-                repeatUntilAnchorStage: null // CHANGED
+                repeatUntilAnchorStage: "HARVEST_END", // CHANGED
+                repeatCutoffOffsetDays: 0, // ADDED
+                repeatCutoffOffsetDirection: "after" // ADDED
             },
             transplant: {
                 id: "transplant",
@@ -7374,7 +7501,9 @@ Draw.loadPlugin(function (ui) {
                 repeatEveryDays: 1, // CHANGED
                 repeatUntilMode: "x_times", // CHANGED
                 repeatTimes: 1, // CHANGED
-                repeatUntilAnchorStage: null // CHANGED
+                repeatUntilAnchorStage: "HARVEST_END", // CHANGED
+                repeatCutoffOffsetDays: 0, // ADDED
+                repeatCutoffOffsetDirection: "after" // ADDED
             },
             thin: {
                 id: "thin",
@@ -7391,7 +7520,9 @@ Draw.loadPlugin(function (ui) {
                 repeatEveryDays: 1, // CHANGED
                 repeatUntilMode: "x_times", // CHANGED
                 repeatTimes: 1, // CHANGED
-                repeatUntilAnchorStage: null // CHANGED
+                repeatUntilAnchorStage: "HARVEST_END", // CHANGED
+                repeatCutoffOffsetDays: 0, // ADDED
+                repeatCutoffOffsetDirection: "after" // ADDED
             },
             harvest: {
                 id: "harvest",
@@ -7408,7 +7539,9 @@ Draw.loadPlugin(function (ui) {
                 repeatEveryDays: 1, // CHANGED
                 repeatUntilMode: "x_times", // CHANGED
                 repeatTimes: 1, // CHANGED
-                repeatUntilAnchorStage: null // CHANGED
+                repeatUntilAnchorStage: "HARVEST_END", // CHANGED
+                repeatCutoffOffsetDays: 0, // ADDED
+                repeatCutoffOffsetDirection: "after" // ADDED
             }
         };
     }
@@ -8038,9 +8171,82 @@ Draw.loadPlugin(function (ui) {
     // -------------------- Public API --------------------------------------------------------
     window.USL = window.USL || {};
     window.USL.scheduler = Object.assign({}, window.USL.scheduler, {
-        openScheduleDialog: (ui, cell) => openScheduleDialog(ui, cell)
+        openScheduleDialog: (ui, cell) => openScheduleDialog(ui, cell),
+        openSetPlantDialog: (ui, cell) => openSetPlantDialog(ui, cell) // ADDED
     });
     window.openUSLScheduleDialog = window.USL.scheduler.openScheduleDialog;
+
+    async function openSetPlantDialog(ui, cell) { // ADDED
+        if (!ui || !ui.editor || !ui.editor.graph) throw new Error('Draw.io UI is unavailable.'); // ADDED
+        if (!isTilerGroup(cell)) throw new Error('Set Plant requires a tiler group.'); // ADDED
+
+        const graph = ui.editor.graph; // ADDED
+        const model = graph.getModel(); // ADDED
+        const allPlants = await PlantModel.listBasic(); // ADDED
+        if (!allPlants.length) { mxUtils.alert('No plants found in database.'); return; } // ADDED
+
+        const div = document.createElement('div'); // ADDED
+        div.style.padding = '12px'; // ADDED
+        div.style.width = '420px'; // ADDED
+        const title = document.createElement('div'); // ADDED
+        title.textContent = 'Select Plant'; // ADDED
+        title.style.fontWeight = '600'; // ADDED
+        title.style.marginBottom = '8px'; // ADDED
+        div.appendChild(title); // ADDED
+
+        const sel = document.createElement('select'); // ADDED
+        sel.style.width = '100%'; // ADDED
+        sel.style.padding = '6px'; // ADDED
+        sel.style.margin = '8px 0'; // ADDED
+        allPlants.forEach(p => { // ADDED
+            const opt = document.createElement('option'); // ADDED
+            opt.value = String(p.plant_id); // ADDED
+            opt.textContent = p.plant_name + (p.abbr ? ` (${p.abbr})` : ''); // ADDED
+            sel.appendChild(opt); // ADDED
+        }); // ADDED
+        div.appendChild(sel); // ADDED
+
+        const btns = document.createElement('div'); // ADDED
+        btns.style.display = 'flex'; // ADDED
+        btns.style.justifyContent = 'flex-end'; // ADDED
+        btns.style.gap = '8px'; // ADDED
+
+        const ok = mxUtils.button('OK', async () => { // ADDED
+            const id = Number(sel.value); // ADDED
+            const row = await PlantModel.loadById(id); // ADDED
+            if (!row) { mxUtils.alert('Plant not found.'); return; } // ADDED
+            ui.hideDialog(); // ADDED
+
+            model.beginUpdate(); // ADDED
+            try { // ADDED
+                const gardenParent = findGardenModuleAncestor(model, cell); // ADDED
+                if (gardenParent) { // ADDED
+                    const inheritedCity = gardenParent.getAttribute('city_name'); // ADDED
+                    if (inheritedCity) setAttr(cell, 'city_name', inheritedCity); // ADDED
+                } // ADDED
+
+                setAttr(cell, 'plant_id', String(row.plant_id)); // ADDED
+                setAttr(cell, 'plant_name', row.plant_name); // ADDED
+                if (row.abbr) setAttr(cell, 'plant_abbr', row.abbr); // ADDED
+                setAttr(cell, 'plant_locked', '1'); // ADDED
+                setAttr(cell, 'label', row.plant_name + ' group'); // ADDED
+
+                applyPlantSpacingToGroup(cell, row); // ADDED
+
+                const retile = (window.USL && window.USL.tiler && window.USL.tiler.retileGroup) || null; // ADDED
+                if (typeof retile === 'function') retile(graph, cell); // ADDED
+                graph.refresh(cell); // ADDED
+            } finally { // ADDED
+                model.endUpdate(); // ADDED
+            } // ADDED
+        }); // ADDED
+        const cancel = mxUtils.button('Cancel', () => ui.hideDialog()); // ADDED
+        btns.appendChild(ok); // ADDED
+        btns.appendChild(cancel); // ADDED
+        div.appendChild(btns); // ADDED
+        ui.showDialog(div, 440, 220, true, true); // ADDED
+    } // ADDED
+
     if (window.USL_SCHEDULER_TESTING) {
         window.USL.scheduler.__test = {
             PlantModel,
@@ -8062,108 +8268,7 @@ Draw.loadPlugin(function (ui) {
     function installSchedulerPlugin(ui) { // FIX: install from the existing outer plugin registration
         const graph = ui.editor.graph;
 
-        function installScheduleOverlayButton() { // NEW
-            if (graph.__uslScheduleOverlayButtonInstalled) return; // NEW
-            graph.__uslScheduleOverlayButtonInstalled = true; // NEW
-
-            const overlayState = { button: null, cell: null }; // NEW
-
-            function ensureGraphContainerPositioned() { // NEW
-                const container = graph.container; // NEW
-                if (!container) return false; // NEW
-                const computed = window.getComputedStyle(container); // NEW
-                if (computed.position === "static") container.style.position = "relative"; // NEW
-                return true; // NEW
-            } // NEW
-
-            function consumeOverlayEvent(evt) { // NEW
-                try { mxEvent.consume(evt); } catch (_) { } // NEW
-                if (evt && typeof evt.preventDefault === "function") evt.preventDefault(); // NEW
-                if (evt && typeof evt.stopPropagation === "function") evt.stopPropagation(); // NEW
-            } // NEW
-
-            function selectedTilerGroupForOverlay() { // NEW
-                const selected = graph.getSelectionCells ? graph.getSelectionCells() : []; // NEW
-                for (const cell of selected || []) { // NEW
-                    if (isTilerGroup(cell)) return cell; // NEW
-                } // NEW
-                return null; // NEW
-            } // NEW
-
-            function removeScheduleOverlayButton() { // NEW
-                const button = overlayState.button; // NEW
-                overlayState.button = null; // NEW
-                overlayState.cell = null; // NEW
-                if (button && button.parentNode) button.parentNode.removeChild(button); // NEW
-            } // NEW
-
-            function ensureScheduleOverlayButton() { // NEW
-                if (overlayState.button && overlayState.button.parentNode) return overlayState.button; // NEW
-                if (!ensureGraphContainerPositioned()) return null; // NEW
-
-                const button = document.createElement("button"); // NEW
-                button.type = "button"; // NEW
-                button.className = "usl-schedule-overlay-button"; // NEW
-                button.style.position = "absolute"; // NEW
-                button.style.zIndex = "1003"; // NEW
-                button.style.pointerEvents = "auto"; // NEW
-                button.style.border = "1px solid #2563eb"; // NEW
-                button.style.borderRadius = "6px"; // NEW
-                button.style.background = "#fff"; // NEW
-                button.style.color = "#1d4ed8"; // NEW
-                button.style.boxShadow = "0 2px 8px rgba(0,0,0,.18)"; // NEW
-                button.style.cursor = "pointer"; // NEW
-                button.style.font = "12px Arial,sans-serif"; // NEW
-                button.style.fontWeight = "700"; // NEW
-                button.style.padding = "5px 8px"; // NEW
-                button.style.whiteSpace = "nowrap"; // NEW
-                button.addEventListener("mousedown", consumeOverlayEvent); // NEW
-                button.addEventListener("dblclick", consumeOverlayEvent); // NEW
-                button.addEventListener("click", async function (evt) { // NEW
-                    consumeOverlayEvent(evt); // NEW
-                    const target = overlayState.cell; // NEW
-                    if (!target) return; // NEW
-                    try { await openScheduleDialog(ui, target); } // NEW
-                    catch (e) { mxUtils.alert("Scheduling error: " + (e?.message || String(e))); } // NEW
-                }); // NEW
-                graph.container.appendChild(button); // NEW
-                overlayState.button = button; // NEW
-                return button; // NEW
-            } // NEW
-
-            function syncScheduleOverlayButton() { // NEW
-                const target = selectedTilerGroupForOverlay(); // NEW
-                if (!target) { // NEW
-                    removeScheduleOverlayButton(); // NEW
-                    return; // NEW
-                } // NEW
-
-                const state = graph.view.getState(target); // NEW
-                if (!state) { // NEW
-                    removeScheduleOverlayButton(); // NEW
-                    return; // NEW
-                } // NEW
-
-                const button = ensureScheduleOverlayButton(); // NEW
-                if (!button) return; // NEW
-                overlayState.cell = target; // NEW
-                button.textContent = hasTilerSchedule(target) ? "Edit schedule" : "Set schedule"; // NEW
-                button.title = button.textContent; // NEW
-                button.style.left = Math.round(state.x + 6) + "px"; // NEW
-                button.style.top = Math.round(state.y + 6) + "px"; // NEW
-            } // NEW
-
-            graph.getSelectionModel().addListener(mxEvent.CHANGE, syncScheduleOverlayButton); // NEW
-            graph.view.addListener(mxEvent.SCALE, syncScheduleOverlayButton); // NEW
-            graph.view.addListener(mxEvent.TRANSLATE, syncScheduleOverlayButton); // NEW
-            graph.view.addListener(mxEvent.SCALE_AND_TRANSLATE, syncScheduleOverlayButton); // NEW
-            graph.getModel().addListener(mxEvent.CHANGE, syncScheduleOverlayButton); // NEW
-            if (graph.container) graph.container.addEventListener("scroll", syncScheduleOverlayButton, { passive: true }); // NEW
-            graph.addListener(mxEvent.DESTROY, removeScheduleOverlayButton); // NEW
-            syncScheduleOverlayButton(); // NEW
-        } // NEW
-
-        installScheduleOverlayButton(); // NEW
+        // Schedule entry is now rendered by Vertex_Linking_Standalone.js so it can live inside the linked-task overlay. // CHANGED
 
         // --- Harvest window bridge (installed once) ---
         if (!graph.__uslHarvestWindowsBridgeInstalled) {
@@ -8386,143 +8491,6 @@ Draw.loadPlugin(function (ui) {
 
 
 
-        if (graph.popupMenuHandler) graph.popupMenuHandler.selectOnPopup = false;
-
-        function registerTrellisContextMenuContributor(contributor) { // NEW
-            function finishRegistration() { // NEW
-                if (!window.TrellisContextMenu) return; // NEW
-                window.TrellisContextMenu.install(ui); // NEW
-                window.TrellisContextMenu.register(contributor); // NEW
-            } // NEW
-
-            if (window.TrellisContextMenu) { // NEW
-                finishRegistration(); // NEW
-            } else if (typeof mxscript === "function") { // NEW
-                mxscript("plugins/garden_planner_plugins/Trellis_Context_Menu.js", finishRegistration); // NEW
-            } // NEW
-        } // NEW
-
-        registerTrellisContextMenuContributor({ // CHANGE
-            id: "plantingScheduler", // NEW
-            priority: 400, // NEW
-            addItems: function (menu, cell, evt) { // CHANGE
-
-            function hitTestCell(evt, cellArg) {
-                try {
-                    if (evt && typeof graph.popupMenuHandler.getCellForEvent === 'function') {
-                        return graph.popupMenuHandler.getCellForEvent(evt);
-                    }
-                    if (evt && (evt.clientX != null) && (evt.clientY != null)) {
-                        const x = mxEvent.getClientX ? mxEvent.getClientX(evt) : evt.clientX;
-                        const y = mxEvent.getClientY ? mxEvent.getClientY(evt) : evt.clientY;
-                        const pt = mxUtils.convertPoint(graph.container, x, y);
-                        return graph.getCellAt(pt.x, pt.y);
-                    }
-                } catch (_) { /* noop */ }
-                if (cellArg) return cellArg;
-                return graph.getSelectionCell() || null;
-            }
-
-            function findTilerGroupAncestorLocal(graph, c) {
-                if (!c) return null;
-                const m = graph.getModel();
-                let cur = c;
-                while (cur) {
-                    if (isTilerGroup(cur)) return cur;
-                    cur = m.getParent(cur);
-                }
-                return null;
-            }
-
-            const hit = hitTestCell(evt, cell);
-            let target = findTilerGroupAncestorLocal(graph, hit);
-            if (!target) {
-                const sel = graph.getSelectionCell();
-                target = findTilerGroupAncestorLocal(graph, sel);
-            }
-
-            menu.addSeparator();
-
-            if (target) {
-                const hasPlant = !!(target && target.getAttribute && target.getAttribute('plant_name'));
-
-                if (!hasPlant) {
-                    menu.addItem('Set Plant…', null, async function () {
-                        try {
-                            const allPlants = await PlantModel.listBasic();
-                            if (!allPlants.length) { mxUtils.alert('No plants found in database.'); return; }
-
-                            // Simple picker
-                            const div = document.createElement('div');
-                            div.style.padding = '12px';
-                            div.style.width = '420px';
-                            const title = document.createElement('div');
-                            title.textContent = 'Select Plant'; title.style.fontWeight = '600'; title.style.marginBottom = '8px';
-                            div.appendChild(title);
-                            const sel = document.createElement('select'); sel.style.width = '100%'; sel.style.padding = '6px'; sel.style.margin = '8px 0';
-                            allPlants.forEach(p => {
-                                const opt = document.createElement('option');
-                                opt.value = String(p.plant_id);
-                                opt.textContent = p.plant_name + (p.abbr ? ` (${p.abbr})` : '');
-                                sel.appendChild(opt);
-                            });
-                            div.appendChild(sel);
-
-                            const btns = document.createElement('div');
-                            btns.style.display = 'flex'; btns.style.justifyContent = 'flex-end'; btns.style.gap = '8px';
-                            const ok = mxUtils.button('OK', async () => {
-                                const id = Number(sel.value);
-                                const row = await PlantModel.loadById(id);
-                                if (!row) { mxUtils.alert('Plant not found.'); return; }
-                                ui.hideDialog();
-
-                                const graph = ui.editor.graph;
-                                const model = graph.getModel();
-
-                                model.beginUpdate();
-                                try {
-                                    // inherit city from garden module ancestor if present
-                                    const gardenParent = findGardenModuleAncestor(model, target);
-                                    if (gardenParent) {
-                                        const inheritedCity = gardenParent.getAttribute('city_name');
-                                        if (inheritedCity) setAttr(target, 'city_name', inheritedCity);
-                                    }
-
-                                    setAttr(target, 'plant_id', String(row.plant_id));
-                                    setAttr(target, 'plant_name', row.plant_name);
-                                    if (row.abbr) setAttr(target, 'plant_abbr', row.abbr);
-                                    setAttr(target, 'plant_locked', '1');
-                                    setAttr(target, 'label', row.plant_name + ' group');
-
-                                    applyPlantSpacingToGroup(target, row);
-
-                                    const r = (window.USL && window.USL.tiler && window.USL.tiler.retileGroup) || null;
-                                    if (typeof r === 'function') r(graph, target);
-                                    graph.refresh(target);
-                                } finally {
-                                    model.endUpdate();
-                                }
-                            });
-                            const cancel = mxUtils.button('Cancel', () => ui.hideDialog());
-                            btns.appendChild(ok); btns.appendChild(cancel); div.appendChild(btns);
-                            ui.showDialog(div, 440, 220, true, true);
-                        } catch (e) {
-                            mxUtils.alert('Set Plant error: ' + e.message);
-                        }
-                    });
-                }
-
-                const label = hasTilerSchedule(target) ? 'Change Schedule' : 'Set Schedule';
-
-                menu.addItem(label, null, async function () {
-                    try { await openScheduleDialog(ui, target); }
-                    catch (e) { mxUtils.alert('Scheduling error: ' + e.message); }
-                });
-
-            }
-            } // CHANGE
-        }); // CHANGE
-
     }
 
     if (typeof window !== 'undefined' && window.__TRELLIS_PLANTING_SCHEDULER_TEST__) { // FIX: opt-in test surface only
@@ -8551,7 +8519,12 @@ Draw.loadPlugin(function (ui) {
             classifySelectedSowDate, // ADDED
             buildScheduleViewState, // ADDED
             taskRuleLibraryForPlanningMode, // ADDED
+            normalizeTaskRule, // ADDED
+            validateTaskRule, // ADDED
+            validateTaskRuleAnchorOrder, // ADDED
+            describeTaskRule, // ADDED
             buildTasksForPlan, // ADDED
+            findRepeatCutoffOmittedRuleKeys, // ADDED
             filterPreviewTasks, // ADDED
             getTaskPreviewRuleKey, // ADDED
             buildTaskRuleDisplayOrder, // ADDED

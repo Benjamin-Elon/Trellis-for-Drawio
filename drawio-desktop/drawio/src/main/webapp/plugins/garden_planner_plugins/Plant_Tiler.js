@@ -1022,20 +1022,29 @@ Draw.loadPlugin(function (ui) {
 
 
     // garden settings dialog (city + units)
-    async function showGardenSettingsDialog(ui, graph, moduleCell) {
+    async function showGardenSettingsDialog(ui, graph, moduleCell, onClose) { // CHANGE
         const model = graph.getModel();
         const curCity = getXmlAttr(moduleCell, "city_name", "");
         const curUnits = getXmlAttr(moduleCell, "unit_system", "");
+        let closeNotified = false; // CHANGE
+
+        function notifyClose() { // CHANGE
+            if (closeNotified) return; // CHANGE
+            closeNotified = true; // CHANGE
+            if (typeof onClose === "function") onClose(); // CHANGE
+        } // CHANGE
 
         let cities = [];
         try {
             cities = await loadCities();
         } catch (e) {
             mxUtils.alert("Error loading cities: " + e.message);
+            notifyClose(); // CHANGE
             return;
         }
         if (!cities.length) {
             mxUtils.alert("No cities found in database.");
+            notifyClose(); // CHANGE
             return;
         }
 
@@ -1122,7 +1131,7 @@ Draw.loadPlugin(function (ui) {
         btnRow.style.gap = "8px";
         btnRow.style.marginTop = "12px";
 
-        const cancelBtn = mxUtils.button("Cancel", () => ui.hideDialog());
+        const cancelBtn = mxUtils.button("Cancel", () => ui.hideDialog()); // CHANGE
         const okBtn = mxUtils.button("OK", () => {
             err.style.display = "none";
             const chosenCity = (citySel.value || "").trim();
@@ -1149,9 +1158,226 @@ Draw.loadPlugin(function (ui) {
         btnRow.appendChild(okBtn);
         div.appendChild(btnRow);
 
-        ui.showDialog(div, 420, 220, true, true);
+        ui.showDialog(div, 420, 220, true, true, notifyClose); // CHANGE
         citySel.focus();
     }
+
+    function installGardenModuleOverlay() { // CHANGE
+        if (graph.__plantTilerGardenModuleOverlayInstalled) return; // CHANGE
+        graph.__plantTilerGardenModuleOverlayInstalled = true; // CHANGE
+
+        const OFFSET_PX = 8; // CHANGE
+        const EDGE_MARGIN_PX = 6; // CHANGE
+        const MOUSE_ANCHOR_MAX_AGE_MS = 1000; // CHANGE
+        let toolbar = null; // CHANGE
+        let settingsBtn = null; // CHANGE
+        let addGroupBtn = null; // CHANGE
+        let activeModuleCell = null; // CHANGE
+        let anchorModelPoint = null; // CHANGE
+        let lastMouseAnchor = null; // CHANGE
+        let gestureHidden = false; // CHANGE
+        let refreshTimer = null; // CHANGE
+
+        function getOverlayHost() { // CHANGE
+            const pane = graph.view && graph.view.overlayPane; // CHANGE
+            return (pane && getComputedStyle(pane).position === "absolute") ? pane : graph.container; // CHANGE
+        } // CHANGE
+
+        function makeButton(text) { // CHANGE
+            const btn = document.createElement("button"); // CHANGE
+            btn.type = "button"; // CHANGE
+            btn.textContent = text; // CHANGE
+            btn.style.border = "1px solid #b8b8b8"; // CHANGE
+            btn.style.borderRadius = "4px"; // CHANGE
+            btn.style.background = "#fff"; // CHANGE
+            btn.style.color = "#222"; // CHANGE
+            btn.style.cursor = "pointer"; // CHANGE
+            btn.style.font = "12px Arial, sans-serif"; // CHANGE
+            btn.style.padding = "5px 8px"; // CHANGE
+            btn.style.textAlign = "left"; // CHANGE
+            btn.style.whiteSpace = "nowrap"; // CHANGE
+            return btn; // CHANGE
+        } // CHANGE
+
+        function ensureToolbar() { // CHANGE
+            if (toolbar) return toolbar; // CHANGE
+            toolbar = document.createElement("div"); // CHANGE
+            toolbar.style.position = "absolute"; // CHANGE
+            toolbar.style.zIndex = "10006"; // CHANGE
+            toolbar.style.display = "none"; // CHANGE
+            toolbar.style.flexDirection = "column"; // CHANGE
+            toolbar.style.gap = "4px"; // CHANGE
+            toolbar.style.padding = "4px"; // CHANGE
+            toolbar.style.background = "rgba(255,255,255,0.96)"; // CHANGE
+            toolbar.style.border = "1px solid #c7c7cc"; // CHANGE
+            toolbar.style.borderRadius = "6px"; // CHANGE
+            toolbar.style.boxShadow = "0 2px 8px rgba(0,0,0,0.16)"; // CHANGE
+            toolbar.style.font = "12px Arial, sans-serif"; // CHANGE
+            toolbar.style.pointerEvents = "auto"; // CHANGE
+            mxEvent.addListener(toolbar, "mousedown", function (evt) { mxEvent.consume(evt); }); // CHANGE
+            mxEvent.addListener(toolbar, "click", function (evt) { evt.stopPropagation(); }); // CHANGE
+
+            settingsBtn = makeButton("Set Garden Settings"); // CHANGE
+            addGroupBtn = makeButton("Add New Plant Group"); // CHANGE
+            toolbar.appendChild(settingsBtn); // CHANGE
+            toolbar.appendChild(addGroupBtn); // CHANGE
+
+            mxEvent.addListener(settingsBtn, "click", async function (evt) { // CHANGE
+                mxEvent.consume(evt); // CHANGE
+                const moduleCell = activeModuleCell; // CHANGE
+                if (!moduleCell || !isGardenModule(moduleCell)) return; // CHANGE
+                hideToolbar(); // CHANGE
+                await showGardenSettingsDialog(ui, graph, moduleCell, scheduleRefresh); // CHANGE
+            }); // CHANGE
+
+            mxEvent.addListener(addGroupBtn, "click", function (evt) { // CHANGE
+                mxEvent.consume(evt); // CHANGE
+                const moduleCell = activeModuleCell; // CHANGE
+                const pt = anchorModelPoint; // CHANGE
+                if (!moduleCell || !pt || !hasGardenSettingsSet(moduleCell)) return; // CHANGE
+                createEmptyTilerGroup(graph, moduleCell, pt.x, pt.y); // CHANGE
+                hideToolbar(); // CHANGE
+            }); // CHANGE
+
+            const host = getOverlayHost(); // CHANGE
+            if (host) host.appendChild(toolbar); // CHANGE
+            return toolbar; // CHANGE
+        } // CHANGE
+
+        function hideToolbar() { // CHANGE
+            if (toolbar) toolbar.style.display = "none"; // CHANGE
+        } // CHANGE
+
+        function getSingleSelectedGardenModule() { // CHANGE
+            const cells = graph.getSelectionCells ? (graph.getSelectionCells() || []) : []; // CHANGE
+            if (cells.length !== 1) return null; // CHANGE
+            return isGardenModule(cells[0]) ? cells[0] : null; // CHANGE
+        } // CHANGE
+
+        function viewPointFromModelPoint(pt) { // CHANGE
+            const s = graph.view.scale || 1; // CHANGE
+            const tr = graph.view.translate || { x: 0, y: 0 }; // CHANGE
+            return { // CHANGE
+                x: ((Number(pt.x) || 0) + tr.x) * s + (graph.panDx || 0), // CHANGE
+                y: ((Number(pt.y) || 0) + tr.y) * s + (graph.panDy || 0) // CHANGE
+            }; // CHANGE
+        } // CHANGE
+
+        function viewportCenterModelPoint() { // CHANGE
+            const s = graph.view.scale || 1; // CHANGE
+            const tr = graph.view.translate || { x: 0, y: 0 }; // CHANGE
+            const w = graph.container ? graph.container.clientWidth || 0 : 0; // CHANGE
+            const h = graph.container ? graph.container.clientHeight || 0 : 0; // CHANGE
+            return { x: (w / 2) / s - tr.x, y: (h / 2) / s - tr.y }; // CHANGE
+        } // CHANGE
+
+        function stateContainsViewPoint(state, pt) { // CHANGE
+            if (!state || !pt) return false; // CHANGE
+            return pt.x >= state.x && pt.y >= state.y && pt.x <= state.x + state.width && pt.y <= state.y + state.height; // CHANGE
+        } // CHANGE
+
+        function chooseAnchorPoint(moduleCell) { // CHANGE
+            const now = Date.now(); // CHANGE
+            const state = graph.view.getState(moduleCell); // CHANGE
+            if (lastMouseAnchor && now - lastMouseAnchor.t <= MOUSE_ANCHOR_MAX_AGE_MS && stateContainsViewPoint(state, lastMouseAnchor.view)) { // CHANGE
+                return { x: lastMouseAnchor.model.x, y: lastMouseAnchor.model.y }; // CHANGE
+            } // CHANGE
+            return viewportCenterModelPoint(); // CHANGE
+        } // CHANGE
+
+        function clampPosition(left, top, width, height) { // CHANGE
+            const host = getOverlayHost(); // CHANGE
+            const maxW = host ? (host.clientWidth || graph.container.clientWidth || 0) : 0; // CHANGE
+            const maxH = host ? (host.clientHeight || graph.container.clientHeight || 0) : 0; // CHANGE
+            const maxLeft = Math.max(EDGE_MARGIN_PX, maxW - width - EDGE_MARGIN_PX); // CHANGE
+            const maxTop = Math.max(EDGE_MARGIN_PX, maxH - height - EDGE_MARGIN_PX); // CHANGE
+            return { // CHANGE
+                left: Math.max(EDGE_MARGIN_PX, Math.min(left, maxLeft)), // CHANGE
+                top: Math.max(EDGE_MARGIN_PX, Math.min(top, maxTop)) // CHANGE
+            }; // CHANGE
+        } // CHANGE
+
+        function positionToolbar() { // CHANGE
+            if (!toolbar || !activeModuleCell || !anchorModelPoint) return; // CHANGE
+            const host = getOverlayHost(); // CHANGE
+            if (host && toolbar.parentNode !== host) host.appendChild(toolbar); // CHANGE
+            const viewPt = viewPointFromModelPoint(anchorModelPoint); // CHANGE
+            toolbar.style.display = "flex"; // CHANGE
+            const width = toolbar.offsetWidth || 150; // CHANGE
+            const height = toolbar.offsetHeight || 64; // CHANGE
+            const pos = clampPosition(viewPt.x + OFFSET_PX, viewPt.y + OFFSET_PX, width, height); // CHANGE
+            toolbar.style.left = Math.round(pos.left) + "px"; // CHANGE
+            toolbar.style.top = Math.round(pos.top) + "px"; // CHANGE
+        } // CHANGE
+
+        function syncToolbarState() { // CHANGE
+            const moduleCell = activeModuleCell; // CHANGE
+            if (!toolbar || !settingsBtn || !addGroupBtn || !moduleCell) return; // CHANGE
+            const hasSettings = hasGardenSettingsSet(moduleCell); // CHANGE
+            settingsBtn.textContent = hasSettings ? "Edit Garden Settings" : "Set Garden Settings"; // CHANGE
+            addGroupBtn.disabled = !hasSettings; // CHANGE
+            addGroupBtn.title = hasSettings ? "Add a new plant group at the selected location" : "Set garden settings before adding plants"; // CHANGE
+            addGroupBtn.style.opacity = hasSettings ? "1" : "0.55"; // CHANGE
+            addGroupBtn.style.cursor = hasSettings ? "pointer" : "default"; // CHANGE
+        } // CHANGE
+
+        function refreshForSelection() { // CHANGE
+            refreshTimer = null; // CHANGE
+            const moduleCell = getSingleSelectedGardenModule(); // CHANGE
+            if (!moduleCell || gestureHidden) { // CHANGE
+                activeModuleCell = moduleCell || null; // CHANGE
+                if (!moduleCell) anchorModelPoint = null; // CHANGE
+                hideToolbar(); // CHANGE
+                return; // CHANGE
+            } // CHANGE
+            if (activeModuleCell !== moduleCell || !anchorModelPoint) { // CHANGE
+                anchorModelPoint = chooseAnchorPoint(moduleCell); // CHANGE
+            } // CHANGE
+            activeModuleCell = moduleCell; // CHANGE
+            ensureToolbar(); // CHANGE
+            syncToolbarState(); // CHANGE
+            positionToolbar(); // CHANGE
+        } // CHANGE
+
+        function scheduleRefresh() { // CHANGE
+            if (refreshTimer != null) clearTimeout(refreshTimer); // CHANGE
+            refreshTimer = setTimeout(refreshForSelection, 0); // CHANGE
+        } // CHANGE
+
+        graph.__plantTilerRefreshGardenModuleOverlay = scheduleRefresh; // CHANGE
+
+        graph.addMouseListener({ // CHANGE
+            mouseDown: function (_sender, me) { // CHANGE
+                const evt = me && me.getEvent ? me.getEvent() : null; // CHANGE
+                if (evt && toolbar && toolbar.contains(mxEvent.getSource(evt))) return; // CHANGE
+                if (evt) { // CHANGE
+                    const modelPt = graph.getPointForEvent(evt, false); // CHANGE
+                    lastMouseAnchor = { // CHANGE
+                        model: { x: modelPt.x, y: modelPt.y }, // CHANGE
+                        view: { x: me.getGraphX(), y: me.getGraphY() }, // CHANGE
+                        t: Date.now() // CHANGE
+                    }; // CHANGE
+                } // CHANGE
+                gestureHidden = true; // CHANGE
+                hideToolbar(); // CHANGE
+            }, // CHANGE
+            mouseMove: function () { }, // CHANGE
+            mouseUp: function () { // CHANGE
+                gestureHidden = false; // CHANGE
+                scheduleRefresh(); // CHANGE
+            } // CHANGE
+        }); // CHANGE
+
+        graph.getSelectionModel().addListener(mxEvent.CHANGE, scheduleRefresh); // CHANGE
+        graph.addListener(mxEvent.CELLS_MOVED, scheduleRefresh); // CHANGE
+        graph.addListener(mxEvent.CELLS_RESIZED, scheduleRefresh); // CHANGE
+        graph.getView().addListener(mxEvent.SCALE_AND_TRANSLATE, scheduleRefresh); // CHANGE
+        graph.getView().addListener(mxEvent.REPAINT, function () { if (toolbar && toolbar.style.display !== "none") positionToolbar(); }); // CHANGE
+        graph.getModel().addListener(mxEvent.UNDO, scheduleRefresh); // CHANGE
+        graph.getModel().addListener(mxEvent.REDO, scheduleRefresh); // CHANGE
+        mxEvent.addListener(window, "resize", scheduleRefresh); // CHANGE
+        setTimeout(scheduleRefresh, 0); // CHANGE
+    } // CHANGE
 
 
     // Listen for garden-module settings requests emitted by the module plugin               
@@ -1168,7 +1394,7 @@ Draw.loadPlugin(function (ui) {
             setTimeout(() => {
                 // Re-check in case settings were set during the delay                         
                 if (hasGardenSettingsSet(moduleCell)) return;
-                showGardenSettingsDialog(ui, graph, moduleCell);
+                showGardenSettingsDialog(ui, graph, moduleCell, graph.__plantTilerRefreshGardenModuleOverlay); // CHANGE
             }, 0);
         });
     }
@@ -1195,9 +1421,11 @@ Draw.loadPlugin(function (ui) {
     function isGardenModule(cell) {
         return (
             isModule(cell) &&
-            !!(cell.getAttribute && cell.getAttribute("garden_module") === "1")
+            getXmlAttr(cell, "garden_module", "") === "1" // CHANGE
         );
     }
+
+    installGardenModuleOverlay(); // CHANGE
 
     function findModuleAncestor(graph, cell) {
         const m = graph.getModel();

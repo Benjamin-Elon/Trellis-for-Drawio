@@ -149,6 +149,26 @@ function makeInputs({
     });
 }
 
+function makeRepeatRule(overrides = {}) { // ADDED
+    return { // ADDED
+        id: 'water', // ADDED
+        title: 'Water {plant}', // ADDED
+        startAnchorStage: 'SOW', // ADDED
+        startOffsetDays: 0, // ADDED
+        startOffsetDirection: 'after', // ADDED
+        endMode: 'fixed_days', // ADDED
+        durationDays: 0, // ADDED
+        repeatMode: 'interval', // ADDED
+        repeatEveryDays: 7, // ADDED
+        repeatUntilMode: 'x_times', // ADDED
+        repeatTimes: 5, // ADDED
+        repeatUntilAnchorStage: 'HARVEST_END', // ADDED
+        repeatCutoffOffsetDays: 0, // ADDED
+        repeatCutoffOffsetDirection: 'after', // ADDED
+        ...overrides // ADDED
+    }; // ADDED
+} // ADDED
+
 function makeAutoWindowParams({
     plant = makePlant(),
     city = makeCity(),
@@ -599,6 +619,122 @@ test('schedule summary state uses perennial and annual harvest semantics', () =>
     const perennial = hooks.buildScheduleViewState({ perennial: true, plantName: 'Asparagus' }); // ADDED
     assert.equal(perennial.feasibility.status, 'not_applicable'); // ADDED
     assert.match(perennial.firstHarvest, /Not calculated/); // ADDED
+}); // ADDED
+
+test('task rule normalization defaults repeat cutoff fields', () => { // ADDED
+    const rule = hooks.normalizeTaskRule({ title: 'Water', repeat: true }); // ADDED
+    assert.equal(rule.repeatMode, 'interval'); // ADDED
+    assert.equal(rule.repeatUntilMode, 'x_times'); // ADDED
+    assert.equal(rule.repeatUntilAnchorStage, 'HARVEST_END'); // ADDED
+    assert.equal(rule.repeatCutoffOffsetDays, 0); // ADDED
+    assert.equal(rule.repeatCutoffOffsetDirection, 'after'); // ADDED
+}); // ADDED
+
+test('task rule validation requires valid repeat cutoff configuration', () => { // ADDED
+    const allowedStages = ['SOW', 'GERM', 'TRANSPLANT', 'HARVEST_START', 'HARVEST_END']; // ADDED
+    assert.throws(() => hooks.validateTaskRule(makeRepeatRule({ repeatEveryDays: 0 }), { allowedStages }), /Repeat every days/); // ADDED
+    assert.throws(() => hooks.validateTaskRule(makeRepeatRule({ repeatUntilMode: 'forever' }), { allowedStages }), /Invalid repeat-until mode/); // ADDED
+    assert.throws(() => hooks.validateTaskRule(makeRepeatRule({ repeatUntilAnchorStage: 'BAD_STAGE' }), { allowedStages }), /Cutoff anchor is not available/); // ADDED
+    assert.throws(() => hooks.validateTaskRule(makeRepeatRule({ repeatCutoffOffsetDays: -1 }), { allowedStages }), /Cutoff offset/); // ADDED
+    assert.throws(() => hooks.validateTaskRule(makeRepeatRule({ repeatTimes: 0 }), { allowedStages }), /Repeat times/); // ADDED
+    assert.doesNotThrow(() => hooks.validateTaskRule(makeRepeatRule({ repeatUntilMode: 'until_anchor', repeatTimes: 0 }), { allowedStages })); // ADDED
+}); // ADDED
+
+test('task rule anchor order rejects starts after end or cutoff anchors', async () => { // ADDED
+    const plant = makePlant(); // ADDED
+    const result = hooks.computeScheduleResult(makeInputs({ plant })); // ADDED
+    const startAfterEnd = { // ADDED
+        ...makeRepeatRule({ repeatMode: 'none' }), // ADDED
+        startAnchorStage: 'HARVEST_END', // ADDED
+        endMode: 'anchor_range', // ADDED
+        endAnchorStage: 'HARVEST_START' // ADDED
+    }; // ADDED
+    const startAfterCutoff = makeRepeatRule({ // ADDED
+        startAnchorStage: 'HARVEST_END', // ADDED
+        repeatUntilAnchorStage: 'HARVEST_START' // ADDED
+    }); // ADDED
+
+    assert.throws(() => hooks.validateTaskRuleAnchorOrder(startAfterEnd, { schedule: result.schedule, timelines: result.timelines }), /Start must be on or before the end anchor/); // ADDED
+    await assert.rejects(() => hooks.buildTasksForPlan({ // ADDED
+        plant, // ADDED
+        schedule: result.schedule, // ADDED
+        timelines: result.timelines, // ADDED
+        taskTemplate: { version: 2, rules: [startAfterCutoff] } // ADDED
+    }), /Start must be on or before the cutoff anchor/); // ADDED
+}); // ADDED
+
+test('task editor placement and visibility rules stay wired', () => { // ADDED
+    const source = fs.readFileSync(schedulerPath, 'utf8'); // ADDED
+    assert.match(source, /const editBtn = mxUtils\.button\("Edit",\s*\(\) => openTaskEditor\(rule,\s*originalIndex,\s*wrap\)\)/); // ADDED
+    assert.match(source, /function placeTaskEditorAfter\(anchorEl\)[\s\S]*anchorEl\.parentNode\.insertBefore\(taskEditorDiv,\s*anchorEl\.nextSibling\)/); // ADDED
+    assert.match(source, /function setTaskEditorRowVisible\(rowEl,\s*visible\)[\s\S]*rowEl\.style\.setProperty\("display",\s*visible \? "flex" : "none",\s*"important"\)/); // CHANGED
+    assert.match(source, /setTaskEditorRowVisible\(durationRow,\s*endMode === "fixed_days"\)/); // CHANGED
+    assert.match(source, /setTaskEditorRowVisible\(repeatTimesRow,\s*repeating && untilMode === "x_times"\)/); // CHANGED
+}); // ADDED
+
+test('x-times repeat generation is capped by the exclusive cutoff anchor', async () => { // ADDED
+    const plant = makePlant(); // ADDED
+    const result = hooks.computeScheduleResult(makeInputs({ plant })); // ADDED
+    const tasks = await hooks.buildTasksForPlan({ // ADDED
+        plant, // ADDED
+        schedule: result.schedule, // ADDED
+        timelines: result.timelines, // ADDED
+        taskTemplate: { version: 2, rules: [makeRepeatRule({ repeatEveryDays: 3, repeatTimes: 10, repeatUntilAnchorStage: 'SOW', repeatCutoffOffsetDays: 10 })] } // ADDED
+    }); // ADDED
+    assert.deepEqual(Array.from(tasks, task => task.startISO), ['2026-04-01', '2026-04-04', '2026-04-07', '2026-04-10']); // CHANGED
+}); // ADDED
+
+test('until-anchor repeat generation uses the exclusive cutoff anchor', async () => { // ADDED
+    const plant = makePlant(); // ADDED
+    const result = hooks.computeScheduleResult(makeInputs({ plant })); // ADDED
+    const tasks = await hooks.buildTasksForPlan({ // ADDED
+        plant, // ADDED
+        schedule: result.schedule, // ADDED
+        timelines: result.timelines, // ADDED
+        taskTemplate: { version: 2, rules: [makeRepeatRule({ repeatEveryDays: 10, repeatUntilMode: 'until_anchor', repeatUntilAnchorStage: 'HARVEST_START' })] } // ADDED
+    }); // ADDED
+    assert.deepEqual(Array.from(tasks, task => task.startISO), ['2026-04-01', '2026-04-11', '2026-04-21']); // CHANGED
+}); // ADDED
+
+test('repeat cutoff offset shifts the exclusive cap before and after the anchor', async () => { // ADDED
+    const plant = makePlant(); // ADDED
+    const result = hooks.computeScheduleResult(makeInputs({ plant })); // ADDED
+    const beforeTasks = await hooks.buildTasksForPlan({ // ADDED
+        plant, // ADDED
+        schedule: result.schedule, // ADDED
+        timelines: result.timelines, // ADDED
+        taskTemplate: { version: 2, rules: [makeRepeatRule({ repeatEveryDays: 10, repeatTimes: 10, repeatUntilAnchorStage: 'HARVEST_START', repeatCutoffOffsetDays: 7, repeatCutoffOffsetDirection: 'before' })] } // ADDED
+    }); // ADDED
+    const afterTasks = await hooks.buildTasksForPlan({ // ADDED
+        plant, // ADDED
+        schedule: result.schedule, // ADDED
+        timelines: result.timelines, // ADDED
+        taskTemplate: { version: 2, rules: [makeRepeatRule({ repeatEveryDays: 10, repeatTimes: 10, repeatUntilAnchorStage: 'HARVEST_START', repeatCutoffOffsetDays: 7, repeatCutoffOffsetDirection: 'after' })] } // ADDED
+    }); // ADDED
+    assert.deepEqual(Array.from(beforeTasks, task => task.startISO), ['2026-04-01', '2026-04-11', '2026-04-21']); // CHANGED
+    assert.deepEqual(Array.from(afterTasks, task => task.startISO), ['2026-04-01', '2026-04-11', '2026-04-21', '2026-05-01']); // CHANGED
+}); // ADDED
+
+test('repeat cutoff can omit all occurrences and is preview-warning eligible', async () => { // ADDED
+    const plant = makePlant(); // ADDED
+    const result = hooks.computeScheduleResult(makeInputs({ plant })); // ADDED
+    const template = { version: 2, rules: [makeRepeatRule({ repeatUntilAnchorStage: 'SOW' })] }; // ADDED
+    const tasks = await hooks.buildTasksForPlan({ // ADDED
+        plant, // ADDED
+        schedule: result.schedule, // ADDED
+        timelines: result.timelines, // ADDED
+        taskTemplate: template, // ADDED
+        includePreviewMetadata: true // ADDED
+    }); // ADDED
+    const omitted = hooks.findRepeatCutoffOmittedRuleKeys({ taskTemplate: template, schedule: result.schedule, timelines: result.timelines }); // ADDED
+    assert.equal(tasks.length, 0); // ADDED
+    assert.equal(omitted.has('water::0'), true); // ADDED
+}); // ADDED
+
+test('task rule descriptions include repeat cutoff wording', () => { // ADDED
+    assert.match(hooks.describeTaskRule(makeRepeatRule({ repeatEveryDays: 7, repeatTimes: 5 })), /repeat every 7 days, up to 5 times, until Harvest end/); // ADDED
+    assert.match(hooks.describeTaskRule(makeRepeatRule({ repeatEveryDays: 7, repeatUntilMode: 'until_anchor' })), /repeat every 7 days until Harvest end/); // ADDED
+    assert.match(hooks.describeTaskRule(makeRepeatRule({ repeatCutoffOffsetDays: 7, repeatCutoffOffsetDirection: 'before' })), /until 7 days before Harvest end/); // ADDED
 }); // ADDED
 
 test('task preview and save share generated dates before display filtering', async () => { // ADDED
