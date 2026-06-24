@@ -1,4 +1,9 @@
 // This file has been modified to allow a file system bridge for plugins.
+/*
+ * Trellis update progress change (2026-06-24):
+ * Download-only updater progress uses guarded helpers with indeterminate fallback,
+ * percent/speed detail text, and controlled cleanup/error UI.
+ */
 
 import fs from 'fs';
 import { promises as fsProm } from 'fs';
@@ -97,6 +102,11 @@ autoUpdater.autoDownload = silentUpdate
 autoUpdater.autoInstallOnAppQuit = silentUpdate
 const trellisReleaseUrl = 'https://github.com/Benjamin-Elon/Trellis-for-Drawio'; // Trellis release: single source for public release links.
 const trellisSupportUrl = `${trellisReleaseUrl}/issues`; // Trellis release: keep support links on the fork.
+const trellisUpdateProgressTitle = 'Trellis for Drawio Update'; // NEW
+const trellisUpdateProgressText = 'Downloading Trellis for Drawio update...'; // NEW
+let trellisUpdateDownloadInProgress = false; // NEW
+let trellisUpdateProgressBar = null; // NEW
+let trellisUpdateProgressIsDeterminate = false; // NEW
 
 function canCheckForUpdates() {
 	return !disableUpdate && app.isPackaged; // Trellis release: dev runs do not have packaged updater metadata.
@@ -119,6 +129,121 @@ function checkForTrellisUpdates() {
 		return false;
 	}
 }
+
+function roundTrellisUpdatePercent(percent) { // NEW
+	if (typeof percent !== 'number' || !Number.isFinite(percent)) return null; // NEW
+
+	return Math.max(0, Math.min(100, Math.round(percent * 100) / 100)); // NEW
+} // NEW
+
+function formatTrellisUpdateSpeed(bytesPerSecond) { // NEW
+	if (typeof bytesPerSecond !== 'number' || !Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return ''; // NEW
+
+	const kilobytesPerSecond = bytesPerSecond / 1024; // NEW
+
+	if (kilobytesPerSecond < 1024) { // NEW
+		return `${Math.round(kilobytesPerSecond * 10) / 10} KB/s`; // NEW
+	} // NEW
+
+	return `${Math.round((kilobytesPerSecond / 1024) * 10) / 10} MB/s`; // NEW
+} // NEW
+
+function formatTrellisDownloadDetail(progressInfo) { // NEW
+	const percent = roundTrellisUpdatePercent(progressInfo?.percent); // NEW
+
+	if (percent == null) return 'Downloading update...'; // NEW
+
+	const speed = formatTrellisUpdateSpeed(progressInfo?.bytesPerSecond); // NEW
+
+	return speed ? `${percent}% downloaded - ${speed}` : `${percent}% downloaded`; // NEW
+} // NEW
+
+function createTrellisUpdateProgressBar(options = {}) { // NEW
+	return new ProgressBar({ // NEW
+		indeterminate: options.indeterminate !== false, // NEW
+		initialValue: options.initialValue || 0, // NEW
+		closeOnComplete: false, // NEW
+		title: trellisUpdateProgressTitle, // NEW
+		text: options.text || trellisUpdateProgressText, // NEW
+		detail: options.detail || 'Downloading update...', // NEW
+		browserWindow: { // NEW
+			closable: options.closable === true, // NEW
+		}, // NEW
+	}); // NEW
+} // NEW
+
+function closeTrellisUpdateProgressBar() { // NEW
+	if (trellisUpdateProgressBar == null) return; // NEW
+
+	try { // NEW
+		trellisUpdateProgressBar.close(); // NEW
+	} // NEW
+	catch (e) { // NEW
+		log.error('@update-progress-close-error@\n', e); // NEW
+	} // NEW
+
+	trellisUpdateProgressBar = null; // NEW
+	trellisUpdateProgressIsDeterminate = false; // NEW
+} // NEW
+
+function beginTrellisUpdateDownload() { // NEW
+	closeTrellisUpdateProgressBar(); // NEW
+	trellisUpdateDownloadInProgress = true; // NEW
+	trellisUpdateProgressIsDeterminate = false; // NEW
+	trellisUpdateProgressBar = createTrellisUpdateProgressBar(); // NEW
+} // NEW
+
+function showTrellisUpdateDownloadError(e) { // NEW
+	if (!trellisUpdateDownloadInProgress) return; // NEW
+
+	const message = e && e.message ? e.message : e; // NEW
+	trellisUpdateDownloadInProgress = false; // NEW
+	closeTrellisUpdateProgressBar(); // NEW
+	trellisUpdateProgressBar = createTrellisUpdateProgressBar({ // NEW
+		closable: true, // NEW
+		indeterminate: false, // NEW
+		initialValue: 100, // NEW
+		text: 'Trellis for Drawio update failed.', // NEW
+		detail: `Error occurred while downloading update. ${message}`, // NEW
+	}); // NEW
+} // NEW
+
+function showTrellisUpdateDownloadProgress(progressInfo) { // NEW
+	if (!trellisUpdateDownloadInProgress || silentUpdate) return; // NEW
+
+	const percent = roundTrellisUpdatePercent(progressInfo?.percent); // NEW
+
+	if (percent == null) return; // NEW
+
+	const detail = formatTrellisDownloadDetail(progressInfo); // NEW
+
+	if (!trellisUpdateProgressIsDeterminate) { // NEW
+		closeTrellisUpdateProgressBar(); // NEW
+		trellisUpdateProgressIsDeterminate = true; // NEW
+		trellisUpdateProgressBar = createTrellisUpdateProgressBar({ // NEW
+			indeterminate: false, // NEW
+			initialValue: percent, // NEW
+			detail, // NEW
+		}); // NEW
+		const progressBar = trellisUpdateProgressBar; // NEW
+
+		progressBar.on('ready', function () { // NEW
+			if (trellisUpdateProgressBar !== progressBar || !trellisUpdateDownloadInProgress) return; // NEW
+
+			progressBar.detail = detail; // NEW
+			progressBar.value = percent; // NEW
+		}); // NEW
+		return; // NEW
+	} // NEW
+
+	trellisUpdateProgressBar.detail = detail; // NEW
+	trellisUpdateProgressBar.value = percent; // NEW
+} // NEW
+
+function finishTrellisUpdateDownload() { // NEW
+	trellisUpdateDownloadInProgress = false; // NEW
+	closeTrellisUpdateProgressBar(); // NEW
+} // NEW
 
 const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
 
@@ -1264,10 +1389,33 @@ app.on('web-contents-created', (event, contents) => {
 	})
 })
 
-autoUpdater.on('error', e => log.error('@error@\n', e))
+autoUpdater.on('error', e => { log.error('@error@\n', e); showTrellisUpdateDownloadError(e); }) // CHANGE
+
+autoUpdater.on('download-progress', showTrellisUpdateDownloadProgress) // NEW
+
+autoUpdater.on('update-downloaded', (info) => { // NEW
+	if (silentUpdate || !trellisUpdateDownloadInProgress) return; // NEW
+
+	finishTrellisUpdateDownload(); // NEW
+
+	// Ask user to update the app
+	dialog.showMessageBox(
+		{
+			type: 'question',
+			buttons: ['Install', 'Later'],
+			defaultId: 0,
+			message: 'A new version of ' + app.name + ' has been downloaded',
+			detail: 'It will be installed the next time you restart the application',
+		}).then(result => {
+			if (result.response === 0) {
+				setTimeout(() => autoUpdater.quitAndInstall(), 1)
+			}
+		})
+}) // NEW
 
 autoUpdater.on('update-available', (a, b) => {
 	if (silentUpdate) return;
+	if (trellisUpdateDownloadInProgress) return; // NEW
 
 	dialog.showMessageBox(
 		{
@@ -1275,95 +1423,23 @@ autoUpdater.on('update-available', (a, b) => {
 			buttons: ['Ok', 'Cancel', 'Don\'t Ask Again'],
 			title: 'Confirm Update',
 			message: 'Update available.\n\nWould you like to download and install new version?',
-			detail: 'Application will automatically restart to apply update after download',
+			detail: 'You will be prompted to install the update after download.', // CHANGE
 		}).then(result => {
 			if (result.response === 0) {
-				autoUpdater.downloadUpdate()
+				if (trellisUpdateDownloadInProgress) return; // NEW
 
-				var progressBar = new ProgressBar({
-					title: 'Trellis for Drawio Update',
-					text: 'Downloading Trellis for Drawio update...'
-				});
+				beginTrellisUpdateDownload(); // NEW
 
-				function reportUpdateError(e) {
-					progressBar.detail = 'Error occurred while fetching updates. ' + (e && e.message ? e.message : e)
-					progressBar._window.setClosable(true);
-				}
+				try { // NEW
+					const updateDownload = autoUpdater.downloadUpdate(); // CHANGE
 
-				autoUpdater.on('error', e => {
-					if (progressBar._window != null) {
-						reportUpdateError(e);
-					}
-					else {
-						progressBar.on('ready', function () {
-							reportUpdateError(e);
-						});
-					}
-				})
-
-				var firstTimeProg = true;
-
-				autoUpdater.on('download-progress', (d) => {
-					//On mac, download-progress event is not called, so the indeterminate progress will continue until download is finished
-					var percent = d.percent;
-
-					if (percent) {
-						percent = Math.round(percent * 100) / 100;
-					}
-
-					if (firstTimeProg) {
-						firstTimeProg = false;
-						progressBar.close();
-
-						progressBar = new ProgressBar({
-							indeterminate: false,
-							title: 'Trellis for Drawio Update',
-							text: 'Downloading Trellis for Drawio update...',
-							detail: `${percent}% ...`,
-							initialValue: percent
-						});
-
-						progressBar
-							.on('completed', function () {
-								progressBar.detail = 'Download completed.';
-							})
-							.on('aborted', function (value) {
-								if (__DEV__) {
-									log.error(`progress aborted... ${value}`);
-								}
-							})
-							.on('progress', function (value) {
-								progressBar.detail = `${value}% ...`;
-							})
-							.on('ready', function () {
-								//InitialValue doesn't set the UI! so this is needed to render it correctly
-								progressBar.value = percent;
-							});
-					}
-					else {
-						progressBar.value = percent;
-					}
-				});
-
-				autoUpdater.on('update-downloaded', (info) => {
-					if (!progressBar.isCompleted()) {
-						progressBar.close()
-					}
-
-					// Ask user to update the app
-					dialog.showMessageBox(
-						{
-							type: 'question',
-							buttons: ['Install', 'Later'],
-							defaultId: 0,
-							message: 'A new version of ' + app.name + ' has been downloaded',
-							detail: 'It will be installed the next time you restart the application',
-						}).then(result => {
-							if (result.response === 0) {
-								setTimeout(() => autoUpdater.quitAndInstall(), 1)
-							}
-						})
-				});
+					if (updateDownload != null && typeof updateDownload.catch === 'function') { // NEW
+						updateDownload.catch(showTrellisUpdateDownloadError); // NEW
+					} // NEW
+				} // NEW
+				catch (e) { // NEW
+					showTrellisUpdateDownloadError(e); // NEW
+				} // NEW
 			}
 			else if (result.response === 2 && store != null) {
 				//save in settings don't check for updates
