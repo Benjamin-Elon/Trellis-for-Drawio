@@ -902,6 +902,17 @@ Draw.loadPlugin(function (ui) {
         planBtn.style.fontFamily = "Arial";
         planBtn.style.fontSize = "12px";
 
+        const equipmentBtn = document.createElement("button"); // NEW
+        equipmentBtn.textContent = "Equipment"; // NEW
+        equipmentBtn.style.height = BTN_SIZE + "px"; // NEW
+        equipmentBtn.style.border = "1px solid #777"; // NEW
+        equipmentBtn.style.borderRadius = "6px"; // NEW
+        equipmentBtn.style.background = "#fff"; // NEW
+        equipmentBtn.style.cursor = "pointer"; // NEW
+        equipmentBtn.style.padding = "0 8px"; // NEW
+        equipmentBtn.style.fontFamily = "Arial"; // NEW
+        equipmentBtn.style.fontSize = "12px"; // NEW
+
         const allocateBtn = document.createElement("button");
         allocateBtn.textContent = "Allocate";
         allocateBtn.style.height = BTN_SIZE + "px";
@@ -1008,6 +1019,19 @@ Draw.loadPlugin(function (ui) {
             } catch (_) { }
         });
 
+        equipmentBtn.addEventListener("click", (ev) => { // NEW
+            ev.preventDefault(); // NEW
+            ev.stopPropagation(); // NEW
+
+            const moduleCell = findModuleAncestor(graph, dashCell); // NEW
+            if (!moduleCell) return; // NEW
+
+            const equipmentApi = graph && graph.__trellisEquipment; // NEW
+            if (!equipmentApi || typeof equipmentApi.openDialog !== "function") return; // NEW
+
+            equipmentApi.openDialog(moduleCell); // NEW
+        }); // NEW
+
         allocateBtn.addEventListener("click", (ev) => {
             ev.preventDefault();
             ev.stopPropagation();
@@ -1059,6 +1083,7 @@ Draw.loadPlugin(function (ui) {
 
         // Right: action buttons
         rightBar.appendChild(planBtn);
+        rightBar.appendChild(equipmentBtn); // NEW
         rightBar.appendChild(allocateBtn);
         rightBar.appendChild(exportBtn);
 
@@ -1075,7 +1100,7 @@ Draw.loadPlugin(function (ui) {
             leftBar, centerBar, rightBar,
             contentViewport, contentScaleBox, content,
             prev, next,
-            planBtn, allocateBtn, exportBtn,
+            planBtn, equipmentBtn, allocateBtn, exportBtn, // CHANGE
             yearLabel, syncYearLabel
         };
 

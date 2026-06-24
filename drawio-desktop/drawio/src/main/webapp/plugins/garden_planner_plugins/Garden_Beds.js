@@ -142,6 +142,18 @@ Draw.loadPlugin(function (ui) { // NEW
         return VALUE_LABELS[value] || String(value || "").replace(/_/g, " "); // NEW
     } // NEW
 
+    function listConditionOptionGroups() { // NEW
+        return FIELD_DEFS.map(function (field) { // NEW
+            return { // NEW
+                id: field.key, // NEW
+                name: field.label, // NEW
+                options: field.values.filter(function (value) { return value !== "unknown"; }).map(function (value) { // NEW
+                    return { id: field.key + ":" + value, fieldKey: field.key, value: value, name: valueLabel(value), category: field.label }; // NEW
+                }) // NEW
+            }; // NEW
+        }).filter(function (group) { return group.options.length > 0; }); // NEW
+    } // NEW
+
     function normalizeEnumValue(key, value) { // NEW
         const field = FIELD_BY_KEY[key]; // NEW
         const raw = String(value == null ? "" : value).trim(); // NEW
@@ -596,12 +608,14 @@ Draw.loadPlugin(function (ui) { // NEW
         readBedConditions: readBedConditions, // NEW
         writeBedConditions: writeBedConditions, // NEW
         clearBedConditions: clearBedConditions, // NEW
+        listConditionOptionGroups: listConditionOptionGroups, // NEW
         isGardenBed: isGardenBed, // NEW
         isBedCompatibleWithCrop: isBedCompatibleWithCrop, // NEW
         scoreBedSuitability: scoreBedSuitability, // NEW
         _test: { // NEW
             buildOverlayRows: buildOverlayRows, // NEW
             normalizeProfile: normalizeProfile, // NEW
+            listConditionOptionGroups: listConditionOptionGroups, // NEW
             parseProfileRecord: parseProfileRecord, // NEW
             getDisplayBedConditions: getDisplayBedConditions, // CHANGE
             showConditionEditorDialog: showConditionEditorDialog, // NEW

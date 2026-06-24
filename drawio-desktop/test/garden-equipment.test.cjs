@@ -74,6 +74,12 @@ function loadPlugin(options = {}) { // NEW
         }, // NEW
         menus: { get() { return { funct() {} }; }, addMenuItems() {} } // NEW
     }; // NEW
+    if (options.plantOptions) { // NEW
+        dom.window.USL = { scheduler: { listPlantOptions: async () => options.plantOptions } }; // NEW
+    } // NEW
+    if (options.bedConditionGroups) { // NEW
+        dom.window.TrellisGardenBeds = { listConditionOptionGroups: () => options.bedConditionGroups }; // NEW
+    } // NEW
     const context = { // NEW
         window: dom.window, // NEW
         document, // NEW
@@ -90,6 +96,19 @@ function loadPlugin(options = {}) { // NEW
     }; // NEW
     vm.runInNewContext(fs.readFileSync(PLUGIN_PATH, "utf8"), context, { filename: PLUGIN_PATH }); // NEW
     return { api: graph.__trellisEquipment, graph, model, root, moduleCell, taskCell, document, context, actions }; // NEW
+} // NEW
+
+async function flushPromises() { // NEW
+    for (let i = 0; i < 6; i++) await Promise.resolve(); // CHANGE
+} // NEW
+
+function fieldElement(document, labelText) { // NEW
+    const field = Array.from(document.querySelectorAll(".trellis-eq-field")).find(entry => { // NEW
+        const label = entry.querySelector("label"); // NEW
+        return label && label.textContent === labelText; // NEW
+    }); // NEW
+    assert.ok(field, "missing field " + labelText); // NEW
+    return field; // NEW
 } // NEW
 
 function clickButton(document, label) { // NEW
@@ -128,6 +147,49 @@ test("defaults normalize legacy frequency effects to hours multipliers", () => {
     assert.ok(timer, "expected drip timer default"); // NEW
     assert.equal(timer.efficiencyEffects[0].effectType, "hours_multiplier"); // NEW
     assert.match(timer.efficiencyEffects[0].notes, /Converted from frequency_multiplier/); // NEW
+}); // NEW
+
+test("defaults include scheduler task type integration records", () => { // NEW
+    const { api } = loadPlugin(); // NEW
+    const ids = new Set(api.defaults.taskTypes.map(item => item.id)); // NEW
+    ["general", "seedling_starting", "hardening_off", "thinning_check"].forEach(id => { // NEW
+        assert.equal(ids.has(id), true, "missing task type " + id); // NEW
+    }); // NEW
+}); // NEW
+
+test("yearly replacement reserve counts owned capital only", () => { // NEW
+    const { api } = loadPlugin(); // NEW
+    assert.equal(api.__test.yearlyReplacementReserve({ status: "owned", replacementCost: 1200, resaleValue: 900, maintenanceCost: 99, expectedLifespanYears: 4 }), 300); // NEW
+    assert.equal(api.__test.yearlyReplacementReserve({ status: "needs_repair", replacementCost: 600, expectedLifespanYears: 3 }), 200); // NEW
+    ["rented", "borrowed", "wishlist", "unavailable"].forEach(status => { // NEW
+        assert.equal(api.__test.yearlyReplacementReserve({ status, replacementCost: 1000, expectedLifespanYears: 1 }), 0); // NEW
+    }); // NEW
+    assert.equal(api.__test.yearlyReplacementReserve({ status: "owned", replacementCost: 500, expectedLifespanYears: 0 }), 0); // NEW
+    assert.equal(api.__test.yearlyReplacementReserve({ status: "owned", replacementCost: -500, expectedLifespanYears: 5 }), 0); // NEW
+}); // NEW
+
+test("equipment dialog shows yearly reserve tile and native tooltips", () => { // NEW
+    const { api, moduleCell, document } = loadPlugin(); // NEW
+    api.writeEquipmentInventory(moduleCell, [ // NEW
+        { id: "eq_owned", name: "Owned Tool", status: "owned", replacementCost: 1000, resaleValue: 900, maintenanceCost: 999, expectedLifespanYears: 5, capabilities: [], relevantTaskTypes: [], efficiencyEffects: [] }, // NEW
+        { id: "eq_repair", name: "Repair Tool", status: "needs_repair", replacementCost: 600, expectedLifespanYears: 3, capabilities: [], relevantTaskTypes: [], efficiencyEffects: [] }, // NEW
+        { id: "eq_rented", name: "Rented Tool", status: "rented", replacementCost: 1000, expectedLifespanYears: 1, capabilities: [], relevantTaskTypes: [], efficiencyEffects: [] } // NEW
+    ]); // NEW
+    api.openDialog(moduleCell); // NEW
+    const title = document.querySelector(".trellis-eq-title"); // NEW
+    assert.equal(title.textContent, "Garden Equipment & Workload Assumptions"); // NEW
+    const reserveTile = Array.from(document.querySelectorAll(".trellis-eq-tile")).find(tile => tile.textContent.includes("Yearly Replacement")); // NEW
+    assert.ok(reserveTile, "missing yearly replacement reserve tile"); // NEW
+    assert.match(reserveTile.textContent, /\$400/); // NEW
+    assert.equal(reserveTile.title, "Estimated yearly reserve to replace owned equipment: replacement cost divided by expected lifespan."); // NEW
+    assert.equal(document.querySelector(".trellis-eq-tab").title, "Open Inventory tab."); // NEW
+    assert.equal(Array.from(document.querySelectorAll("button")).find(button => button.textContent === "Save").title, "Save equipment changes to the selected garden module."); // NEW
+    clickText(document, ".trellis-eq-editor-tab", "Maintenance & Costs"); // NEW
+    assert.equal(fieldInput(document, "Replacement Cost ($)").title, "Gross future cost to replace this item; used in yearly replacement reserve estimates."); // NEW
+    assert.equal(fieldInput(document, "Maintenance Cost ($)").title, "Recurring maintenance cost each interval; separate from replacement reserve."); // NEW
+    clickText(document, ".trellis-eq-editor-tab", "Capabilities & Tasks"); // NEW
+    assert.equal(document.querySelector(".trellis-eq-checklist-search").title, "Search visible options by display name."); // NEW
+    assert.match(document.querySelector(".trellis-eq-check-group-head input").title, /Select or clear all/); // NEW
 }); // NEW
 
 test("equipment inventory persists with existing module attribute schema", () => { // NEW
@@ -239,6 +301,87 @@ test("typing checklist search and notes keeps focus", () => { // NEW
     typeValue(document, notes, "Stored by the back gate"); // NEW
     assert.equal(document.activeElement, notes); // NEW
     assert.equal(document.body.contains(notes), true); // NEW
+}); // NEW
+
+test("grouped equipment links show display names and bulk select whole crop categories", async () => { // NEW
+    const { api, moduleCell, document } = loadPlugin({ // NEW
+        plantOptions: [ // NEW
+            { id: "10", name: "Tomato", annual: 1, biennial: 0, perennial: 0 }, // NEW
+            { id: "11", name: "Parsley", annual: 0, biennial: 1, perennial: 0 }, // NEW
+            { id: "12", name: "Rhubarb", annual: 0, biennial: 0, perennial: 1 } // NEW
+        ] // NEW
+    }); // NEW
+    api.openDialog(moduleCell); // NEW
+    await flushPromises(); // NEW
+    clickText(document, ".trellis-eq-editor-tab", "Capabilities & Tasks"); // NEW
+
+    const capabilityField = fieldElement(document, "Capabilities"); // NEW
+    assert.match(capabilityField.textContent, /Hand Pruning/); // NEW
+    assert.doesNotMatch(capabilityField.textContent, /pruning_hand/); // NEW
+    const pruningGroup = Array.from(capabilityField.querySelectorAll(".trellis-eq-check-group-head span")).find(entry => entry.textContent === "Pruning"); // NEW
+    assert.ok(pruningGroup, "missing promoted pruning group"); // NEW
+
+    const cropsField = fieldElement(document, "Relevant Crops"); // NEW
+    assert.match(cropsField.textContent, /Annuals/); // NEW
+    assert.match(cropsField.textContent, /Biennials/); // NEW
+    assert.match(cropsField.textContent, /Perennials/); // NEW
+    const annualGroup = Array.from(cropsField.querySelectorAll(".trellis-eq-check-group")).find(entry => entry.getAttribute("data-group-name") === "Annuals"); // NEW
+    assert.ok(annualGroup, "missing annual crop group"); // NEW
+    annualGroup.querySelector(".trellis-eq-check-group-head input").click(); // NEW
+    clickButton(document, "Save"); // NEW
+    assert.deepEqual(Array.from(api.readEquipmentInventory(moduleCell)[0].relevantCropIds), ["10"]); // CHANGE
+}); // NEW
+
+test("task registry groups category first with canonical before other tasks", () => { // NEW
+    const { api, moduleCell, document } = loadPlugin(); // NEW
+    const taskTypes = api.readTaskTypeRegistry(moduleCell); // NEW
+    taskTypes.push({ id: "custom_planting", name: "Custom Planting", category: "planting", allowedQuantityBases: ["tasks"], defaultQuantityBasis: "tasks", baseHoursPerUnit: { tasks: 1 }, requiredCapabilities: [], optionalCapabilities: [], recommendedCapabilities: [] }); // NEW
+    api.writeTaskTypeRegistry(moduleCell, taskTypes); // NEW
+    api.openDialog(moduleCell); // NEW
+    clickText(document, ".trellis-eq-tab", "Task Types"); // NEW
+    const rows = Array.from(document.querySelectorAll(".trellis-eq-table tbody tr")).map(row => row.textContent); // CHANGE
+    const plantingIndex = rows.findIndex(text => text === "Planting"); // NEW
+    assert.ok(plantingIndex >= 0, "missing planting category"); // NEW
+    assert.equal(rows[plantingIndex + 1], "Canonical Tasks"); // CHANGE
+    assert.ok(rows.findIndex(text => text.includes("Direct Sowing")) > plantingIndex + 1, "canonical task should follow canonical subheading"); // NEW
+    const otherIndex = rows.findIndex((text, index) => index > plantingIndex && text === "Other Tasks"); // NEW
+    assert.ok(otherIndex > plantingIndex, "other tasks should be inside planting category"); // NEW
+    assert.ok(rows.findIndex(text => text.includes("Custom Planting")) > otherIndex, "custom task should be under other tasks"); // CHANGE
+}); // NEW
+
+test("loaded crop and bed checklists drop unmatched legacy tokens on save", async () => { // NEW
+    const { api, moduleCell, document } = loadPlugin({ // NEW
+        plantOptions: [{ id: "10", name: "Tomato", annual: 1, biennial: 0, perennial: 0 }] // NEW
+    }); // NEW
+    api.writeEquipmentInventory(moduleCell, [{ // NEW
+        id: "eq_legacy", name: "Legacy Tool", category: "other", capabilities: [], relevantTaskTypes: [], relevantCropIds: ["10", "missing_crop"], relevantBedConditions: ["sunExposure:full_sun", "legacy_condition"], efficiencyEffects: [] // NEW
+    }]); // NEW
+    api.openDialog(moduleCell); // NEW
+    await flushPromises(); // NEW
+    clickButton(document, "Save"); // NEW
+    const saved = api.readEquipmentInventory(moduleCell)[0]; // NEW
+    assert.deepEqual(Array.from(saved.relevantCropIds), ["10"]); // CHANGE
+    assert.deepEqual(Array.from(saved.relevantBedConditions), ["sunExposure:full_sun"]); // CHANGE
+}); // NEW
+
+test("crop fallback textarea preserves unmatched crop ids when catalog is unavailable", () => { // NEW
+    const { api, moduleCell, document } = loadPlugin(); // NEW
+    api.writeEquipmentInventory(moduleCell, [{ id: "eq_crop_fallback", name: "Fallback Tool", capabilities: [], relevantTaskTypes: [], relevantCropIds: ["legacy_crop"], relevantBedConditions: [], efficiencyEffects: [] }]); // NEW
+    api.openDialog(moduleCell); // NEW
+    clickText(document, ".trellis-eq-editor-tab", "Capabilities & Tasks"); // NEW
+    const cropsField = fieldElement(document, "Relevant Crops"); // NEW
+    assert.ok(cropsField.querySelector("textarea"), "expected crop fallback textarea"); // NEW
+    clickButton(document, "Save"); // NEW
+    assert.deepEqual(Array.from(api.readEquipmentInventory(moduleCell)[0].relevantCropIds), ["legacy_crop"]); // CHANGE
+}); // NEW
+
+test("equipment warnings resolve capability display names", () => { // NEW
+    const { api, moduleCell, taskCell } = loadPlugin(); // NEW
+    api.writeEquipmentInventory(moduleCell, []); // NEW
+    const warnings = api.buildTaskEquipmentWarnings(taskCell, moduleCell); // NEW
+    const text = warnings.map(warning => warning.message).join("\n"); // NEW
+    assert.match(text, /Hand Pruning/); // NEW
+    assert.doesNotMatch(text, /pruning_hand/); // NEW
 }); // NEW
 
 test("equipment date fields calculate replacement dates with override support", () => { // NEW

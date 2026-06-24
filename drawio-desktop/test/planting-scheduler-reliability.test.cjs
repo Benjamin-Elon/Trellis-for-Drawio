@@ -630,6 +630,27 @@ test('task rule normalization defaults repeat cutoff fields', () => { // ADDED
     assert.equal(rule.repeatCutoffOffsetDirection, 'after'); // ADDED
 }); // ADDED
 
+test('task rule task type metadata is custom-only and canonical mappings are generated', () => { // NEW
+    const custom = hooks.normalizeTaskRule({ id: 'water_weekly', title: 'Water', taskTypeId: 'Watering' }); // NEW
+    assert.equal(custom.taskTypeId, 'watering'); // NEW
+    const canonical = hooks.normalizeTaskRule({ id: 'sow', title: 'Sow', taskTypeId: 'watering' }); // NEW
+    assert.equal(Object.hasOwn(canonical, 'taskTypeId'), false); // NEW
+    assert.equal(hooks.resolveTaskRuleTaskTypeId({ id: 'prep', title: 'Prep' }), 'bed_preparation'); // NEW
+    assert.equal(hooks.resolveTaskRuleTaskTypeId({ id: 'start', title: 'Start' }), 'seedling_starting'); // NEW
+    assert.equal(hooks.resolveTaskRuleTaskTypeId({ id: 'harden', title: 'Harden' }), 'hardening_off'); // NEW
+    assert.equal(hooks.resolveTaskRuleTaskTypeId({ id: 'thin', title: 'Thin' }), 'thinning_check'); // NEW
+    assert.equal(hooks.resolveTaskRuleTaskTypeId({ id: 'custom', title: 'Custom' }), 'general'); // NEW
+}); // NEW
+
+test('custom task type validation is opt-in for editor saves', () => { // NEW
+    assert.doesNotThrow(() => hooks.validateTaskRule({ id: 'custom', title: 'Custom', startAnchorStage: 'SOW' })); // NEW
+    assert.throws( // NEW
+        () => hooks.validateTaskRule({ id: 'custom', title: 'Custom', startAnchorStage: 'SOW' }, { requireTaskType: true }), // NEW
+        /Task type is required/ // NEW
+    ); // NEW
+    assert.doesNotThrow(() => hooks.validateTaskRule({ id: 'custom', title: 'Custom', startAnchorStage: 'SOW', taskTypeId: 'watering' }, { requireTaskType: true })); // NEW
+}); // NEW
+
 test('task rule validation requires valid repeat cutoff configuration', () => { // ADDED
     const allowedStages = ['SOW', 'GERM', 'TRANSPLANT', 'HARVEST_START', 'HARVEST_END']; // ADDED
     assert.throws(() => hooks.validateTaskRule(makeRepeatRule({ repeatEveryDays: 0 }), { allowedStages }), /Repeat every days/); // ADDED
@@ -801,6 +822,24 @@ test('task titles use plant and variety for built-in and custom task rules', asy
     assert.equal(tasks.every(task => task.plant_name === 'Tomato'), true); // ADDED
     assert.equal(tasks.every(task => task.variety_name === 'Roma'), true); // ADDED
 }); // ADDED
+
+test('generated scheduler tasks include canonical and custom task type ids', async () => { // NEW
+    const plant = makePlant({ plant_name: 'Tomato' }); // NEW
+    const result = hooks.computeScheduleResult(makeInputs({ plant, startISO: '2026-04-01' })); // NEW
+    const tasks = await hooks.buildTasksForPlan({ // NEW
+        plant, // NEW
+        schedule: result.schedule, // NEW
+        timelines: result.timelines, // NEW
+        taskTemplate: { // NEW
+            rules: [ // NEW
+                { id: 'prep', title: 'Prep bed', startAnchorStage: 'SOW', startOffsetDays: 1, startOffsetDirection: 'before', endMode: 'fixed_days', durationDays: 1 }, // NEW
+                { id: 'harden', title: 'Harden off', startAnchorStage: 'SOW', endMode: 'fixed_days', durationDays: 1 }, // NEW
+                { id: 'custom_water', title: 'Water', startAnchorStage: 'SOW', endMode: 'fixed_days', durationDays: 1, taskTypeId: 'watering' } // NEW
+            ] // NEW
+        } // NEW
+    }); // NEW
+    assert.deepEqual(Array.from(tasks.map(task => task.task_type_id)), ['bed_preparation', 'hardening_off', 'watering']); // CHANGE
+}); // NEW
 
 test('task titles fall back to plant-only names when no variety is selected', async () => { // ADDED
     const plant = makePlant({ plant_name: 'Tomato' }); // ADDED
@@ -1143,6 +1182,12 @@ test('new task cards store scheduler dates as active and baseline dates', () => 
     assert.equal(attrs.base_end, '2026-04-13');
     assert.equal(Object.hasOwn(attrs, 'date_override'), false);
 });
+
+test('new task cards copy scheduler task type metadata', () => { // NEW
+    assert.deepEqual({ ...taskHooks.buildSchedulerTaskMetadataAttributes({ task_type_id: 'watering' }) }, { task_type_id: 'watering' }); // CHANGE
+    assert.deepEqual({ ...taskHooks.buildSchedulerTaskMetadataAttributes({ taskTypeId: 'general' }) }, { task_type_id: 'general' }); // CHANGE
+    assert.deepEqual({ ...taskHooks.buildSchedulerTaskMetadataAttributes({}) }, {}); // CHANGE
+}); // NEW
 
 test('manual card date shifts preserve calendar duration across edge cases', () => {
     const cases = [

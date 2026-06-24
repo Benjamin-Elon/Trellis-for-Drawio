@@ -6084,6 +6084,23 @@ Draw.loadPlugin(function (ui) {
             taskTemplateSource
         });
 
+        function getTaskTypeEditorOptions() { // NEW
+            const graph = ui && ui.editor && ui.editor.graph; // NEW
+            const model = graph && typeof graph.getModel === "function" ? graph.getModel() : null; // NEW
+            const moduleCell = model ? findGardenModuleAncestor(model, cell) : null; // NEW
+            const equipment = graph && graph.__trellisEquipment; // NEW
+            if (!equipment || typeof equipment.readTaskTypeRegistry !== "function" || !moduleCell) { // NEW
+                return { available: false, options: [{ value: "general", label: "General Task" }] }; // NEW
+            } // NEW
+            const rows = equipment.readTaskTypeRegistry(moduleCell) || []; // NEW
+            const options = rows // NEW
+                .map(function (tt) { return { value: normalizeTaskTypeId(tt && tt.id), label: String(tt && (tt.name || tt.id) || "").trim() }; }) // NEW
+                .filter(function (tt) { return tt.value && tt.label; }) // NEW
+                .sort(function (a, b) { return a.label.localeCompare(b.label); }); // NEW
+            if (!options.length) return { available: false, options: [{ value: "general", label: "General Task" }] }; // NEW
+            return { available: true, options: [{ value: "", label: "Choose task type" }].concat(options) }; // NEW
+        } // NEW
+
         async function openTaskEditor(rule, index, anchorEl = null) { // CHANGED
             taskEditorDiv.innerHTML = "";
             placeTaskEditorAfter(anchorEl); // ADDED
@@ -6161,6 +6178,11 @@ Draw.loadPlugin(function (ui) {
             titleInput.type = "text";
             titleInput.value = r.title;
             const titleRow = row("Title", titleInput).row;
+            const customTaskRule = !isCanonicalTaskId(r.id); // NEW
+            const taskTypeState = customTaskRule ? getTaskTypeEditorOptions() : null; // NEW
+            const taskTypeSel = customTaskRule ? makeSelect(taskTypeState.options, r.taskTypeId || (taskTypeState.available ? "" : "general")) : null; // NEW
+            if (taskTypeSel && !taskTypeState.available) taskTypeSel.disabled = true; // NEW
+            const taskTypeRow = customTaskRule ? row("Task Type", taskTypeSel).row : null; // NEW
 
             const startOffsetNum = makeNumber(r.startOffsetDays); // CHANGED
             const startOffsetDir = makeSelect([ // CHANGED
@@ -6275,6 +6297,7 @@ Draw.loadPlugin(function (ui) {
             repeatUntilModeSel.addEventListener("change", syncTaskEditorVisibility); // CHANGED
 
             editorBody.appendChild(titleRow);
+            if (taskTypeRow) editorBody.appendChild(taskTypeRow); // NEW
             editorBody.appendChild(startRow); // CHANGED
             editorBody.appendChild(endModeRow); // CHANGED
             editorBody.appendChild(durationRow);
@@ -6292,6 +6315,7 @@ Draw.loadPlugin(function (ui) {
             const saveBtn = mxUtils.button("Save", async () => {
                 try {
                     r.title = titleInput.value.trim();
+                    if (customTaskRule) r.taskTypeId = taskTypeSel.value || (taskTypeState.available ? "" : "general"); // NEW
 
                     r.startOffsetDays = Number(startOffsetNum.value); // CHANGED
                     r.startOffsetDirection = startOffsetDir.value; // CHANGED
@@ -6316,7 +6340,7 @@ Draw.loadPlugin(function (ui) {
                     r.repeatCutoffOffsetDirection = (r.repeatMode === "interval") ? repeatCutoffOffsetDir.value : "after"; // ADDED
 
                     const allowedStages = await getAllowedAnchorStagesForMethod(formState.methodId);
-                    const normalized = validateTaskRule(r, { allowedStages });
+                    const normalized = validateTaskRule(r, { allowedStages, requireTaskType: customTaskRule }); // CHANGE
                     try { // ADDED
                         const { inputs } = await buildScheduleContextFromForm(formState, selPlant, { currentVarieties }); // ADDED
                         const result = computeScheduleResult(inputs); // ADDED
@@ -6586,6 +6610,15 @@ Draw.loadPlugin(function (ui) {
     });
 
     const CANONICAL_TASK_IDS = ["prep", "sow", "start", "harden", "transplant", "thin", "harvest"];
+    const CANONICAL_TASK_TYPE_BY_RULE_ID = Object.freeze({ // NEW
+        prep: "bed_preparation", // NEW
+        sow: "direct_sowing", // NEW
+        start: "seedling_starting", // NEW
+        harden: "hardening_off", // NEW
+        transplant: "transplanting", // NEW
+        thin: "thinning_check", // NEW
+        harvest: "harvesting" // NEW
+    }); // NEW
 
     function isCanonicalTaskId(id) {
         return CANONICAL_TASK_IDS.includes(String(id || "").trim());
@@ -6594,6 +6627,17 @@ Draw.loadPlugin(function (ui) {
     function isCanonicalTaskRule(rule) {
         return isCanonicalTaskId(rule?.id);
     }
+
+    function normalizeTaskTypeId(value) { // NEW
+        return normId(value).replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, ""); // NEW
+    } // NEW
+
+    function resolveTaskRuleTaskTypeId(rule) { // NEW
+        const normalized = normalizeTaskRule(rule); // NEW
+        const id = String(normalized.id || "").trim(); // NEW
+        if (isCanonicalTaskId(id)) return CANONICAL_TASK_TYPE_BY_RULE_ID[id] || "general"; // NEW
+        return normalizeTaskTypeId(normalized.taskTypeId) || "general"; // NEW
+    } // NEW
 
     function mergeMissingCanonicalRules(currentRules, defaultRules) {
         const current = Array.isArray(currentRules) ? currentRules : [];
@@ -6740,6 +6784,13 @@ Draw.loadPlugin(function (ui) {
         r.repeatUntilAnchorStage = String(r.repeatUntilAnchorStage || "HARVEST_END"); // CHANGED
         r.repeatCutoffOffsetDays = Number(r.repeatCutoffOffsetDays ?? 0); // ADDED
         r.repeatCutoffOffsetDirection = (r.repeatCutoffOffsetDirection === "before") ? "before" : "after"; // ADDED
+        if (isCanonicalTaskId(r.id)) { // NEW
+            delete r.taskTypeId; // NEW
+            delete r.task_type_id; // NEW
+        } else { // NEW
+            r.taskTypeId = normalizeTaskTypeId(r.taskTypeId || r.task_type_id); // NEW
+            delete r.task_type_id; // NEW
+        } // NEW
 
         return r; // CHANGED
     }
@@ -6750,11 +6801,12 @@ Draw.loadPlugin(function (ui) {
         return { version: 2, rules }; // CHANGED
     }
 
-    function validateTaskRule(rule, { allowedStages = null } = {}) {
+    function validateTaskRule(rule, { allowedStages = null, requireTaskType = false } = {}) { // CHANGE
         const r = normalizeTaskRule(rule);
         const rawRepeatUntilMode = rule && Object.prototype.hasOwnProperty.call(rule, "repeatUntilMode") ? String(rule.repeatUntilMode || "") : ""; // ADDED
 
         if (!String(r.title || "").trim()) throw new Error("Task title is required.");
+        if (requireTaskType && !isCanonicalTaskId(r.id) && !String(r.taskTypeId || "").trim()) throw new Error("Task type is required."); // NEW
         if (!String(r.startAnchorStage || "").trim()) throw new Error("Start anchor is required.");
         if (!Number.isFinite(r.startOffsetDays) || r.startOffsetDays < 0) {
             throw new Error("Start offset must be 0 or greater.");
@@ -7125,6 +7177,7 @@ Draw.loadPlugin(function (ui) {
                     plant_name: plantName, // ADDED
                     variety_name: String(varietyName || '').trim(), // ADDED
                     rule_id: rule.id || null, // ADDED
+                    task_type_id: resolveTaskRuleTaskTypeId(rule), // NEW
                     startAnchorStage: rule.startAnchorStage, // ADDED
                     endMode: rule.endMode // ADDED
                 }; // ADDED
@@ -8177,10 +8230,25 @@ Draw.loadPlugin(function (ui) {
     const USL_DEBUG_HARVEST_WINDOWS = true;
 
     // -------------------- Public API --------------------------------------------------------
+    async function listPlantOptions() { // NEW
+        const plants = await PlantModel.listBasic(); // NEW
+        return plants.map(function (plant) { // NEW
+            return { // NEW
+                id: String(plant.plant_id), // NEW
+                name: String(plant.plant_name || plant.abbr || plant.plant_id), // NEW
+                abbr: String(plant.abbr || ""), // NEW
+                annual: Number(plant.annual || 0), // NEW
+                biennial: Number(plant.biennial || 0), // NEW
+                perennial: Number(plant.perennial || 0) // NEW
+            }; // NEW
+        }); // NEW
+    } // NEW
+
     window.USL = window.USL || {};
     window.USL.scheduler = Object.assign({}, window.USL.scheduler, {
         openScheduleDialog: (ui, cell) => openScheduleDialog(ui, cell),
-        openSetPlantDialog: (ui, cell) => openSetPlantDialog(ui, cell) // ADDED
+        openSetPlantDialog: (ui, cell) => openSetPlantDialog(ui, cell), // CHANGE
+        listPlantOptions: listPlantOptions // NEW
     });
     window.openUSLScheduleDialog = window.USL.scheduler.openScheduleDialog;
 
@@ -8526,6 +8594,7 @@ Draw.loadPlugin(function (ui) {
             classifySelectedSowDate, // ADDED
             buildScheduleViewState, // ADDED
             taskRuleLibraryForPlanningMode, // ADDED
+            resolveTaskRuleTaskTypeId, // NEW
             normalizeTaskRule, // ADDED
             validateTaskRule, // ADDED
             validateTaskRuleAnchorOrder, // ADDED

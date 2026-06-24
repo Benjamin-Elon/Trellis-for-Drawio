@@ -115,6 +115,14 @@ function buildInitialCardDateAttributes(startISO, endISO) { // NEW: scheduler ou
     };
 }
 
+function buildSchedulerTaskMetadataAttributes(task) { // NEW
+    const source = task && typeof task === 'object' ? task : {}; // NEW
+    const attrs = {}; // NEW
+    const taskTypeId = String(source.task_type_id || source.taskTypeId || '').trim(); // NEW
+    if (taskTypeId) attrs.task_type_id = taskTypeId; // NEW
+    return attrs; // NEW
+} // NEW
+
 function buildCardDateOverridePatch(source, newStartISO) { // NEW: pure patch builder keeps mutation orchestration small
     const current = getTaskDateRange(source);
     const nextStart = parseTaskCalendarISO(newStartISO);
@@ -278,6 +286,7 @@ if (typeof globalThis !== 'undefined' && globalThis.__TRELLIS_TASK_MANAGER_TEST_
         shiftTaskCalendarISO, // NEW
         getTaskDateRange, // NEW
         buildInitialCardDateAttributes, // NEW
+        buildSchedulerTaskMetadataAttributes, // NEW
         buildCardDateOverridePatch, // NEW
         buildCardDateResetPatch, // NEW
         isEditableCardDateLane, // NEW
@@ -1200,6 +1209,8 @@ Draw.loadPlugin(function (ui) {
                 if (t.method) setAttrNoUndo(card, 'method', t.method);
                 if (t.plant_name) setAttrNoUndo(card, 'plant_name', t.plant_name);
                 if (t.variety_name) setAttrNoUndo(card, 'variety_name', t.variety_name); // ADDED
+                const schedulerAttrs = buildSchedulerTaskMetadataAttributes(t); // NEW
+                Object.keys(schedulerAttrs).forEach(function (key) { setAttrNoUndo(card, key, schedulerAttrs[key]); }); // NEW
 
                 if (grp) linkBothWays(grp, card);
                 updateBadgeForLane(card, getAttr(parentLane, 'lane_key'));
