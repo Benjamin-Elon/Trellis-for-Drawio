@@ -2101,6 +2101,15 @@ Draw.loadPlugin(function (ui) {
         }
     }
 
+    function retileAndFitGroupIfAvailable(graph, groupCell, opts = {}) { // CHANGE
+        const tiler = window.USL && window.USL.tiler ? window.USL.tiler : null; // CHANGE
+        const fit = tiler && typeof tiler.retileAndFitToContainingBed === 'function' ? tiler.retileAndFitToContainingBed : null; // CHANGE
+        if (fit) return fit(graph, groupCell, opts); // CHANGE
+        const retile = tiler && typeof tiler.retileGroup === 'function' ? tiler.retileGroup : null; // CHANGE
+        if (retile) retile(graph, groupCell); // CHANGE
+        return null; // CHANGE
+    } // CHANGE
+
 
 
 
@@ -7890,8 +7899,7 @@ Draw.loadPlugin(function (ui) {
                 taskTemplate: options.taskTemplate ?? null // FIX: do not reread task_template_json after mutation
             }),
             finalizeGraph: async () => {
-                const retile = (window.USL && window.USL.tiler && window.USL.tiler.retileGroup) || null;
-                if (typeof retile === 'function') retile(graph, cell); // FIX: layout changes occur only after required external steps
+                retileAndFitGroupIfAvailable(graph, cell, { source: 'schedule-save' }); // CHANGE
                 graph.refresh(cell);
             },
             restoreGraphPatch
@@ -8233,8 +8241,7 @@ Draw.loadPlugin(function (ui) {
 
                 applyPlantSpacingToGroup(cell, row); // ADDED
 
-                const retile = (window.USL && window.USL.tiler && window.USL.tiler.retileGroup) || null; // ADDED
-                if (typeof retile === 'function') retile(graph, cell); // ADDED
+                retileAndFitGroupIfAvailable(graph, cell, { source: 'set-plant', inTransaction: true }); // CHANGE
                 graph.refresh(cell); // ADDED
             } finally { // ADDED
                 model.endUpdate(); // ADDED

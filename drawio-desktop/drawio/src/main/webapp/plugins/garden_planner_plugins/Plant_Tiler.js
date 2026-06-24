@@ -1288,6 +1288,8 @@ Draw.loadPlugin(function (ui) {
         let addBedBtn = null; // CHANGE
         let addGroupBtn = null; // CHANGE
         let activeModuleCell = null; // CHANGE
+        let activeBedCell = null; // CHANGE
+        let activeOverlayMode = ""; // CHANGE
         let anchorModelPoint = null; // CHANGE
         let lastMouseAnchor = null; // CHANGE
         let gestureHidden = false; // CHANGE
@@ -1372,7 +1374,8 @@ Draw.loadPlugin(function (ui) {
                 const moduleCell = activeModuleCell; // CHANGE
                 const pt = anchorModelPoint; // CHANGE
                 if (!moduleCell || !pt || !hasGardenSettingsSet(moduleCell)) return; // CHANGE
-                createEmptyTilerGroup(graph, moduleCell, pt.x, pt.y); // CHANGE
+                const group = createEmptyTilerGroup(graph, moduleCell, pt.x, pt.y); // CHANGE
+                if (activeOverlayMode === "bed" && group) retileAndFitToContainingBed(graph, group, { source: "overlay-bed-add" }); // CHANGE
                 hideToolbar(); // CHANGE
             }); // CHANGE
 
@@ -1389,6 +1392,18 @@ Draw.loadPlugin(function (ui) {
             const cells = graph.getSelectionCells ? (graph.getSelectionCells() || []) : []; // CHANGE
             if (cells.length !== 1) return null; // CHANGE
             return isGardenModule(cells[0]) ? cells[0] : null; // CHANGE
+        } // CHANGE
+
+        function getSingleSelectedOverlayTarget() { // CHANGE
+            const cells = graph.getSelectionCells ? (graph.getSelectionCells() || []) : []; // CHANGE
+            if (cells.length !== 1) return null; // CHANGE
+            const cell = cells[0]; // CHANGE
+            if (isGardenModule(cell)) return { mode: "module", moduleCell: cell, bedCell: null, anchorCell: cell }; // CHANGE
+            if (isGardenBed(cell)) { // CHANGE
+                const moduleCell = findGardenModuleAncestor(graph, cell); // CHANGE
+                if (moduleCell) return { mode: "bed", moduleCell: moduleCell, bedCell: cell, anchorCell: cell }; // CHANGE
+            } // CHANGE
+            return null; // CHANGE
         } // CHANGE
 
         function viewPointFromModelPoint(pt) { // CHANGE
@@ -1412,17 +1427,32 @@ Draw.loadPlugin(function (ui) {
             }; // CHANGE
         } // CHANGE
 
+        function cellCenterGraphPoint(cell) { // CHANGE
+            const model = graph.getModel(); // CHANGE
+            const geo = cell && model.getGeometry(cell); // CHANGE
+            if (!geo) return viewportCenterModelPoint(); // CHANGE
+            const parent = model.getParent(cell); // CHANGE
+            const parentGeo = parent && model.getGeometry(parent); // CHANGE
+            const parentX = parentGeo ? Number(parentGeo.x) || 0 : 0; // CHANGE
+            const parentY = parentGeo ? Number(parentGeo.y) || 0 : 0; // CHANGE
+            return { // CHANGE
+                x: parentX + (Number(geo.x) || 0) + (Number(geo.width) || 0) / 2, // CHANGE
+                y: parentY + (Number(geo.y) || 0) + (Number(geo.height) || 0) / 2 // CHANGE
+            }; // CHANGE
+        } // CHANGE
+
         function stateContainsViewPoint(state, pt) { // CHANGE
             if (!state || !pt) return false; // CHANGE
             return pt.x >= state.x && pt.y >= state.y && pt.x <= state.x + state.width && pt.y <= state.y + state.height; // CHANGE
         } // CHANGE
 
-        function chooseAnchorPoint(moduleCell) { // CHANGE
+        function chooseAnchorPoint(target) { // CHANGE
             const now = Date.now(); // CHANGE
-            const state = graph.view.getState(moduleCell); // CHANGE
+            const state = target && target.anchorCell ? graph.view.getState(target.anchorCell) : null; // CHANGE
             if (lastMouseAnchor && now - lastMouseAnchor.t <= MOUSE_ANCHOR_MAX_AGE_MS && stateContainsViewPoint(state, lastMouseAnchor.view)) { // CHANGE
                 return { x: lastMouseAnchor.model.x, y: lastMouseAnchor.model.y }; // CHANGE
             } // CHANGE
+            if (target && target.mode === "bed") return cellCenterGraphPoint(target.bedCell); // CHANGE
             return viewportCenterModelPoint(); // CHANGE
         } // CHANGE
 
@@ -1435,10 +1465,12 @@ Draw.loadPlugin(function (ui) {
 
         function updateAnchorFromSimpleClick(evt) { // CHANGE
             if (!isSimpleAnchorClick(evt)) return false; // CHANGE
-            const moduleCell = getSingleSelectedGardenModule(); // CHANGE
-            const state = moduleCell ? graph.view.getState(moduleCell) : null; // CHANGE
-            if (!moduleCell || !stateContainsViewPoint(state, lastMouseAnchor.view)) return false; // CHANGE
-            activeModuleCell = moduleCell; // CHANGE
+            const target = getSingleSelectedOverlayTarget(); // CHANGE
+            const state = target && target.anchorCell ? graph.view.getState(target.anchorCell) : null; // CHANGE
+            if (!target || !stateContainsViewPoint(state, lastMouseAnchor.view)) return false; // CHANGE
+            activeModuleCell = target.moduleCell; // CHANGE
+            activeBedCell = target.bedCell || null; // CHANGE
+            activeOverlayMode = target.mode; // CHANGE
             anchorModelPoint = { x: lastMouseAnchor.model.x, y: lastMouseAnchor.model.y }; // CHANGE
             return true; // CHANGE
         } // CHANGE
@@ -1457,30 +1489,38 @@ Draw.loadPlugin(function (ui) {
             const moduleCell = activeModuleCell; // CHANGE
             if (!toolbar || !settingsBtn || !addBedBtn || !addGroupBtn || !moduleCell) return; // CHANGE
             const hasSettings = hasGardenSettingsSet(moduleCell); // CHANGE
+            const bedMode = activeOverlayMode === "bed"; // CHANGE
+            settingsBtn.style.display = bedMode ? "none" : ""; // CHANGE
+            addBedBtn.style.display = bedMode ? "none" : ""; // CHANGE
+            addGroupBtn.style.display = ""; // CHANGE
             settingsBtn.textContent = hasSettings ? "Edit Garden Settings" : "Set Garden Settings"; // CHANGE
             addBedBtn.disabled = !hasSettings; // CHANGE
             addBedBtn.title = hasSettings ? "Add the default-sized garden bed at the selected location" : "Set garden settings before adding beds"; // CHANGE
             addBedBtn.style.opacity = hasSettings ? "1" : "0.55"; // CHANGE
             addBedBtn.style.cursor = hasSettings ? "pointer" : "default"; // CHANGE
             addGroupBtn.disabled = !hasSettings; // CHANGE
-            addGroupBtn.title = hasSettings ? "Add a new plant group at the selected location" : "Set garden settings before adding plants"; // CHANGE
+            addGroupBtn.title = hasSettings ? (bedMode ? "Add a new plant group fitted to this garden bed" : "Add a new plant group at the selected location") : "Set garden settings before adding plants"; // CHANGE
             addGroupBtn.style.opacity = hasSettings ? "1" : "0.55"; // CHANGE
             addGroupBtn.style.cursor = hasSettings ? "pointer" : "default"; // CHANGE
         } // CHANGE
 
         function refreshForSelection() { // CHANGE
             refreshTimer = null; // CHANGE
-            const moduleCell = getSingleSelectedGardenModule(); // CHANGE
-            if (!moduleCell || gestureHidden) { // CHANGE
-                activeModuleCell = moduleCell || null; // CHANGE
-                if (!moduleCell) anchorModelPoint = null; // CHANGE
+            const target = getSingleSelectedOverlayTarget(); // CHANGE
+            if (!target || gestureHidden) { // CHANGE
+                activeModuleCell = target ? target.moduleCell : null; // CHANGE
+                activeBedCell = target ? target.bedCell : null; // CHANGE
+                activeOverlayMode = target ? target.mode : ""; // CHANGE
+                if (!target) anchorModelPoint = null; // CHANGE
                 hideToolbar(); // CHANGE
                 return; // CHANGE
             } // CHANGE
-            if (activeModuleCell !== moduleCell || !anchorModelPoint) { // CHANGE
-                anchorModelPoint = chooseAnchorPoint(moduleCell); // CHANGE
+            if (activeModuleCell !== target.moduleCell || activeBedCell !== target.bedCell || activeOverlayMode !== target.mode || !anchorModelPoint) { // CHANGE
+                anchorModelPoint = chooseAnchorPoint(target); // CHANGE
             } // CHANGE
-            activeModuleCell = moduleCell; // CHANGE
+            activeModuleCell = target.moduleCell; // CHANGE
+            activeBedCell = target.bedCell || null; // CHANGE
+            activeOverlayMode = target.mode; // CHANGE
             ensureToolbar(); // CHANGE
             syncToolbarState(); // CHANGE
             positionToolbar(); // CHANGE
@@ -2095,7 +2135,8 @@ Draw.loadPlugin(function (ui) {
     } // MOVED
 
     function applyBedFitGeometry(tg, bed, allowDragIntoBedFit, debugCtx) { // CHANGE
-        if (!tg || !bed || tg.getAttribute(BED_AUTO_FIT_ATTR) === "0") { // CHANGE
+        const ignoreBedAutoFit = !!(debugCtx && debugCtx.ignoreBedAutoFit); // CHANGE
+        if (!tg || !bed || (!ignoreBedAutoFit && tg.getAttribute(BED_AUTO_FIT_ATTR) === "0")) { // CHANGE
             bedFitLog("fit-skip", { // CHANGE
                 txnId: debugCtx && debugCtx.txnId, // CHANGE
                 groupId: bedFitCellId(tg), // CHANGE
@@ -2367,6 +2408,44 @@ Draw.loadPlugin(function (ui) {
         return changed.length; // MOVED
     } // MOVED
 
+    function retileAndFitToContainingBed(graphArg, groupCell, opts) { // CHANGE
+        const activeGraph = graphArg || graph; // CHANGE
+        const source = (opts && opts.source) || "api-refit"; // CHANGE
+        const ownsTransaction = !(opts && opts.inTransaction); // CHANGE
+        const txnId = ++bedFitTxnSeq; // CHANGE
+        if (!activeGraph || !groupCell || !isTilerGroup(groupCell) || bedFitInProgress) return { changed: false, fitted: false, reason: "not-available" }; // CHANGE
+        const model = activeGraph.getModel(); // CHANGE
+        let fitResult = null; // CHANGE
+        let trimmed = false; // CHANGE
+        let result = { changed: false, fitted: false, reason: "" }; // CHANGE
+        bedFitInProgress = true; // CHANGE
+        if (ownsTransaction) model.beginUpdate(); // CHANGE
+        try { // CHANGE
+            retileGroup(activeGraph, groupCell, { preferInPlace: true, inTransaction: true }); // CHANGE
+            const parent = model.getParent(groupCell); // CHANGE
+            const center = rectCenterModel(getModelRect(groupCell)); // CHANGE
+            const bed = findSmallestContainingBedModel(parent, center); // CHANGE
+            if (!bed) { result = { changed: false, fitted: false, reason: "no-containing-bed" }; return result; } // CHANGE
+            fitResult = applyBedFitGeometry(groupCell, bed, true, { txnId, source, ignoreBedAutoFit: true }); // CHANGE
+            if (!fitResult) { result = { changed: false, fitted: false, reason: "fit-skipped", bed }; return result; } // CHANGE
+            retileAfterBedFit(groupCell, { // CHANGE
+                txnId, // CHANGE
+                source, // CHANGE
+                layoutSnapshot: fitResult.layoutSnapshot, // CHANGE
+                previousRotationDeg: fitResult.previousRotationDeg // CHANGE
+            }); // CHANGE
+            const bbox = getPlantCircleBBoxLogical(groupCell); // CHANGE
+            trimmed = trimGroupToPlantFootprint(groupCell, fitResult.bed, bbox, fitResult.fitWidth, fitResult.fitHeight, { txnId, source }); // CHANGE
+            result = { changed: !!(fitResult.changed || trimmed), fitted: true, trimmed }; // CHANGE
+            return result; // CHANGE
+        } finally { // CHANGE
+            if (ownsTransaction) model.endUpdate(); // CHANGE
+            bedFitInProgress = false; // CHANGE
+            if (fitResult && (trimmed || fitResult.changed)) markBedFitResizeSuppression([{ tg: groupCell }]); // CHANGE
+            activeGraph.refresh(groupCell); // CHANGE
+        } // CHANGE
+    } // CHANGE
+
 
     const BOARD_KEY = 'KANBAN_BOARD'; // already in your other plugin; include here if not present 
 
@@ -2592,6 +2671,7 @@ Draw.loadPlugin(function (ui) {
         } finally {
             model.endUpdate();
         }
+        return group; // CHANGE
     }
 
     // ---------- Debug helpers (compact, JSON-safe) ----------
@@ -4168,7 +4248,8 @@ Draw.loadPlugin(function (ui) {
     // ---- Public API export (for other plugins) ---------------------------------
     window.USL = window.USL || {};
     window.USL.tiler = Object.assign({}, window.USL.tiler, {
-        retileGroup
+        retileGroup, // CHANGE
+        retileAndFitToContainingBed // CHANGE
     });
 
     // -------------------- Boot --------------------
