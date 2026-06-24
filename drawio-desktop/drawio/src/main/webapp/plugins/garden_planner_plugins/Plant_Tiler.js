@@ -25,6 +25,14 @@ Draw.loadPlugin(function (ui) {
 
     const MODULE_CURRENT_YEAR_ATTR = "current_year"; // NEW
     const SEASON_START_YEAR_ATTR = "season_start_year"; // NEW
+    const DEFAULT_BED_WIDTH_CM_ATTR = "default_bed_width_cm"; // CHANGE
+    const DEFAULT_BED_LENGTH_CM_ATTR = "default_bed_length_cm"; // CHANGE
+    const CM_PER_METER = 100; // CHANGE
+    const CM_PER_FOOT = 30.48; // CHANGE
+    const DEFAULT_METRIC_BED_WIDTH_CM = 100; // CHANGE
+    const DEFAULT_METRIC_BED_LENGTH_CM = 200; // CHANGE
+    const DEFAULT_IMPERIAL_BED_WIDTH_CM = 4 * CM_PER_FOOT; // CHANGE
+    const DEFAULT_IMPERIAL_BED_LENGTH_CM = 8 * CM_PER_FOOT; // CHANGE
 
     // ---------- LOD settings ----------
     const LOD_TILE_THRESHOLD = 300; // collapse if rows*cols > this
@@ -1012,20 +1020,70 @@ Draw.loadPlugin(function (ui) {
         model.setValue(cell, clone);
     }
 
+    // Default bed dimensions are stored in centimeters; dialog units are display-only. // CHANGE
+    function positiveFiniteNumber(value) { // CHANGE
+        const n = Number(value); // CHANGE
+        return Number.isFinite(n) && n > 0 ? n : null; // CHANGE
+    } // CHANGE
+
+    function formatBedCmAttr(cm) { // CHANGE
+        return String(Math.round((Number(cm) || 0) * 1000) / 1000); // CHANGE
+    } // CHANGE
+
+    function formatBedDisplayValue(value) { // CHANGE
+        const rounded = Math.round((Number(value) || 0) * 1000) / 1000; // CHANGE
+        return String(rounded); // CHANGE
+    } // CHANGE
+
+    function defaultBedDimensionsCmForUnits(units) { // CHANGE
+        if (units === "metric") return { widthCm: DEFAULT_METRIC_BED_WIDTH_CM, lengthCm: DEFAULT_METRIC_BED_LENGTH_CM }; // CHANGE
+        if (units === "imperial") return { widthCm: DEFAULT_IMPERIAL_BED_WIDTH_CM, lengthCm: DEFAULT_IMPERIAL_BED_LENGTH_CM }; // CHANGE
+        return null; // CHANGE
+    } // CHANGE
+
+    function getSavedDefaultBedDimensionsCm(moduleCell) { // CHANGE
+        const widthCm = positiveFiniteNumber(getXmlAttr(moduleCell, DEFAULT_BED_WIDTH_CM_ATTR, "")); // CHANGE
+        const lengthCm = positiveFiniteNumber(getXmlAttr(moduleCell, DEFAULT_BED_LENGTH_CM_ATTR, "")); // CHANGE
+        return widthCm && lengthCm ? { widthCm, lengthCm } : null; // CHANGE
+    } // CHANGE
+
+    function getDefaultBedDimensionsCm(moduleCell) { // CHANGE
+        const saved = getSavedDefaultBedDimensionsCm(moduleCell); // CHANGE
+        if (saved) return saved; // CHANGE
+        return defaultBedDimensionsCmForUnits(getXmlAttr(moduleCell, "unit_system", "")); // CHANGE
+    } // CHANGE
+
+    function bedDisplayUnitLabel(units) { // CHANGE
+        return units === "imperial" ? "ft" : "m"; // CHANGE
+    } // CHANGE
+
+    function bedDimensionCmToDisplay(cm, units) { // CHANGE
+        return units === "imperial" ? cm / CM_PER_FOOT : cm / CM_PER_METER; // CHANGE
+    } // CHANGE
+
+    function bedDimensionDisplayToCm(value, units) { // CHANGE
+        const n = positiveFiniteNumber(value); // CHANGE
+        if (!n) return null; // CHANGE
+        return units === "imperial" ? n * CM_PER_FOOT : n * CM_PER_METER; // CHANGE
+    } // CHANGE
+
 
     function hasGardenSettingsSet(moduleCell) {
         if (!(moduleCell && moduleCell.getAttribute)) return false;
         const city = String(moduleCell.getAttribute("city_name") || "").trim();
         const units = String(moduleCell.getAttribute("unit_system") || "").trim();
-        return !!(city && units);
+        return !!(city && units && getSavedDefaultBedDimensionsCm(moduleCell)); // CHANGE
     }
 
 
-    // garden settings dialog (city + units)
+    // garden settings dialog (city + units + default bed dimensions) // CHANGE
     async function showGardenSettingsDialog(ui, graph, moduleCell, onClose) { // CHANGE
         const model = graph.getModel();
         const curCity = getXmlAttr(moduleCell, "city_name", "");
         const curUnits = getXmlAttr(moduleCell, "unit_system", "");
+        const savedBedDimsCm = getSavedDefaultBedDimensionsCm(moduleCell); // CHANGE
+        let activeBedDisplayUnits = curUnits || ""; // CHANGE
+        let bedDimensionsEdited = false; // CHANGE
         let closeNotified = false; // CHANGE
 
         function notifyClose() { // CHANGE
@@ -1065,7 +1123,7 @@ Draw.loadPlugin(function (ui) {
         err.style.display = "none";
         div.appendChild(err);
 
-        function row(labelText, controlEl) {
+        function row(labelText, controlEl) { // CHANGE
             const wrap = document.createElement("div");
             wrap.style.display = "flex";
             wrap.style.alignItems = "center";
@@ -1077,6 +1135,7 @@ Draw.loadPlugin(function (ui) {
             wrap.appendChild(lab);
             wrap.appendChild(controlEl);
             div.appendChild(wrap);
+            return { wrap, label: lab, control: controlEl }; // CHANGE
         }
 
         // City (mandatory)
@@ -1120,6 +1179,57 @@ Draw.loadPlugin(function (ui) {
             });
         row("Units:", unitsSel);
 
+        const bedWidthInput = document.createElement("input"); // CHANGE
+        bedWidthInput.type = "number"; // CHANGE
+        bedWidthInput.step = "0.01"; // CHANGE
+        bedWidthInput.min = "0.01"; // CHANGE
+        bedWidthInput.style.flex = "1"; // CHANGE
+        const bedWidthRow = row("Default bed width:", bedWidthInput); // CHANGE
+
+        const bedLengthInput = document.createElement("input"); // CHANGE
+        bedLengthInput.type = "number"; // CHANGE
+        bedLengthInput.step = "0.01"; // CHANGE
+        bedLengthInput.min = "0.01"; // CHANGE
+        bedLengthInput.style.flex = "1"; // CHANGE
+        const bedLengthRow = row("Default bed length:", bedLengthInput); // CHANGE
+        mxEvent.addListener(bedWidthInput, "input", function () { bedDimensionsEdited = true; }); // CHANGE
+        mxEvent.addListener(bedLengthInput, "input", function () { bedDimensionsEdited = true; }); // CHANGE
+
+        function readBedInputsAsCm(units) { // CHANGE
+            if (!units) return null; // CHANGE
+            const widthCm = bedDimensionDisplayToCm(bedWidthInput.value, units); // CHANGE
+            const lengthCm = bedDimensionDisplayToCm(bedLengthInput.value, units); // CHANGE
+            return widthCm && lengthCm ? { widthCm, lengthCm } : null; // CHANGE
+        } // CHANGE
+
+        function setBedInputsFromCm(dimsCm, units) { // CHANGE
+            if (!dimsCm || !units) { // CHANGE
+                bedWidthInput.value = ""; // CHANGE
+                bedLengthInput.value = ""; // CHANGE
+                return; // CHANGE
+            } // CHANGE
+            bedWidthInput.value = formatBedDisplayValue(bedDimensionCmToDisplay(dimsCm.widthCm, units)); // CHANGE
+            bedLengthInput.value = formatBedDisplayValue(bedDimensionCmToDisplay(dimsCm.lengthCm, units)); // CHANGE
+        } // CHANGE
+
+        function syncBedDimensionInputs(nextUnits) { // CHANGE
+            const priorDims = activeBedDisplayUnits && bedDimensionsEdited ? readBedInputsAsCm(activeBedDisplayUnits) : null; // CHANGE
+            const nextDims = priorDims || savedBedDimsCm || defaultBedDimensionsCmForUnits(nextUnits); // CHANGE
+            const enabled = !!nextUnits; // CHANGE
+            const unitLabel = enabled ? bedDisplayUnitLabel(nextUnits) : ""; // CHANGE
+            activeBedDisplayUnits = nextUnits || ""; // CHANGE
+            bedWidthRow.label.textContent = enabled ? `Default bed width (${unitLabel}):` : "Default bed width:"; // CHANGE
+            bedLengthRow.label.textContent = enabled ? `Default bed length (${unitLabel}):` : "Default bed length:"; // CHANGE
+            bedWidthInput.disabled = !enabled; // CHANGE
+            bedLengthInput.disabled = !enabled; // CHANGE
+            setBedInputsFromCm(enabled ? nextDims : null, nextUnits); // CHANGE
+        } // CHANGE
+
+        mxEvent.addListener(unitsSel, "change", function () { // CHANGE
+            syncBedDimensionInputs((unitsSel.value || "").trim()); // CHANGE
+        }); // CHANGE
+        syncBedDimensionInputs(curUnits); // CHANGE
+
         function showError(msg) {
             err.textContent = msg;
             err.style.display = "block";
@@ -1136,9 +1246,11 @@ Draw.loadPlugin(function (ui) {
             err.style.display = "none";
             const chosenCity = (citySel.value || "").trim();
             const chosenUnits = (unitsSel.value || "").trim();
+            const chosenBedDimsCm = readBedInputsAsCm(chosenUnits); // CHANGE
 
             if (!chosenCity) { showError("City is required."); citySel.focus(); return; }
             if (!chosenUnits) { showError("Units are required."); unitsSel.focus(); return; }
+            if (!chosenBedDimsCm) { showError("Default bed width and length must be positive numbers."); bedWidthInput.focus(); return; } // CHANGE
 
             ui.hideDialog();
             model.beginUpdate();
@@ -1146,6 +1258,8 @@ Draw.loadPlugin(function (ui) {
                 setCellAttrsNoTxn(model, moduleCell, {
                     city_name: chosenCity,
                     unit_system: chosenUnits,
+                    [DEFAULT_BED_WIDTH_CM_ATTR]: formatBedCmAttr(chosenBedDimsCm.widthCm), // CHANGE
+                    [DEFAULT_BED_LENGTH_CM_ATTR]: formatBedCmAttr(chosenBedDimsCm.lengthCm), // CHANGE
                 });
             } finally {
                 model.endUpdate();
@@ -1158,7 +1272,7 @@ Draw.loadPlugin(function (ui) {
         btnRow.appendChild(okBtn);
         div.appendChild(btnRow);
 
-        ui.showDialog(div, 420, 220, true, true, notifyClose); // CHANGE
+        ui.showDialog(div, 420, 270, true, true, notifyClose); // CHANGE
         citySel.focus();
     }
 
@@ -1167,10 +1281,11 @@ Draw.loadPlugin(function (ui) {
         graph.__plantTilerGardenModuleOverlayInstalled = true; // CHANGE
 
         const OFFSET_PX = 8; // CHANGE
-        const EDGE_MARGIN_PX = 6; // CHANGE
+        const SIMPLE_CLICK_MAX_MOVE_PX = 4; // CHANGE
         const MOUSE_ANCHOR_MAX_AGE_MS = 1000; // CHANGE
         let toolbar = null; // CHANGE
         let settingsBtn = null; // CHANGE
+        let addBedBtn = null; // CHANGE
         let addGroupBtn = null; // CHANGE
         let activeModuleCell = null; // CHANGE
         let anchorModelPoint = null; // CHANGE
@@ -1179,8 +1294,15 @@ Draw.loadPlugin(function (ui) {
         let refreshTimer = null; // CHANGE
 
         function getOverlayHost() { // CHANGE
-            const pane = graph.view && graph.view.overlayPane; // CHANGE
-            return (pane && getComputedStyle(pane).position === "absolute") ? pane : graph.container; // CHANGE
+            return graph.container; // CHANGE
+        } // CHANGE
+
+        function ensureOverlayHost() { // CHANGE
+            const host = getOverlayHost(); // CHANGE
+            if (!host) return null; // CHANGE
+            const style = window.getComputedStyle ? window.getComputedStyle(host) : null; // CHANGE
+            if (style && style.position === "static") host.style.position = "relative"; // CHANGE
+            return host; // CHANGE
         } // CHANGE
 
         function makeButton(text) { // CHANGE
@@ -1218,8 +1340,10 @@ Draw.loadPlugin(function (ui) {
             mxEvent.addListener(toolbar, "click", function (evt) { evt.stopPropagation(); }); // CHANGE
 
             settingsBtn = makeButton("Set Garden Settings"); // CHANGE
+            addBedBtn = makeButton("Add Garden Bed"); // CHANGE
             addGroupBtn = makeButton("Add New Plant Group"); // CHANGE
             toolbar.appendChild(settingsBtn); // CHANGE
+            toolbar.appendChild(addBedBtn); // CHANGE
             toolbar.appendChild(addGroupBtn); // CHANGE
 
             mxEvent.addListener(settingsBtn, "click", async function (evt) { // CHANGE
@@ -1228,6 +1352,19 @@ Draw.loadPlugin(function (ui) {
                 if (!moduleCell || !isGardenModule(moduleCell)) return; // CHANGE
                 hideToolbar(); // CHANGE
                 await showGardenSettingsDialog(ui, graph, moduleCell, scheduleRefresh); // CHANGE
+            }); // CHANGE
+
+            mxEvent.addListener(addBedBtn, "click", function (evt) { // CHANGE
+                mxEvent.consume(evt); // CHANGE
+                const moduleCell = activeModuleCell; // CHANGE
+                const pt = anchorModelPoint; // CHANGE
+                if (!moduleCell || !pt || !hasGardenSettingsSet(moduleCell)) return; // CHANGE
+                try { // CHANGE
+                    createDefaultGardenBed(graph, moduleCell, pt.x, pt.y); // CHANGE
+                    hideToolbar(); // CHANGE
+                } catch (e) { // CHANGE
+                    mxUtils.alert("Error creating garden bed: " + (e && e.message ? e.message : e)); // CHANGE
+                } // CHANGE
             }); // CHANGE
 
             mxEvent.addListener(addGroupBtn, "click", function (evt) { // CHANGE
@@ -1239,7 +1376,7 @@ Draw.loadPlugin(function (ui) {
                 hideToolbar(); // CHANGE
             }); // CHANGE
 
-            const host = getOverlayHost(); // CHANGE
+            const host = ensureOverlayHost(); // CHANGE
             if (host) host.appendChild(toolbar); // CHANGE
             return toolbar; // CHANGE
         } // CHANGE
@@ -1266,9 +1403,13 @@ Draw.loadPlugin(function (ui) {
         function viewportCenterModelPoint() { // CHANGE
             const s = graph.view.scale || 1; // CHANGE
             const tr = graph.view.translate || { x: 0, y: 0 }; // CHANGE
-            const w = graph.container ? graph.container.clientWidth || 0 : 0; // CHANGE
-            const h = graph.container ? graph.container.clientHeight || 0 : 0; // CHANGE
-            return { x: (w / 2) / s - tr.x, y: (h / 2) / s - tr.y }; // CHANGE
+            const host = getOverlayHost(); // CHANGE
+            const visibleCenterX = (host ? host.scrollLeft || 0 : 0) + (host ? host.clientWidth || 0 : 0) / 2; // CHANGE
+            const visibleCenterY = (host ? host.scrollTop || 0 : 0) + (host ? host.clientHeight || 0 : 0) / 2; // CHANGE
+            return { // CHANGE
+                x: (visibleCenterX - (graph.panDx || 0)) / s - tr.x, // CHANGE
+                y: (visibleCenterY - (graph.panDy || 0)) / s - tr.y // CHANGE
+            }; // CHANGE
         } // CHANGE
 
         function stateContainsViewPoint(state, pt) { // CHANGE
@@ -1285,36 +1426,42 @@ Draw.loadPlugin(function (ui) {
             return viewportCenterModelPoint(); // CHANGE
         } // CHANGE
 
-        function clampPosition(left, top, width, height) { // CHANGE
-            const host = getOverlayHost(); // CHANGE
-            const maxW = host ? (host.clientWidth || graph.container.clientWidth || 0) : 0; // CHANGE
-            const maxH = host ? (host.clientHeight || graph.container.clientHeight || 0) : 0; // CHANGE
-            const maxLeft = Math.max(EDGE_MARGIN_PX, maxW - width - EDGE_MARGIN_PX); // CHANGE
-            const maxTop = Math.max(EDGE_MARGIN_PX, maxH - height - EDGE_MARGIN_PX); // CHANGE
-            return { // CHANGE
-                left: Math.max(EDGE_MARGIN_PX, Math.min(left, maxLeft)), // CHANGE
-                top: Math.max(EDGE_MARGIN_PX, Math.min(top, maxTop)) // CHANGE
-            }; // CHANGE
+        function isSimpleAnchorClick(evt) { // CHANGE
+            if (!evt || !lastMouseAnchor || !lastMouseAnchor.client) return false; // CHANGE
+            const dx = mxEvent.getClientX(evt) - lastMouseAnchor.client.x; // CHANGE
+            const dy = mxEvent.getClientY(evt) - lastMouseAnchor.client.y; // CHANGE
+            return Math.sqrt(dx * dx + dy * dy) <= SIMPLE_CLICK_MAX_MOVE_PX; // CHANGE
+        } // CHANGE
+
+        function updateAnchorFromSimpleClick(evt) { // CHANGE
+            if (!isSimpleAnchorClick(evt)) return false; // CHANGE
+            const moduleCell = getSingleSelectedGardenModule(); // CHANGE
+            const state = moduleCell ? graph.view.getState(moduleCell) : null; // CHANGE
+            if (!moduleCell || !stateContainsViewPoint(state, lastMouseAnchor.view)) return false; // CHANGE
+            activeModuleCell = moduleCell; // CHANGE
+            anchorModelPoint = { x: lastMouseAnchor.model.x, y: lastMouseAnchor.model.y }; // CHANGE
+            return true; // CHANGE
         } // CHANGE
 
         function positionToolbar() { // CHANGE
             if (!toolbar || !activeModuleCell || !anchorModelPoint) return; // CHANGE
-            const host = getOverlayHost(); // CHANGE
+            const host = ensureOverlayHost(); // CHANGE
             if (host && toolbar.parentNode !== host) host.appendChild(toolbar); // CHANGE
             const viewPt = viewPointFromModelPoint(anchorModelPoint); // CHANGE
             toolbar.style.display = "flex"; // CHANGE
-            const width = toolbar.offsetWidth || 150; // CHANGE
-            const height = toolbar.offsetHeight || 64; // CHANGE
-            const pos = clampPosition(viewPt.x + OFFSET_PX, viewPt.y + OFFSET_PX, width, height); // CHANGE
-            toolbar.style.left = Math.round(pos.left) + "px"; // CHANGE
-            toolbar.style.top = Math.round(pos.top) + "px"; // CHANGE
+            toolbar.style.left = Math.round(viewPt.x + OFFSET_PX) + "px"; // CHANGE
+            toolbar.style.top = Math.round(viewPt.y + OFFSET_PX) + "px"; // CHANGE
         } // CHANGE
 
         function syncToolbarState() { // CHANGE
             const moduleCell = activeModuleCell; // CHANGE
-            if (!toolbar || !settingsBtn || !addGroupBtn || !moduleCell) return; // CHANGE
+            if (!toolbar || !settingsBtn || !addBedBtn || !addGroupBtn || !moduleCell) return; // CHANGE
             const hasSettings = hasGardenSettingsSet(moduleCell); // CHANGE
             settingsBtn.textContent = hasSettings ? "Edit Garden Settings" : "Set Garden Settings"; // CHANGE
+            addBedBtn.disabled = !hasSettings; // CHANGE
+            addBedBtn.title = hasSettings ? "Add the default-sized garden bed at the selected location" : "Set garden settings before adding beds"; // CHANGE
+            addBedBtn.style.opacity = hasSettings ? "1" : "0.55"; // CHANGE
+            addBedBtn.style.cursor = hasSettings ? "pointer" : "default"; // CHANGE
             addGroupBtn.disabled = !hasSettings; // CHANGE
             addGroupBtn.title = hasSettings ? "Add a new plant group at the selected location" : "Set garden settings before adding plants"; // CHANGE
             addGroupBtn.style.opacity = hasSettings ? "1" : "0.55"; // CHANGE
@@ -1355,6 +1502,7 @@ Draw.loadPlugin(function (ui) {
                     lastMouseAnchor = { // CHANGE
                         model: { x: modelPt.x, y: modelPt.y }, // CHANGE
                         view: { x: me.getGraphX(), y: me.getGraphY() }, // CHANGE
+                        client: { x: mxEvent.getClientX(evt), y: mxEvent.getClientY(evt) }, // CHANGE
                         t: Date.now() // CHANGE
                     }; // CHANGE
                 } // CHANGE
@@ -1362,8 +1510,10 @@ Draw.loadPlugin(function (ui) {
                 hideToolbar(); // CHANGE
             }, // CHANGE
             mouseMove: function () { }, // CHANGE
-            mouseUp: function () { // CHANGE
+            mouseUp: function (_sender, me) { // CHANGE
+                const evt = me && me.getEvent ? me.getEvent() : null; // CHANGE
                 gestureHidden = false; // CHANGE
+                updateAnchorFromSimpleClick(evt); // CHANGE
                 scheduleRefresh(); // CHANGE
             } // CHANGE
         }); // CHANGE
@@ -1371,6 +1521,8 @@ Draw.loadPlugin(function (ui) {
         graph.getSelectionModel().addListener(mxEvent.CHANGE, scheduleRefresh); // CHANGE
         graph.addListener(mxEvent.CELLS_MOVED, scheduleRefresh); // CHANGE
         graph.addListener(mxEvent.CELLS_RESIZED, scheduleRefresh); // CHANGE
+        graph.getView().addListener(mxEvent.SCALE, scheduleRefresh); // CHANGE
+        graph.getView().addListener(mxEvent.TRANSLATE, scheduleRefresh); // CHANGE
         graph.getView().addListener(mxEvent.SCALE_AND_TRANSLATE, scheduleRefresh); // CHANGE
         graph.getView().addListener(mxEvent.REPAINT, function () { if (toolbar && toolbar.style.display !== "none") positionToolbar(); }); // CHANGE
         graph.getModel().addListener(mxEvent.UNDO, scheduleRefresh); // CHANGE
@@ -2341,6 +2493,39 @@ Draw.loadPlugin(function (ui) {
         }
         for (const c of (cells || [])) graph.refresh(c);
     }
+
+    function createDefaultGardenBed(graph, moduleCell, clickX, clickY) { // CHANGE
+        const dimsCm = getDefaultBedDimensionsCm(moduleCell); // CHANGE
+        if (!dimsCm) throw new Error("Default bed dimensions are not set."); // CHANGE
+
+        const modGeo = moduleCell.getGeometry && moduleCell.getGeometry(); // CHANGE
+        const gx = modGeo ? modGeo.x : 0; // CHANGE
+        const gy = modGeo ? modGeo.y : 0; // CHANGE
+        const gw = modGeo ? modGeo.width : toPx(dimsCm.widthCm); // CHANGE
+        const gh = modGeo ? modGeo.height : toPx(dimsCm.lengthCm); // CHANGE
+        const w = toPx(dimsCm.widthCm); // CHANGE
+        const h = toPx(dimsCm.lengthCm); // CHANGE
+        const localX = (typeof clickX === "number") ? (clickX - gx - w / 2) : (gw - w) / 2; // CHANGE
+        const localY = (typeof clickY === "number") ? (clickY - gy - h / 2) : (gh - h) / 2; // CHANGE
+        const relX = Math.max(0, Math.min(gw - w, localX)); // CHANGE
+        const relY = Math.max(0, Math.min(gh - h, localY)); // CHANGE
+        const bedVal = createXmlValue("GardenBed", { label: "Garden Bed", garden_bed: "1" }); // CHANGE
+        const bed = new mxCell(bedVal, new mxGeometry(relX, relY, w, h), addBedStyle("shape=rectangle;whiteSpace=wrap;html=1")); // CHANGE
+        bed.setVertex(true); // CHANGE
+        bed.setConnectable(false); // CHANGE
+
+        const model = graph.getModel(); // CHANGE
+        model.beginUpdate(); // CHANGE
+        try { // CHANGE
+            graph.addCell(bed, moduleCell); // CHANGE
+            graph.setSelectionCell(bed); // CHANGE
+            reorderModuleChildrenForLayering(model, moduleCell); // CHANGE
+        } finally { // CHANGE
+            model.endUpdate(); // CHANGE
+        } // CHANGE
+        graph.refresh(bed); // CHANGE
+        return bed; // CHANGE
+    } // CHANGE
 
 
     /**
