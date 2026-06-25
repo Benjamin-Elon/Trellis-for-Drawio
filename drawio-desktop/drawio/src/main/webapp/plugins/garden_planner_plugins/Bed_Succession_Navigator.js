@@ -1,10 +1,10 @@
 /**
  * Draw.io Plugin: Tiler Group Overlap Navigator (Multi-Cluster, DOM Buttons)
- * - Detects ANY overlap (edge/corner inclusive) among sibling tiler groups.
- * - Builds all disjoint overlap-connected components ("clusters") per parent.
+ * - Builds bed-aware and outside-overlap succession clusters per parent. // CHANGE
+ * - Keeps bed-contained clusters separate from outside overhang clusters. // NEW
  * - Each cluster gets its own Prev/Next controls and index badge.
  * - Non-current members of each cluster are rendered outline-only (fills/text/images hidden).
- * - Controls persist even when unselected; they clear only if a cluster disappears.
+ * - Covered plant groups, clusters, and empty beds get DOM selector buttons. // CHANGE
  */
 Draw.loadPlugin(function (ui) {
     const graph = ui.editor.graph;
@@ -78,6 +78,8 @@ Draw.loadPlugin(function (ui) {
 
     const OVERLAP_MIN_PCT = 0.40;
     const OVERLAP_PCT_MODE = 'smaller';
+    const BED_COVERAGE_MIN_PCT = 0.95; // NEW
+    const COVERED_TARGET_MIN_PCT = 0.80; // NEW
 
     // overlap badges config                                                             
     const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -374,6 +376,139 @@ Draw.loadPlugin(function (ui) {
         return area > GEOM_EPS ? area : 0; // NEW
     } // NEW
 
+    function segmentIntersectionPoint(a, b, c, d) { // NEW
+        const abx = b.x - a.x; // NEW
+        const aby = b.y - a.y; // NEW
+        const cdx = d.x - c.x; // NEW
+        const cdy = d.y - c.y; // NEW
+        const denom = abx * cdy - aby * cdx; // NEW
+        if (Math.abs(denom) <= GEOM_EPS) return null; // NEW
+        const t = ((c.x - a.x) * cdy - (c.y - a.y) * cdx) / denom; // NEW
+        const u = ((c.x - a.x) * aby - (c.y - a.y) * abx) / denom; // NEW
+        if (t < -GEOM_EPS || t > 1 + GEOM_EPS || u < -GEOM_EPS || u > 1 + GEOM_EPS) return null; // NEW
+        return { x: a.x + abx * t, y: a.y + aby * t }; // NEW
+    } // NEW
+
+    function polygonEdges(poly) { // NEW
+        const edges = []; // NEW
+        if (!poly || poly.length < 2) return edges; // NEW
+        for (let i = 0; i < poly.length; i++) edges.push([poly[i], poly[(i + 1) % poly.length]]); // NEW
+        return edges; // NEW
+    } // NEW
+
+    function polygonVerticalIntervalAt(poly, x) { // NEW
+        if (!poly || poly.length < 3) return null; // NEW
+        const ys = []; // NEW
+        for (const edge of polygonEdges(poly)) { // NEW
+            const a = edge[0], b = edge[1]; // NEW
+            const minX = Math.min(a.x, b.x), maxX = Math.max(a.x, b.x); // NEW
+            if (x < minX - GEOM_EPS || x > maxX + GEOM_EPS) continue; // NEW
+            if (Math.abs(a.x - b.x) <= GEOM_EPS) { // NEW
+                ys.push(a.y, b.y); // NEW
+            } else { // NEW
+                const t = (x - a.x) / (b.x - a.x); // NEW
+                if (t >= -GEOM_EPS && t <= 1 + GEOM_EPS) ys.push(a.y + (b.y - a.y) * t); // NEW
+            } // NEW
+        } // NEW
+        if (ys.length < 2) return null; // NEW
+        ys.sort((a, b) => a - b); // NEW
+        return { y1: ys[0], y2: ys[ys.length - 1] }; // NEW
+    } // NEW
+
+    function mergedIntervalLength(intervals) { // NEW
+        const sorted = intervals.filter(Boolean).sort((a, b) => a.y1 - b.y1); // NEW
+        if (!sorted.length) return 0; // NEW
+        let total = 0; // NEW
+        let start = sorted[0].y1, end = sorted[0].y2; // NEW
+        for (let i = 1; i < sorted.length; i++) { // NEW
+            const cur = sorted[i]; // NEW
+            if (cur.y1 <= end + GEOM_EPS) { // NEW
+                end = Math.max(end, cur.y2); // NEW
+            } else { // NEW
+                total += Math.max(0, end - start); // NEW
+                start = cur.y1; // NEW
+                end = cur.y2; // NEW
+            } // NEW
+        } // NEW
+        total += Math.max(0, end - start); // NEW
+        return total; // NEW
+    } // NEW
+
+    function unionAreaOfConvexPolygons(polys) { // NEW
+        const clipped = (polys || []).filter(poly => poly && poly.length >= 3 && polygonArea(poly) > GEOM_EPS); // NEW
+        if (!clipped.length) return 0; // NEW
+        const xs = []; // NEW
+        for (const poly of clipped) for (const p of poly) xs.push(p.x); // NEW
+        for (let i = 0; i < clipped.length; i++) { // NEW
+            const edgesA = polygonEdges(clipped[i]); // NEW
+            for (let j = i + 1; j < clipped.length; j++) { // NEW
+                const edgesB = polygonEdges(clipped[j]); // NEW
+                for (const a of edgesA) for (const b of edgesB) { // NEW
+                    const p = segmentIntersectionPoint(a[0], a[1], b[0], b[1]); // NEW
+                    if (p) xs.push(p.x); // NEW
+                } // NEW
+            } // NEW
+        } // NEW
+        const sortedXs = Array.from(new Set(xs.map(x => Math.round(x / GEOM_EPS) * GEOM_EPS))).sort((a, b) => a - b); // NEW
+        let area = 0; // NEW
+        for (let i = 0; i < sortedXs.length - 1; i++) { // NEW
+            const x1 = sortedXs[i], x2 = sortedXs[i + 1]; // NEW
+            const width = x2 - x1; // NEW
+            if (width <= GEOM_EPS) continue; // NEW
+            const pad = Math.min(width * 0.000001, GEOM_EPS); // NEW
+            const leftX = x1 + pad; // NEW
+            const rightX = x2 - pad; // NEW
+            const leftLen = mergedIntervalLength(clipped.map(poly => polygonVerticalIntervalAt(poly, leftX))); // NEW
+            const rightLen = mergedIntervalLength(clipped.map(poly => polygonVerticalIntervalAt(poly, rightX))); // NEW
+            area += width * (leftLen + rightLen) / 2; // NEW
+        } // NEW
+        return area > GEOM_EPS ? area : 0; // NEW
+    } // NEW
+
+    function coveredAreaOfTargetByCells(targetCell, coverCells) { // NEW
+        const targetRect = getRotatedRectModel(targetCell); // NEW
+        if (!targetRect) return 0; // NEW
+        const targetPoly = rotatedRectCorners(targetRect); // NEW
+        const clippedPolys = []; // NEW
+        for (const cover of (coverCells || [])) { // NEW
+            const coverRect = getRotatedRectModel(cover); // NEW
+            if (!coverRect) continue; // NEW
+            const clipped = convexPolygonIntersection(rotatedRectCorners(coverRect), targetPoly); // NEW
+            if (clipped.length >= 3 && polygonArea(clipped) > GEOM_EPS) clippedPolys.push(clipped); // NEW
+        } // NEW
+        return unionAreaOfConvexPolygons(clippedPolys); // NEW
+    } // NEW
+
+    function targetCoverageFractionByCells(targetCell, coverCells) { // NEW
+        const targetRect = getRotatedRectModel(targetCell); // NEW
+        const targetArea = rectAreaModel(targetRect); // NEW
+        if (targetArea <= 0) return 0; // NEW
+        return Math.min(1, coveredAreaOfTargetByCells(targetCell, coverCells) / targetArea); // NEW
+    } // NEW
+
+    function coverageFractionOfTargetCellsByCoverCells(targetCells, coverCells) { // NEW
+        const targetPolys = []; // NEW
+        for (const target of (targetCells || [])) { // NEW
+            const targetRect = getRotatedRectModel(target); // NEW
+            if (targetRect) targetPolys.push(rotatedRectCorners(targetRect)); // NEW
+        } // NEW
+        const targetArea = unionAreaOfConvexPolygons(targetPolys); // NEW
+        if (targetArea <= 0) return 0; // NEW
+
+        const coveredPolys = []; // NEW
+        for (const cover of (coverCells || [])) { // NEW
+            const coverRect = getRotatedRectModel(cover); // NEW
+            if (!coverRect) continue; // NEW
+            const coverPoly = rotatedRectCorners(coverRect); // NEW
+            for (const targetPoly of targetPolys) { // NEW
+                const clipped = convexPolygonIntersection(coverPoly, targetPoly); // NEW
+                if (clipped.length >= 3 && polygonArea(clipped) > GEOM_EPS) coveredPolys.push(clipped); // NEW
+            } // NEW
+        } // NEW
+
+        return Math.min(1, unionAreaOfConvexPolygons(coveredPolys) / targetArea); // NEW
+    } // NEW
+
     function significantOverlapRotatedRects(a, b) { // NEW
         if (!a || !b) return false; // NEW
         const ia = rotatedRectIntersectionArea(a, b); // NEW
@@ -467,38 +602,6 @@ Draw.loadPlugin(function (ui) {
         } // NEW
         return chosen; // NEW
     } // NEW
-
-    function bedsForCluster(key) {
-        const st = clusterStates.get(key);
-        if (!st || !st.order || !st.order.length) return [];
-
-        const parent = model.getParent(st.order[0]);
-        if (!parent) return [];
-
-        const sibVerts = graph.getChildVertices(parent) || [];
-        const beds = sibVerts.filter(isGardenBed);
-        if (!beds.length) return [];
-
-        const chosenIds = new Set();
-
-        for (const tg of st.order) {
-            const tgRect = getRotatedRectModel(tg); // CHANGE
-            const tgCenter = tgRect ? tgRect.center : rectCenterModel(getModelRect(tg)); // CHANGE
-            for (let i = 0; i < beds.length; i++) { // CHANGE
-                const bedRect = getRotatedRectModel(beds[i]); // CHANGE
-                const overlaps = significantOverlapRotatedRects(tgRect, bedRect); // CHANGE
-                const containsCenter = tgCenter && pointInRotatedRectModel(tgCenter, bedRect); // CHANGE
-                if ((overlaps || containsCenter) && beds[i].id) chosenIds.add(beds[i].id); // CHANGE
-            } // CHANGE
-        }
-
-        const out = [];
-        chosenIds.forEach(id => {
-            const cell = model.getCell(id);
-            if (cell && model.isVertex(cell) && isGardenBed(cell)) out.push(cell);
-        });
-        return out;
-    }
 
     function selectionIsOnlyGardenBeds(cells) { // NEW
         const selected = (cells || []).filter(Boolean); // NEW
@@ -750,30 +853,64 @@ Draw.loadPlugin(function (ui) {
         });
     }
 
+    function coverageSetKey(ids) { // NEW
+        return (ids || []).slice().sort().join('|'); // NEW
+    } // NEW
+
+    function classifyTilerGroupForBeds(groupCell, beds) { // NEW
+        const rect = getRotatedRectModel(groupCell); // NEW
+        const containingBed = rect ? findSmallestContainingBed(beds, [], rect.center) : null; // NEW
+        if (containingBed && containingBed.id) { // NEW
+            return { type: 'contained', bedId: containingBed.id, coveredBedIds: [], coveredSetKey: '' }; // NEW
+        } // NEW
+
+        const coveredBedIds = []; // NEW
+        for (const bed of beds) { // NEW
+            if (!bed || !bed.id) continue; // NEW
+            if (targetCoverageFractionByCells(bed, [groupCell]) >= BED_COVERAGE_MIN_PCT) coveredBedIds.push(bed.id); // NEW
+        } // NEW
+
+        return { // NEW
+            type: coveredBedIds.length ? 'outside-covered' : 'outside', // NEW
+            bedId: null, // NEW
+            coveredBedIds, // NEW
+            coveredSetKey: coverageSetKey(coveredBedIds) // NEW
+        }; // NEW
+    } // NEW
+
+    function classifyTilerGroupsForBeds(nodes, beds) { // NEW
+        const out = new Map(); // NEW
+        for (const node of nodes) out.set(node.id, classifyTilerGroupForBeds(node, beds)); // NEW
+        return out; // NEW
+    } // NEW
+
+    function shouldClusterTilerGroups(a, b, metaA, metaB) { // NEW
+        if (!metaA || !metaB) return false; // NEW
+        if (metaA.type === 'contained' || metaB.type === 'contained') { // NEW
+            return metaA.type === 'contained' && metaB.type === 'contained' && metaA.bedId && metaA.bedId === metaB.bedId; // NEW
+        } // NEW
+
+        const sameCoveredSet = metaA.type === 'outside-covered' && // NEW
+            metaB.type === 'outside-covered' && // NEW
+            metaA.coveredSetKey && // NEW
+            metaA.coveredSetKey === metaB.coveredSetKey; // NEW
+        return sameCoveredSet || significantOverlapCells(a, b); // NEW
+    } // NEW
+
     function buildAllComponentsInParent(parent) {
         const nodes = getSiblingsInParent(parent);
         const n = nodes.length;
         if (n < 1) return []; // CHANGE
 
-        // --- NEW: collect beds in same parent and precompute bounds ---
         const sibVerts = graph.getChildVertices(parent) || [];
-        const beds = sibVerts.filter(isGardenBed);
-
-        // Map each TG index -> chosen bed id (or null) based on center-in-bed
-        const tgBedId = new Array(n).fill(null);
-        for (let i = 0; i < n; i++) {
-            const rect = getRotatedRectModel(nodes[i]); // CHANGE
-            const chosen = rect ? findSmallestContainingBed(beds, [], rect.center) : null; // CHANGE
-            tgBedId[i] = chosen ? chosen.id : null; // CHANGE
-        }
+        const beds = sibVerts.filter(isGardenBed); // CHANGE
+        const groupBedMeta = classifyTilerGroupsForBeds(nodes, beds); // NEW
 
         const adj = Array.from({ length: n }, () => []);
 
         for (let i = 0; i < n; i++) {
             for (let j = i + 1; j < n; j++) {
-                const sameBed = (tgBedId[i] && tgBedId[i] === tgBedId[j]);
-                const sigOv = significantOverlapCells(nodes[i], nodes[j]); // CHANGE
-                if (sameBed || sigOv) {
+                if (shouldClusterTilerGroups(nodes[i], nodes[j], groupBedMeta.get(nodes[i].id), groupBedMeta.get(nodes[j].id))) { // CHANGE
                     adj[i].push(j);
                     adj[j].push(i);
                 }
@@ -791,11 +928,7 @@ Draw.loadPlugin(function (ui) {
                 comp.push(nodes[v]);
                 for (const w of adj[v]) if (!seen[w]) { seen[w] = true; stack.push(w); }
             }
-            const hasBedMappedMember = comp.some(cell => { // NEW
-                const idx = nodes.indexOf(cell); // NEW
-                return idx >= 0 && !!tgBedId[idx]; // NEW
-            }); // NEW
-            if (comp.length >= 2 || hasBedMappedMember) comps.push(comp); // CHANGE
+            comps.push(comp); // CHANGE
         }
         return comps;
     }
@@ -823,7 +956,8 @@ Draw.loadPlugin(function (ui) {
                 badgeNext: null,
                 btnDrag: null,
                 btnSelectAll: null,
-                btnSelectBeds: null,
+                btnSelectBed: null, // NEW
+                coveredTargetButtons: [], // CHANGE
             };
             clusterStates.set(key, st);
         } else {
@@ -1057,48 +1191,183 @@ Draw.loadPlugin(function (ui) {
         st.btnSelectAll.style.display = '';
     }
 
-    function ensureSelectBedsFor(key) {
-        const host = getHost();
-        const st = clusterStates.get(key); if (!st) return;
+    function containedBedForCluster(key) { // NEW
+        const st = clusterStates.get(key); if (!st || !st.order || !st.order.length) return null; // NEW
+        const parent = model.getParent(st.order[0]); // NEW
+        if (!parent) return null; // NEW
+        const beds = (graph.getChildVertices(parent) || []).filter(isGardenBed); // NEW
+        const bedId = containedBedIdForComponent(st.order, beds); // NEW
+        if (!bedId) return null; // NEW
+        const bed = model.getCell(bedId); // NEW
+        return bed && model.isVertex(bed) && isGardenBed(bed) ? bed : null; // NEW
+    } // NEW
 
-        if (!st.btnSelectBeds) {
-            const b = document.createElement('img');
-            b.src = ICON_SELECT_BEDS;
-            b.alt = 'Select beds';
-            styleSelectBtn(b);
-            b.title = 'Select garden beds (temporary bring-to-front)';
-            b.draggable = false;
+    function selectContainedBedForCluster(key) { // NEW
+        const st = clusterStates.get(key); if (!st || !st.order || !st.order.length) return; // NEW
+        const bed = containedBedForCluster(key); // NEW
+        if (!bed) return; // NEW
+        const parent = model.getParent(st.order[0]); // NEW
+        bringCellsToFrontTemporarilyInParent(parent, [bed]); // NEW
+        clearVisibilityFor(key); // NEW
+        graph.setSelectionCells([bed]); // NEW
+        if (parent) graph.refresh(parent); else graph.refresh(); // NEW
+        hideUIFor(key); // NEW
+    } // NEW
 
-            b.addEventListener('pointerdown', consumeEvt, { passive: false });
-            b.addEventListener('mousedown', consumeEvt, { passive: false });
+    function ensureContainedBedSelectorFor(key) { // NEW
+        const host = getHost(); // NEW
+        const st = clusterStates.get(key); if (!st) return; // NEW
+        const bed = containedBedForCluster(key); // NEW
+        if (!bed) { // NEW
+            if (st.btnSelectBed) st.btnSelectBed.style.display = 'none'; // NEW
+            return; // NEW
+        } // NEW
 
-            b.addEventListener('click', function (evt) {
-                consumeEvt(evt);
-                const st2 = clusterStates.get(key);
-                if (!st2 || !st2.order || !st2.order.length) return;
+        if (!st.btnSelectBed) { // NEW
+            const b = document.createElement('img'); // NEW
+            b.src = ICON_SELECT_BEDS; // NEW
+            b.alt = 'Select bed'; // NEW
+            styleSelectBtn(b); // NEW
+            b.title = 'Select containing garden bed'; // NEW
+            b.draggable = false; // NEW
+            b.addEventListener('pointerdown', consumeEvt, { passive: false }); // NEW
+            b.addEventListener('mousedown', consumeEvt, { passive: false }); // NEW
+            b.addEventListener('click', function (evt) { // NEW
+                consumeEvt(evt); // NEW
+                selectContainedBedForCluster(key); // NEW
+            }); // NEW
+            host.appendChild(b); // NEW
+            st.btnSelectBed = b; // NEW
+        } else if (st.btnSelectBed.parentNode !== host) { // NEW
+            host.appendChild(st.btnSelectBed); // NEW
+        } // NEW
 
-                const parent = model.getParent(st2.order[0]);
-                if (!parent) return;
+        st.btnSelectBed.style.display = ''; // NEW
+    } // NEW
 
-                const beds = bedsForCluster(key);
-                if (!beds.length) return;
+    function removeCoveredTargetSelectorsFor(key) { // NEW
+        const st = clusterStates.get(key); if (!st) return; // NEW
+        for (const item of (st.coveredTargetButtons || [])) { // NEW
+            if (item.el && item.el.parentNode) item.el.parentNode.removeChild(item.el); // NEW
+        } // NEW
+        st.coveredTargetButtons = []; // NEW
+    } // NEW
 
-                bringCellsToFrontTemporarilyInParent(parent, beds);
-                clearVisibilityFor(key);
-                graph.setSelectionCells(beds);
-                graph.refresh(parent);
-                hideUIFor(key);
-            });
+    function viewBBoxForCells(cells) { // NEW
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity; // NEW
+        for (const cell of (cells || [])) { // NEW
+            const s = getState(cell); // NEW
+            if (!s) continue; // NEW
+            minX = Math.min(minX, s.x); // NEW
+            minY = Math.min(minY, s.y); // NEW
+            maxX = Math.max(maxX, s.x + s.width); // NEW
+            maxY = Math.max(maxY, s.y + s.height); // NEW
+        } // NEW
+        if (!isFinite(minX) || !isFinite(minY) || !isFinite(maxX) || !isFinite(maxY)) return null; // NEW
+        return { x: minX, y: minY, w: maxX - minX, h: maxY - minY }; // NEW
+    } // NEW
 
+    function bboxCenter(box) { // NEW
+        return box ? { x: box.x + box.w / 2, y: box.y + box.h / 2 } : null; // NEW
+    } // NEW
 
-            host.appendChild(b);
-            st.btnSelectBeds = b;
-        } else if (st.btnSelectBeds.parentNode !== host) {
-            host.appendChild(st.btnSelectBeds);
-        }
+    function clampNumber(value, min, max) { // NEW
+        return Math.max(min, Math.min(max, value)); // NEW
+    } // NEW
 
-        st.btnSelectBeds.style.display = '';
-    }
+    function containedBedIdForComponent(members, beds) { // NEW
+        let bedId = null; // NEW
+        for (const member of (members || [])) { // NEW
+            const meta = classifyTilerGroupForBeds(member, beds); // NEW
+            if (meta.type !== 'contained' || !meta.bedId) return null; // NEW
+            if (bedId && bedId !== meta.bedId) return null; // NEW
+            bedId = meta.bedId; // NEW
+        } // NEW
+        return bedId; // NEW
+    } // NEW
+
+    function makeCoveredPlantTarget(component, coverKey, coverCells) { // NEW
+        if (!component || !component.length || clusterKeyOf(component) === coverKey) return null; // NEW
+        const fraction = coverageFractionOfTargetCellsByCoverCells(component, coverCells); // NEW
+        if (fraction < COVERED_TARGET_MIN_PCT) return null; // NEW
+        return { type: 'plant', cells: component.slice(), fraction }; // NEW
+    } // NEW
+
+    function coveredTargetsForCluster(key, components) { // NEW
+        const st = clusterStates.get(key); if (!st || !st.order || !st.order.length) return []; // NEW
+        const parent = model.getParent(st.order[0]); // NEW
+        if (!parent) return []; // NEW
+        const coverCells = st.order.slice(); // NEW
+        const coverKey = clusterKeyOf(coverCells); // NEW
+        const beds = (graph.getChildVertices(parent) || []).filter(isGardenBed); // NEW
+        const targets = []; // NEW
+        const coveredPlantBedIds = new Set(); // NEW
+        const occupiedBedIds = new Set(); // NEW
+
+        for (const component of (components || [])) { // NEW
+            const bedId = containedBedIdForComponent(component, beds); // NEW
+            if (bedId) occupiedBedIds.add(bedId); // NEW
+            const target = makeCoveredPlantTarget(component, coverKey, coverCells); // NEW
+            if (!target) continue; // NEW
+            if (bedId) coveredPlantBedIds.add(bedId); // NEW
+            targets.push(target); // NEW
+        } // NEW
+
+        for (const bed of beds) { // NEW
+            if (!bed || !bed.id || occupiedBedIds.has(bed.id) || coveredPlantBedIds.has(bed.id)) continue; // NEW
+            if (targetCoverageFractionByCells(bed, coverCells) >= COVERED_TARGET_MIN_PCT) targets.push({ type: 'bed', cells: [bed], bed }); // NEW
+        } // NEW
+
+        return targets; // NEW
+    } // NEW
+
+    function coveredTargetLabel(target) { // NEW
+        if (!target) return 'Select covered target'; // NEW
+        if (target.type === 'bed') return 'Select covered garden bed'; // NEW
+        return target.cells && target.cells.length > 1 ? 'Select covered plant cluster' : 'Select covered plant group'; // NEW
+    } // NEW
+
+    function selectCoveredTarget(key, target) { // NEW
+        const st = clusterStates.get(key); // NEW
+        if (!st || !target || !target.cells || !target.cells.length) return; // NEW
+        const parent = model.getParent(st.order[0]); // NEW
+        clearVisibilityFor(key); // NEW
+        if (target.type === 'bed') { // NEW
+            bringCellsToFrontTemporarilyInParent(parent, target.cells); // NEW
+            graph.setSelectionCells(target.cells); // NEW
+        } else if (target.cells.length === 1) { // NEW
+            bringToFrontAndSelect(target.cells[0]); // NEW
+        } else { // NEW
+            graph.setSelectionCells(target.cells); // NEW
+        } // NEW
+        if (parent) graph.refresh(parent); else graph.refresh(); // CHANGE
+        hideUIFor(key); // NEW
+    } // NEW
+
+    function ensureCoveredTargetSelectorsFor(key, components) { // NEW
+        const host = getHost(); // NEW
+        const st = clusterStates.get(key); if (!st) return; // NEW
+        removeCoveredTargetSelectorsFor(key); // NEW
+        const targets = coveredTargetsForCluster(key, components); // NEW
+        if (!targets.length) return; // NEW
+        for (const target of targets) { // NEW
+            const b = document.createElement('img'); // NEW
+            b.src = target.type === 'bed' ? ICON_SELECT_BEDS : ICON_SELECT; // NEW
+            b.alt = 'Select covered target'; // NEW
+            styleSelectBtn(b); // NEW
+            b.title = coveredTargetLabel(target); // NEW
+            b.draggable = false; // NEW
+            b.addEventListener('pointerdown', consumeEvt, { passive: false }); // NEW
+            b.addEventListener('mousedown', consumeEvt, { passive: false }); // NEW
+            b.addEventListener('click', function (evt) { // NEW
+                consumeEvt(evt); // NEW
+                selectCoveredTarget(key, target); // NEW
+            }); // NEW
+            host.appendChild(b); // NEW
+            st.coveredTargetButtons.push({ el: b, target }); // NEW
+        } // NEW
+        positionCoveredTargetSelectorsFor(key); // NEW
+    } // NEW
 
     function ensureBadgeFor(key) {
         const host = getHost();
@@ -1131,7 +1400,8 @@ Draw.loadPlugin(function (ui) {
         if (st.badgePrev) st.badgePrev.style.display = 'none';
         if (st.badgeNext) st.badgeNext.style.display = 'none';
         if (st.btnSelectAll) st.btnSelectAll.style.display = 'none';
-        if (st.btnSelectBeds) st.btnSelectBeds.style.display = 'none';
+        if (st.btnSelectBed) st.btnSelectBed.style.display = 'none'; // NEW
+        removeCoveredTargetSelectorsFor(key); // CHANGE
 
     }
 
@@ -1151,6 +1421,25 @@ Draw.loadPlugin(function (ui) {
         if (!isFinite(minX) || !isFinite(minY) || !isFinite(maxX) || !isFinite(maxY)) return null;
         return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
     }
+
+    function positionCoveredTargetSelectorsFor(key) { // NEW
+        const st = clusterStates.get(key); if (!st || !st.coveredTargetButtons || !st.coveredTargetButtons.length) return; // NEW
+        const coverBox = getClusterBBox(key); // NEW
+        if (!coverBox) { removeCoveredTargetSelectorsFor(key); return; } // NEW
+        for (const item of st.coveredTargetButtons) { // NEW
+            const el = item.el; // NEW
+            const targetBox = viewBBoxForCells(item.target && item.target.cells); // NEW
+            const center = bboxCenter(targetBox); // NEW
+            if (!el || !center) continue; // NEW
+            const minLeft = coverBox.x; // NEW
+            const maxLeft = coverBox.x + Math.max(0, coverBox.w - BTN_SIZE); // NEW
+            const minTop = coverBox.y; // NEW
+            const maxTop = coverBox.y + Math.max(0, coverBox.h - BTN_SIZE); // NEW
+            el.style.left = Math.round(clampNumber(center.x - BTN_SIZE / 2, minLeft, maxLeft)) + 'px'; // NEW
+            el.style.top = Math.round(clampNumber(center.y - BTN_SIZE / 2, minTop, maxTop)) + 'px'; // NEW
+            el.style.display = ''; // NEW
+        } // NEW
+    } // NEW
 
 
     function positionUIFor(key) {
@@ -1177,19 +1466,17 @@ Draw.loadPlugin(function (ui) {
         } // CHANGE
 
         // place select buttons at the top-left outside corner of the cluster bbox
-        if (st.btnSelectAll || st.btnSelectBeds) {
+        if (st.btnSelectAll || st.btnSelectBed) { // CHANGE
             const baseX = Math.round(box.x - BTN_SIZE - BTN_INSET);
             const y = Math.round(box.y - BTN_SIZE - BTN_INSET);
-            const gap = 4;
-
-            // Left: beds, Right: cluster (so they read left->right)                     
-            if (st.btnSelectBeds) {
-                st.btnSelectBeds.style.left = baseX + 'px';
-                st.btnSelectBeds.style.top = y + 'px';
-            }
+            const selectGap = 4; // NEW
+            if (st.btnSelectBed) { // NEW
+                st.btnSelectBed.style.left = baseX + 'px'; // NEW
+                st.btnSelectBed.style.top = y + 'px'; // NEW
+            } // NEW
             if (st.btnSelectAll) {
-                const x2 = baseX + (st.btnSelectBeds ? (BTN_SIZE + gap) : 0);
-                st.btnSelectAll.style.left = x2 + 'px';
+                const x2 = baseX + (st.btnSelectBed && st.btnSelectBed.style.display !== 'none' ? (BTN_SIZE + selectGap) : 0); // CHANGE
+                st.btnSelectAll.style.left = x2 + 'px'; // CHANGE
                 st.btnSelectAll.style.top = y + 'px';
             }
         }
@@ -1198,6 +1485,7 @@ Draw.loadPlugin(function (ui) {
             updateOverlapValuesFor(key); // CHANGE
             positionOverlapBadgesFor(key); // CHANGE
         } // NEW
+        positionCoveredTargetSelectorsFor(key); // NEW
     }
 
     function updateControlsVisibilityFor(key) {
@@ -1387,10 +1675,11 @@ Draw.loadPlugin(function (ui) {
                 ensureBadgeFor(key); // CHANGE
                 ensureSelectAllFor(key); // CHANGE
             } // NEW
-            ensureSelectBedsFor(key);
+            ensureContainedBedSelectorFor(key); // NEW
             updateControlsVisibilityFor(key);
             positionUIFor(key);
             applyVisibilityFor(key);
+            ensureCoveredTargetSelectorsFor(key, comps); // NEW
 
         }
 
@@ -1504,7 +1793,9 @@ Draw.loadPlugin(function (ui) {
             // Only reposition visible UI (selected cluster only)                      
             const hasVisibleUI = // NEW
                 (st.btnPrev && st.btnPrev.style.display !== 'none') || // NEW
-                (st.btnSelectBeds && st.btnSelectBeds.style.display !== 'none'); // NEW
+                (st.btnSelectAll && st.btnSelectAll.style.display !== 'none') || // CHANGE
+                (st.btnSelectBed && st.btnSelectBed.style.display !== 'none') || // NEW
+                (st.coveredTargetButtons && st.coveredTargetButtons.length > 0); // CHANGE
             if (!hasVisibleUI) continue; // CHANGE
             positionUIFor(key);
         }
