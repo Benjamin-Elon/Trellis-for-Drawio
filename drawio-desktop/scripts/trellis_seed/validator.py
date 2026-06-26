@@ -7,7 +7,16 @@ from pathlib import Path
 from typing import Any
 
 from .jsonio import read_json, write_json
-from .schema import CITY_COLUMNS, GENERATED_TABLES, PLANT_COLUMNS
+from .schema import (
+    CITY_COLUMNS,
+    GENERATED_TABLES,
+    PLANT_COLUMNS,
+    PLANT_FIELD_TYPES,
+    PLANT_FLAG_FIELDS,
+    PLANT_INTEGER_FIELDS,
+    PLANT_REAL_FIELDS,
+    PLANT_TEXT_FIELDS,
+)
 
 
 HARD_PLANT_RANGES = {
@@ -160,11 +169,15 @@ def validate_row(
         unknown = sorted(set(row) - PLANT_COLUMNS - {"provenance"})
         if unknown:
             errors.append(f"{prefix} has unknown plant columns: {unknown}")
+        _validate_complete_plant_row(prefix, row, errors)
         _validate_ranges(prefix, row, HARD_PLANT_RANGES, errors, hard=True)
         _validate_ranges(prefix, row, WARN_PLANT_RANGES, warnings, hard=False)
-        if row.get("tmin_c") is not None and row.get("tmax_c") is not None and float(row["tmin_c"]) > float(row["tmax_c"]):
+        tmin = _coerce_number(row.get("tmin_c"))
+        tmax = _coerce_number(row.get("tmax_c"))
+        if tmin is not None and tmax is not None and tmin > tmax:
             errors.append(f"{prefix}.tmin_c cannot exceed tmax_c.")
-        if sum(1 for key in ("annual", "biennial", "perennial") if int(row.get(key) or 0)) > 1:
+        lifecycle_count = sum(1 for key in ("annual", "biennial", "perennial") if _coerce_integer(row.get(key)) == 1)
+        if lifecycle_count > 1:
             warnings.append(f"{prefix} has multiple lifecycle flags set.")
     elif table == "Cities":
         if not str(row.get("city_name") or "").strip():
@@ -200,6 +213,13 @@ def validate_row(
             errors.append(f"{prefix} needs relation_id or p1/p2.")
         if not row.get("source_url") and not row.get("source_note"):
             errors.append(f"{prefix} needs source_url or source_note.")
+    elif table == "CityWeatherMonthly":
+        for key in ("city_name", "weather_month", "provider", "dataset"):
+            if not row.get(key):
+                errors.append(f"{prefix}.{key} is required.")
+        _validate_weather_numbers(prefix, row, errors)
+        if row.get("weather_month") and not _valid_month_token(row.get("weather_month")):
+            errors.append(f"{prefix}.weather_month must be YYYY-MM.")
     elif table == "CityWeatherDaily":
         for key in ("city_name", "weather_date", "provider", "dataset"):
             if not row.get(key):
@@ -297,7 +317,7 @@ def _validate_db_dependencies(generated_dir: Path, db_path: Path) -> dict[str, l
                 key = (_norm(row.get("plant_name")), _norm(row.get("variety_name")))
                 if key not in generated_varieties | db_varieties and not row.get("variety_id"):
                     errors.append(f"{table} cannot resolve variety: {row.get('plant_name')} / {row.get('variety_name')}")
-    for table in ("CityWeatherDaily", "CityWeatherForecastDaily"):
+    for table in ("CityWeatherMonthly", "CityWeatherDaily", "CityWeatherForecastDaily"):
         for row in read_json(generated_dir / f"{table}.json", []) or []:
             if _norm(row.get("city_name")) not in generated_cities | db_cities and not row.get("city_id"):
                 errors.append(f"{table} cannot resolve city: {row.get('city_name')}")
@@ -312,7 +332,10 @@ def _validate_ranges(prefix: str, row: dict[str, Any], ranges: dict[str, tuple[f
     for key, (lo, hi) in ranges.items():
         if row.get(key) is None:
             continue
-        value = float(row[key])
+        value = _coerce_number(row.get(key))
+        if value is None:
+            out.append(f"{prefix}.{key} must be numeric.")
+            continue
         if value < lo or value > hi:
             kind = "outside hard bounds" if hard else "outside typical range"
             out.append(f"{prefix}.{key} {kind}: {value} not in [{lo}, {hi}].")
@@ -341,3 +364,58 @@ def _number_between(prefix: str, row: dict[str, Any], key: str, lo: float, hi: f
 
 def _norm(value: Any) -> str:
     return normalize_key(value)
+
+
+def _validate_complete_plant_row(prefix: str, row: dict[str, Any], errors: list[str]) -> None:
+    for field in sorted(PLANT_FIELD_TYPES):
+        if field not in row:
+            errors.append(f"{prefix}.{field} is required.")
+            continue
+        value = row.get(field)
+        if value is None:
+            errors.append(f"{prefix}.{field} cannot be null.")
+            continue
+        if field in PLANT_TEXT_FIELDS:
+            if not isinstance(value, str) or not value.strip():
+                errors.append(f"{prefix}.{field} must be a non-empty string.")
+        elif field in PLANT_INTEGER_FIELDS:
+            integer = _coerce_integer(value)
+            if integer is None:
+                errors.append(f"{prefix}.{field} must be an integer.")
+            elif field in PLANT_FLAG_FIELDS and integer not in (0, 1):
+                errors.append(f"{prefix}.{field} must be 0 or 1.")
+        elif field in PLANT_REAL_FIELDS and _coerce_number(value) is None:
+            errors.append(f"{prefix}.{field} must be numeric.")
+
+
+def _coerce_integer(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return 1 if value else 0
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else None
+    try:
+        parsed = float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return int(parsed) if parsed.is_integer() else None
+
+
+def _coerce_number(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        return float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _valid_month_token(value: Any) -> bool:
+    token = str(value or "")
+    if len(token) != 7 or token[4] != "-":
+        return False
+    year, month = token[:4], token[5:]
+    return year.isdigit() and month.isdigit() and 1 <= int(month) <= 12

@@ -25,7 +25,7 @@ from trellis_seed.artifacts import (  # noqa: E402
     slugify,
     suggestion_summary_slug,
 )
-from trellis_seed.db import apply_run, create_diff_report, load_methods, print_diff_report  # noqa: E402
+from trellis_seed.db import apply_run, apply_run_to_databases, create_diff_report, load_methods, print_diff_report  # noqa: E402
 from trellis_seed.config import Settings, read_openai_api_key  # noqa: E402
 from trellis_seed.generator import (
     GenerationOptions,
@@ -44,8 +44,8 @@ from trellis_seed.jsonio import write_json  # noqa: E402
 from trellis_seed.menu import _preflight_provider_labels, _should_prompt_template_generation  # noqa: E402
 from trellis_seed.migrations import apply_migrations, pending_migrations  # noqa: E402
 from trellis_seed.planner import effective_tables_from_input, selected_tables_warning  # noqa: E402
-from trellis_seed.providers import OpenAIJsonClient, OpenMeteoClient, ProviderTrace  # noqa: E402
-from trellis_seed.schema import OPENAI_PLANT_SCHEMA, OPENAI_TEMPLATE_SCHEMA  # noqa: E402
+from trellis_seed.providers import NasaPowerClient, OpenAIJsonClient, OpenMeteoClient, ProviderTrace  # noqa: E402
+from trellis_seed.schema import OPENAI_PLANT_SCHEMA, OPENAI_TEMPLATE_SCHEMA, PLANT_INTEGER_FIELDS, PLANT_REAL_FIELDS, PLANT_TEXT_FIELDS  # noqa: E402
 from trellis_seed.suggestions import (  # noqa: E402
     input_draft_schema,
     load_suggestion_context,
@@ -56,6 +56,43 @@ from trellis_seed.suggestions import (  # noqa: E402
     write_suggestion_artifacts,
 )
 from trellis_seed.validator import validate_input, validate_row, validate_run  # noqa: E402
+from trellis_seed.weather import summarize_city_monthly_weather  # noqa: E402
+
+
+def complete_plant_row(**overrides):
+    row = {}
+    for field in PLANT_TEXT_FIELDS:
+        row[field] = f"{field} value"
+    for field in PLANT_INTEGER_FIELDS:
+        row[field] = 1
+    for field in PLANT_REAL_FIELDS:
+        row[field] = 10.0
+    row.update({
+        "plant_name": "Lettuce",
+        "abbr": "LET",
+        "annual": 1,
+        "biennial": 0,
+        "perennial": 0,
+        "direct_sow": 1,
+        "transplant": 1,
+        "succession": 1,
+        "overwinter_ok": 0,
+        "lifespan_years": 1,
+        "harvest_window_days": 30,
+        "days_maturity": 55,
+        "days_transplant": 28,
+        "days_germ": 7,
+        "soil_ph_range": 6.5,
+        "tmin_c": 4.0,
+        "tmax_c": 24.0,
+        "topt_low_c": 16.0,
+        "topt_high_c": 20.0,
+        "tbase_c": 5.0,
+        "default_planting_method_category": "direct_sow",
+        "default_planting_method": "direct_sow.field",
+    })
+    row.update(overrides)
+    return row
 
 
 class TrellisSeederTests(unittest.TestCase):
@@ -75,6 +112,7 @@ class TrellisSeederTests(unittest.TestCase):
             after = pending_migrations(conn)
             self.assertEqual(after, [])
             tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            self.assertIn("CityWeatherMonthly", tables)
             self.assertIn("CityWeatherDaily", tables)
             self.assertIn("CityWeatherForecastDaily", tables)
             self.assertIn("CompanionEvidence", tables)
@@ -210,9 +248,9 @@ class TrellisSeederTests(unittest.TestCase):
         self.assertEqual(artifacts_after_keeping_latest([oldest, newest, middle], 3, runs_dir), [])
 
     def test_menu_preflight_labels_are_section_relevant(self) -> None:
-        self.assertEqual(_preflight_provider_labels({"cities": [{"name": "Vancouver, BC"}]}), ["Open-Meteo"])
+        self.assertEqual(_preflight_provider_labels({"cities": [{"name": "Vancouver, BC"}]}), ["Open-Meteo", "NASA POWER"])
         self.assertEqual(_preflight_provider_labels({"companions": [{"p1": "Apple", "p2": "Carrot", "sources": ["source"]}]}), ["OpenAI"])
-        self.assertEqual(_preflight_provider_labels({"crops": [{"name": "Parsnip", "sources": ["source"]}], "cities": [{"name": "Victoria, BC"}]}), ["OpenAI", "Open-Meteo"])
+        self.assertEqual(_preflight_provider_labels({"crops": [{"name": "Parsnip", "sources": ["source"]}], "cities": [{"name": "Victoria, BC"}]}), ["OpenAI", "Open-Meteo", "NASA POWER"])
 
     def test_menu_template_prompt_only_applies_to_crops(self) -> None:
         self.assertFalse(_should_prompt_template_generation({"cities": [{"name": "Vancouver, BC"}]}))
@@ -372,6 +410,30 @@ class TrellisSeederTests(unittest.TestCase):
         self.assertIn("[CityWeatherDaily] weather summary", out.getvalue())
         self.assertIn("rows: 1", out.getvalue())
 
+    def test_nasa_power_monthly_weather_summarizes_city_and_rows(self) -> None:
+        city, rows, provenance = summarize_city_monthly_weather(
+            "Victoria, British Columbia, Canada",
+            {"latitude": 48.4284, "longitude": -123.3656, "timezone": "America/Vancouver"},
+            {
+                "properties": {
+                    "parameter": {
+                        "T2M": {"202501": 6.0, "202502": 7.0},
+                        "T2M_MAX": {"202501": 9.0, "202502": 10.0},
+                        "T2M_MIN": {"202501": 3.0, "202502": 4.0},
+                        "PRECTOTCORR": {"202501": 120.0, "202502": 90.0},
+                    }
+                }
+            },
+            5,
+        )
+        self.assertEqual(city["avg_monthly_low_c1"], 3)
+        self.assertEqual(city["avg_monthly_high_c2"], 10)
+        self.assertIsNone(city["last_spring_frost_doy"])
+        self.assertEqual(rows[0]["weather_month"], "2025-01")
+        self.assertEqual(rows[0]["provider"], "nasa-power")
+        self.assertGreater(city["gdd_annual"], 0)
+        self.assertEqual(provenance["provider"], "nasa-power")
+
     def test_open_meteo_geocode_handles_region_qualified_city_names(self) -> None:
         class FakeMeteo(OpenMeteoClient):
             def __init__(self) -> None:
@@ -477,6 +539,27 @@ class TrellisSeederTests(unittest.TestCase):
         self.assertIn("name=Toronto", client.urls[0])
         self.assertEqual(trace.request["qualifiers"]["admin1"], "Ontario")
 
+    def test_nasa_power_monthly_history_uses_monthly_point_endpoint(self) -> None:
+        class FakeNasa(NasaPowerClient):
+            def __init__(self) -> None:
+                super().__init__({
+                    "monthly_url": "https://example.test/power",
+                    "parameters": "T2M,T2M_MAX,T2M_MIN,PRECTOTCORR",
+                    "community": "AG",
+                })
+                self.urls: list[str] = []
+
+            def _get_json(self, url: str) -> dict:
+                self.urls.append(url)
+                return {"properties": {"parameter": {"T2M": {"202501": 1.0}}}}
+
+        data, trace = FakeNasa().monthly_history(latitude=49.0, longitude=-123.0, start_year=2024, end_year=2025)
+        self.assertIn("parameters=T2M%2CT2M_MAX%2CT2M_MIN%2CPRECTOTCORR", trace.request["url"])
+        self.assertIn("start=2024", trace.request["url"])
+        self.assertIn("end=2025", trace.request["url"])
+        self.assertEqual(data["properties"]["parameter"]["T2M"]["202501"], 1.0)
+        self.assertEqual(trace.provider, "nasa-power")
+
     def test_open_meteo_get_json_retries_transient_connection_reset(self) -> None:
         calls = {"count": 0}
         original_urlopen = OpenMeteoClient._get_json.__globals__["urllib"].request.urlopen
@@ -501,7 +584,8 @@ class TrellisSeederTests(unittest.TestCase):
         try:
             OpenMeteoClient._get_json.__globals__["urllib"].request.urlopen = fake_urlopen
             OpenMeteoClient._get_json.__globals__["time"].sleep = lambda _seconds: None
-            self.assertEqual(OpenMeteoClient._get_json("https://example.test"), {"ok": True})
+            client = OpenMeteoClient({"rate_limit_max_attempts": 8})
+            self.assertEqual(client._get_json("https://example.test"), {"ok": True})
             self.assertEqual(calls["count"], 2)
         finally:
             OpenMeteoClient._get_json.__globals__["urllib"].request.urlopen = original_urlopen
@@ -519,6 +603,18 @@ class TrellisSeederTests(unittest.TestCase):
             input_draft_schema("companions"),
         ):
             self._assert_strict_schema(schema)
+
+    def test_openai_plant_schema_uses_typed_non_nullable_fields(self) -> None:
+        row_schema = OPENAI_PLANT_SCHEMA["properties"]["row"]["properties"]
+        for field in PLANT_TEXT_FIELDS:
+            self.assertEqual(row_schema[field]["type"], "string", field)
+            self.assertEqual(row_schema[field]["minLength"], 1, field)
+        for field in PLANT_INTEGER_FIELDS:
+            self.assertEqual(row_schema[field]["type"], "integer", field)
+        for field in PLANT_REAL_FIELDS:
+            self.assertEqual(row_schema[field]["type"], "number", field)
+        for field_schema in row_schema.values():
+            self.assertNotIn("null", field_schema.get("type") if isinstance(field_schema.get("type"), list) else [field_schema.get("type")])
 
     def test_openai_client_does_not_mask_responses_api_errors(self) -> None:
         class FakeResponses:
@@ -555,15 +651,39 @@ class TrellisSeederTests(unittest.TestCase):
         self.assertNotIn("Cities", tables)
         self.assertIsNotNone(selected_tables_warning(data, tables))
 
+        city_tables = effective_tables_from_input({"cities": [{"name": "Victoria, BC"}]})
+        self.assertIn("CityWeatherMonthly", city_tables)
+        self.assertIn("CityWeatherForecastDaily", city_tables)
+        self.assertNotIn("CityWeatherDaily", city_tables)
+
     def test_validation_uses_source_maps_and_hard_bounds(self) -> None:
-        row = {
-            "plant_name": "Bad Crop",
-            "yield_per_plant_kg": -1,
-            "provenance": {"field_sources": {"plant_name": ["source-a"]}},
-        }
+        row = complete_plant_row(
+            plant_name="Bad Crop",
+            yield_per_plant_kg=-1,
+            provenance={"field_sources": {"plant_name": ["source-a"]}},
+        )
         report = validate_row("Plants", row, source_values={"source-a"}, required_source_fields={"plant_name", "yield_per_plant_kg"})
         self.assertTrue(any("yield_per_plant_kg outside hard bounds" in error for error in report["errors"]))
         self.assertTrue(any("field_sources.yield_per_plant_kg" in error for error in report["errors"]))
+
+    def test_plant_validation_rejects_incomplete_null_and_bad_types(self) -> None:
+        report = validate_row("Plants", {"plant_name": "Sparse Crop"})
+        self.assertTrue(any("family is required" in error for error in report["errors"]))
+
+        null_report = validate_row("Plants", complete_plant_row(family=None))
+        self.assertTrue(any("family cannot be null" in error for error in null_report["errors"]))
+
+        empty_text_report = validate_row("Plants", complete_plant_row(family=""))
+        self.assertTrue(any("family must be a non-empty string" in error for error in empty_text_report["errors"]))
+
+        numeric_string_report = validate_row("Plants", complete_plant_row(tmin_c="4", days_maturity="55"))
+        self.assertFalse(any("tmin_c must be numeric" in error or "days_maturity must be an integer" in error for error in numeric_string_report["errors"]))
+
+        invalid_number_report = validate_row("Plants", complete_plant_row(tmin_c="warm"))
+        self.assertTrue(any("tmin_c must be numeric" in error for error in invalid_number_report["errors"]))
+
+        bad_flag_report = validate_row("Plants", complete_plant_row(direct_sow=2))
+        self.assertTrue(any("direct_sow must be 0 or 1" in error for error in bad_flag_report["errors"]))
 
     def test_crop_validation_accepts_controlled_input_provenance_references(self) -> None:
         methods = [{
@@ -573,15 +693,9 @@ class TrellisSeederTests(unittest.TestCase):
         }]
         source_values = _crop_source_values({"name": "Lettuce", "sources": ["https://example.test/lettuce"]}, methods)
         result = {
-            "row": {
-                "plant_name": "Lettuce",
-                "abbr": "LET",
-                "direct_sow": 1,
-                "transplant": 1,
-                "default_planting_method_category": "direct_sow",
-                "default_planting_method": "direct_sow.field",
-            },
+            "row": complete_plant_row(),
             "allowed_method_categories": ["direct_sow"],
+            "varieties": [{"variety_name": "Buttercrunch", "overrides": [], "sources": []}],
             "provenance": {
                 "field_sources": [
                     {"field": "plant_name", "source": "Lettuce"},
@@ -593,6 +707,92 @@ class TrellisSeederTests(unittest.TestCase):
             },
         }
         self.assertEqual(_validate_crop_result(result, source_values), [])
+
+    def test_crop_validation_rejects_placeholder_varieties(self) -> None:
+        result = {
+            "row": complete_plant_row(),
+            "allowed_method_categories": ["direct_sow"],
+            "allowed_method_ids": ["direct_sow.field"],
+            "varieties": [
+                {"variety_name": "Lettuce variety 1", "overrides": [], "sources": []},
+                {"variety_name": "Generic", "overrides": [], "sources": []},
+            ],
+            "provenance": {"field_sources": []},
+        }
+        methods = [{"method_id": "direct_sow.field", "method_category_id": "direct_sow", "method_name": "Direct sow (field)"}]
+        prepared = _prepare_crop_result(result, {"name": "Lettuce"}, methods)
+        errors = _validate_crop_result(prepared, _crop_source_values({"name": "Lettuce"}, methods), methods)
+        self.assertTrue(any("placeholder" in error for error in errors))
+
+    def test_crop_generation_repair_handles_incomplete_typed_rows(self) -> None:
+        class FakeOpenAI:
+            model = "fake"
+            reasoning_effort = "low"
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def generate_json(self, **_kwargs):
+                self.calls += 1
+                trace = ProviderTrace("fake", {"call": self.calls})
+                if self.calls == 1:
+                    return {
+                        "row": {"plant_name": "Lettuce", "family": None},
+                        "allowed_method_categories": ["direct_sow"],
+                        "allowed_method_ids": ["direct_sow.field"],
+                        "varieties": [{"variety_name": "Lettuce variety 1", "overrides": [], "sources": []}],
+                        "provenance": {"field_sources": []},
+                    }, trace
+                return {
+                    "row": complete_plant_row(),
+                    "allowed_method_categories": ["direct_sow"],
+                    "allowed_method_ids": ["direct_sow.field"],
+                    "varieties": [{"variety_name": "Buttercrunch", "overrides": [], "sources": []}],
+                    "provenance": {"field_sources": []},
+                }, trace
+
+        methods = [{"method_id": "direct_sow.field", "method_category_id": "direct_sow", "method_name": "Direct sow (field)"}]
+        crop = {"name": "Lettuce"}
+        source_values = _crop_source_values(crop, methods)
+        fake = FakeOpenAI()
+        result, trace = _call_openai_with_retry(
+            fake,
+            schema_name="trellis_crop_row",
+            json_schema=OPENAI_PLANT_SCHEMA,
+            system="",
+            user="",
+            validator=lambda candidate: _validate_crop_result(_prepare_crop_result(candidate, crop, methods), source_values, methods),
+        )
+        self.assertEqual(fake.calls, 2)
+        self.assertIn("repair_for", trace.request)
+        self.assertEqual(result["varieties"][0]["variety_name"], "Buttercrunch")
+
+    def test_crop_generation_unrepaired_incomplete_row_fails(self) -> None:
+        class FakeOpenAI:
+            model = "fake"
+            reasoning_effort = "low"
+
+            def generate_json(self, **_kwargs):
+                return {
+                    "row": {"plant_name": "Lettuce", "family": None},
+                    "allowed_method_categories": ["direct_sow"],
+                    "allowed_method_ids": ["direct_sow.field"],
+                    "varieties": [{"variety_name": "Lettuce variety 1", "overrides": [], "sources": []}],
+                    "provenance": {"field_sources": []},
+                }, ProviderTrace("fake", {})
+
+        methods = [{"method_id": "direct_sow.field", "method_category_id": "direct_sow", "method_name": "Direct sow (field)"}]
+        crop = {"name": "Lettuce"}
+        source_values = _crop_source_values(crop, methods)
+        with self.assertRaisesRegex(Exception, "OpenAI repair output failed validation"):
+            _call_openai_with_retry(
+                FakeOpenAI(),
+                schema_name="trellis_crop_row",
+                json_schema=OPENAI_PLANT_SCHEMA,
+                system="",
+                user="",
+                validator=lambda candidate: _validate_crop_result(_prepare_crop_result(candidate, crop, methods), source_values, methods),
+            )
 
     def test_template_validation_accepts_method_task_json_provenance_reference(self) -> None:
         task_json = '{\n  "prep": { "offsetDays": 5, "offsetDirection": "before" },\n  "sow": { "offsetDays": 0 },\n  "transplant": { "offsetDays": 30, "offsetDirection": "after" },\n  "harvest": true\n}'
@@ -725,15 +925,9 @@ class TrellisSeederTests(unittest.TestCase):
 
     def test_controlled_crop_provenance_is_added_by_code(self) -> None:
         result = {
-            "row": {
-                "plant_name": "Lettuce",
-                "abbr": "LET",
-                "direct_sow": "yes",
-                "transplant": "true",
-                "default_planting_method_category": "direct_sow",
-                "default_planting_method": "direct_sow.field",
-            },
+            "row": complete_plant_row(direct_sow="yes", transplant="true"),
             "allowed_method_categories": ["direct_sow"],
+            "varieties": [{"variety_name": "Buttercrunch", "overrides": [], "sources": []}],
             "provenance": {"field_sources": []},
         }
         methods = [{"method_id": "direct_sow.field", "method_category_id": "direct_sow", "method_name": "Direct sow (field)"}]
@@ -749,16 +943,10 @@ class TrellisSeederTests(unittest.TestCase):
             {"method_id": "transplant.purchased", "method_category_id": "transplant", "method_name": "Purchased transplant"},
         ]
         result = {
-            "row": {
-                "plant_name": "Lettuce",
-                "abbr": "LET",
-                "direct_sow": 0,
-                "transplant": 1,
-                "default_planting_method_category": "transplant",
-                "default_planting_method": "transplant.indoor",
-            },
+            "row": complete_plant_row(direct_sow=0, transplant=1, default_planting_method_category="transplant", default_planting_method="transplant.indoor"),
             "allowed_method_categories": ["transplant"],
             "allowed_method_ids": ["transplant.indoor", "transplant.purchased"],
+            "varieties": [{"variety_name": "Buttercrunch", "overrides": [], "sources": []}],
             "provenance": {"field_sources": []},
         }
         prepared = _prepare_crop_result(result, {"name": "Lettuce"}, methods)
@@ -772,15 +960,9 @@ class TrellisSeederTests(unittest.TestCase):
             {"method_id": "transplant.indoor", "method_category_id": "transplant", "method_name": "Indoor seed start"},
         ]
         base = {
-            "row": {
-                "plant_name": "Lettuce",
-                "abbr": "LET",
-                "direct_sow": 1,
-                "transplant": 1,
-                "default_planting_method_category": "direct_sow",
-                "default_planting_method": "direct_sow.field",
-            },
+            "row": complete_plant_row(),
             "allowed_method_categories": ["direct_sow"],
+            "varieties": [{"variety_name": "Buttercrunch", "overrides": [], "sources": []}],
             "provenance": {"field_sources": []},
         }
         missing = _prepare_crop_result(dict(base), {"name": "Lettuce"}, methods)
@@ -853,19 +1035,13 @@ class TrellisSeederTests(unittest.TestCase):
                 "repeatCutoffOffsetDirection": "after",
             }],
         }
-        write_json(generated / "Plants.json", [{
-            "plant_name": "Seeder Test Crop",
-            "abbr": "STC",
-            "default_planting_method_category": "direct_sow",
-            "default_planting_method": "direct_sow.field",
-            "annual": 1,
-            "biennial": 0,
-            "perennial": 0,
-            "yield_unit": "kg",
-            "yield_per_plant_kg": 1.0,
-            "direct_sow": 1,
-            "transplant": 0,
-        }])
+        write_json(generated / "Plants.json", [complete_plant_row(
+            plant_name="Seeder Test Crop",
+            abbr="STC",
+            transplant=0,
+            yield_unit="kg",
+            yield_per_plant_kg=1.0,
+        )])
         write_json(generated / "PlantAllowedMethodCategories.json", [{
             "plant_name": "Seeder Test Crop",
             "method_category_id": "direct_sow",
@@ -910,6 +1086,20 @@ class TrellisSeederTests(unittest.TestCase):
             "fetched_at": "2026-01-01T00:00:00+00:00",
             "source_url": "https://open-meteo.com/",
         }])
+        write_json(generated / "CityWeatherMonthly.json", [{
+            "city_name": "Seeder Test City",
+            "weather_month": "2025-01",
+            "provider": "nasa-power",
+            "dataset": "nasa-power-monthly",
+            "timezone": "America/Vancouver",
+            "temp_min_c": 1.0,
+            "temp_max_c": 6.0,
+            "temp_mean_c": 3.5,
+            "precipitation_mm": 120.0,
+            "gdd_base_5c": 0.0,
+            "fetched_at": "2026-01-01T00:00:00+00:00",
+            "source_url": "https://power.larc.nasa.gov/",
+        }])
         write_json(generated / "Companions.json", [{
             "p1": "Seeder Test Crop",
             "p2": "Lettuce",
@@ -942,11 +1132,35 @@ class TrellisSeederTests(unittest.TestCase):
             self.assertIsNotNone(plant_id)
             self.assertIsNotNone(city_id)
             weather_count = conn.execute("SELECT COUNT(*) FROM CityWeatherDaily WHERE city_id=?", [city_id]).fetchone()[0]
+            monthly_count = conn.execute("SELECT COUNT(*) FROM CityWeatherMonthly WHERE city_id=?", [city_id]).fetchone()[0]
             evidence_count = conn.execute("SELECT COUNT(*) FROM CompanionEvidence").fetchone()[0]
             variety_template_count = conn.execute("SELECT COUNT(*) FROM VarietyTaskTemplates").fetchone()[0]
             self.assertEqual(weather_count, 1)
+            self.assertEqual(monthly_count, 1)
             self.assertGreaterEqual(evidence_count, 1)
             self.assertGreaterEqual(variety_template_count, 1)
+
+    def test_apply_run_to_databases_updates_seed_and_live_copy(self) -> None:
+        run_dir = self.tmp_path / "run-multi-db"
+        generated = run_dir / "generated"
+        generated.mkdir(parents=True)
+        live_db = self.tmp_path / "appdata" / "draw.io" / "trellis_database" / "Trellis_database.sqlite"
+        write_json(generated / "Cities.json", [{
+            "city_name": "Multi Target City",
+            "latitude": 49.0,
+            "longitude": -123.0,
+            "timezone": "America/Vancouver",
+            "gdd_annual": 1000,
+            "gdd_base_c": 5,
+        }])
+
+        report = apply_run_to_databases(run_dir, [self.db_path, live_db], self.db_path)
+        self.assertEqual(len(report["targets"]), 2)
+        self.assertTrue(live_db.exists())
+        for db_path in (self.db_path, live_db):
+            with closing(sqlite3.connect(db_path)) as conn:
+                found = conn.execute("SELECT city_name FROM Cities WHERE city_name='Multi Target City'").fetchone()
+                self.assertIsNotNone(found)
 
     def test_apply_validation_fails_for_missing_child_dependencies(self) -> None:
         run_dir = self.tmp_path / "run-missing-dep"

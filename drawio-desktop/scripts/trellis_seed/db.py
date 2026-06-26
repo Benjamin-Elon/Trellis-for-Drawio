@@ -99,6 +99,31 @@ def apply_run(run_dir: Path, db_path: Path) -> dict[str, Any]:
     return applied
 
 
+def apply_run_to_databases(run_dir: Path, db_paths: list[Path], seed_db_path: Path | None = None) -> dict[str, Any]:
+    targets = _unique_paths(db_paths)
+    if not targets:
+        raise RuntimeError("No database targets configured.")
+    seed_db_path = seed_db_path or targets[0]
+    for target in targets:
+        _ensure_apply_target_exists(target, seed_db_path)
+    validation_reports = {str(target): validate_run(run_dir, target) for target in targets}
+    invalid = {path: report for path, report in validation_reports.items() if not report["ok"]}
+    if invalid:
+        details = []
+        for path, report in invalid.items():
+            details.append(path)
+            details.extend(f"- {error}" for error in report["errors"])
+        raise RuntimeError("Run is not valid for all database targets:\n" + "\n".join(details))
+    reports = []
+    for target in targets:
+        report = apply_run(run_dir, target)
+        report["db_path"] = str(target)
+        reports.append(report)
+    combined = {"targets": reports}
+    write_json(run_dir / "apply_report.json", combined)
+    return combined
+
+
 def show_pending_migrations(db_path: Path) -> list[str]:
     with closing(connect(db_path)) as conn:
         return pending_migrations(conn)
@@ -111,11 +136,33 @@ def _backup_db(db_path: Path) -> Path:
     return backup_path
 
 
+def _ensure_apply_target_exists(target: Path, seed_db_path: Path) -> None:
+    if target.exists():
+        return
+    if not seed_db_path.exists():
+        raise RuntimeError(f"Seed DB missing; cannot initialize apply target: {seed_db_path}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(seed_db_path, target)
+
+
+def _unique_paths(paths: list[Path]) -> list[Path]:
+    seen: set[str] = set()
+    result: list[Path] = []
+    for path in paths:
+        resolved = path.resolve()
+        key = str(resolved).casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(resolved)
+    return result
+
+
 def _apply_order() -> list[str]:
     return [
         "Plants", "Cities", "PlantAllowedMethodCategories", "PlantVarieties",
         "Companions", "CompanionEvidence", "PlantTaskTemplates",
-        "VarietyTaskTemplates", "CityWeatherDaily", "CityWeatherForecastDaily",
+        "VarietyTaskTemplates", "CityWeatherMonthly", "CityWeatherDaily", "CityWeatherForecastDaily",
     ]
 
 
@@ -136,6 +183,8 @@ def _apply_table(conn: sqlite3.Connection, table: str, rows: list[dict[str, Any]
         return _replace_plant_templates(conn, rows)
     if table == "VarietyTaskTemplates":
         return _replace_variety_templates(conn, rows)
+    if table == "CityWeatherMonthly":
+        return _replace_weather(conn, table, rows, "weather_month", ["city_id", "weather_month", "provider", "dataset"])
     if table == "CityWeatherDaily":
         return _replace_weather(conn, table, rows, "weather_date", ["city_id", "weather_date", "provider", "dataset"])
     if table == "CityWeatherForecastDaily":
@@ -327,7 +376,7 @@ def _find_row(conn: sqlite3.Connection, table: str, id_col: str, name_col: str, 
 
 
 def _weather_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    date_key = "weather_date" if rows and "weather_date" in rows[0] else "forecast_date"
+    date_key = "weather_month" if rows and "weather_month" in rows[0] else ("weather_date" if rows and "weather_date" in rows[0] else "forecast_date")
     dates = sorted(str(r.get(date_key)) for r in rows if r.get(date_key))
     return {
         "count": len(rows),

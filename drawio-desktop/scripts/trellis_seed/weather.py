@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from collections import defaultdict
 from datetime import date, datetime, timezone
+import calendar
 from statistics import mean
 from typing import Any
 
@@ -107,6 +108,91 @@ def summarize_city_weather(city_name: str, geocode: dict[str, Any], daily_payloa
     return row, weather_rows, provenance
 
 
+def summarize_city_monthly_weather(
+    city_name: str,
+    geocode: dict[str, Any],
+    monthly_payload: dict[str, Any],
+    gdd_base_c: float,
+    dataset: str = "nasa-power-monthly",
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+    parameter = (monthly_payload.get("properties") or {}).get("parameter") or {}
+    tmean = parameter.get("T2M") or {}
+    tmax = parameter.get("T2M_MAX") or {}
+    tmin = parameter.get("T2M_MIN") or {}
+    precipitation = parameter.get("PRECTOTCORR") or {}
+    timezone_name = str(geocode.get("timezone") or "UTC")
+    provider = "nasa-power"
+    fetched_at = datetime.now(timezone.utc).isoformat()
+
+    monthly_lows: dict[int, list[float]] = defaultdict(list)
+    monthly_highs: dict[int, list[float]] = defaultdict(list)
+    gdd_by_year: dict[int, float] = defaultdict(float)
+    monthly_rows: list[dict[str, Any]] = []
+
+    for key in sorted(set(tmean) | set(tmax) | set(tmin) | set(precipitation)):
+        parsed = _parse_power_month_key(key)
+        if parsed is None:
+            continue
+        year, month = parsed
+        lo = _num_map_at(tmin, key)
+        hi = _num_map_at(tmax, key)
+        avg = _num_map_at(tmean, key)
+        if avg is None and lo is not None and hi is not None:
+            avg = (lo + hi) / 2
+        monthly_gdd = None
+        if avg is not None:
+            monthly_gdd = max(0.0, avg - gdd_base_c) * calendar.monthrange(year, month)[1]
+            gdd_by_year[year] += monthly_gdd
+        if lo is not None:
+            monthly_lows[month].append(lo)
+        if hi is not None:
+            monthly_highs[month].append(hi)
+        monthly_rows.append({
+            "city_name": city_name,
+            "weather_month": f"{year:04d}-{month:02d}",
+            "provider": provider,
+            "dataset": dataset,
+            "timezone": timezone_name,
+            "temp_min_c": lo,
+            "temp_max_c": hi,
+            "temp_mean_c": avg,
+            "precipitation_mm": _num_map_at(precipitation, key),
+            "gdd_base_5c": round(monthly_gdd, 2) if monthly_gdd is not None else None,
+            "fetched_at": fetched_at,
+            "source_url": "https://power.larc.nasa.gov/",
+        })
+
+    row: dict[str, Any] = {
+        "city_name": city_name,
+        "latitude": round(float(geocode["latitude"]), 4),
+        "longitude": round(float(geocode["longitude"]), 4),
+        "timezone": timezone_name,
+        "gdd_annual": round(mean(gdd_by_year.values())) if gdd_by_year else None,
+        "gdd_base_c": int(gdd_base_c),
+        "last_spring_frost_doy": None,
+        "last_spring_frost_p10_doy": None,
+        "last_spring_frost_p50_doy": None,
+        "last_spring_frost_p90_doy": None,
+        "first_fall_frost_doy": None,
+        "first_fall_frost_p10_doy": None,
+        "first_fall_frost_p50_doy": None,
+        "first_fall_frost_p90_doy": None,
+    }
+    for month in range(1, 13):
+        row[f"avg_monthly_low_c{month}"] = round(mean(monthly_lows[month])) if monthly_lows[month] else None
+        row[f"avg_monthly_high_c{month}"] = round(mean(monthly_highs[month])) if monthly_highs[month] else None
+
+    provenance = {
+        "provider": provider,
+        "dataset": dataset,
+        "row_count": len(monthly_rows),
+        "checksum": checksum_rows(monthly_rows),
+        "frost_definition": "unavailable from monthly NASA POWER averages",
+        "gdd_definition": f"monthly approximation using T2M and base {gdd_base_c}C",
+    }
+    return row, monthly_rows, provenance
+
+
 def forecast_rows(city_name: str, payload: dict[str, Any], model: str) -> list[dict[str, Any]]:
     daily = payload.get("daily") or {}
     times = daily.get("time") or []
@@ -145,6 +231,27 @@ def _num_at(values: list[Any], index: int) -> float | None:
     return float(values[index])
 
 
+def _num_map_at(values: dict[str, Any], key: str) -> float | None:
+    value = values.get(key)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_power_month_key(key: Any) -> tuple[int, int] | None:
+    token = str(key or "").strip()
+    if len(token) != 6 or not token.isdigit():
+        return None
+    year = int(token[:4])
+    month = int(token[4:])
+    if month < 1 or month > 12:
+        return None
+    return year, month
+
+
 def _percentile(values: list[int], p: float) -> int | None:
     if not values:
         return None
@@ -156,4 +263,3 @@ def _percentile(values: list[int], p: float) -> int | None:
     upper = min(lower + 1, len(ordered) - 1)
     weight = position - lower
     return round(ordered[lower] * (1 - weight) + ordered[upper] * weight)
-

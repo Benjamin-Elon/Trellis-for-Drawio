@@ -5,7 +5,7 @@ from pathlib import Path
 
 from .artifacts import artifact_label, artifacts_after_keeping_latest, artifacts_older_than, list_artifacts, select_artifacts_by_indices
 from .config import ensure_default_config, load_settings, read_openai_api_key, save_settings
-from .db import apply_run, create_diff_report, print_diff_report, show_pending_migrations
+from .db import apply_run_to_databases, create_diff_report, print_diff_report, show_pending_migrations
 from .generator import GenerationOptions, estimate_openai_calls, generate_run, normalize_input, preflight
 from .jsonio import read_json
 from .paths import DEFAULT_CONFIG_PATH, DEFAULT_SAMPLE_INPUT_PATH
@@ -209,7 +209,7 @@ def _preflight_provider_labels(input_data: dict) -> list[str]:
     if input_data.get("crops") or input_data.get("companions"):
         labels.append("OpenAI")
     if input_data.get("cities"):
-        labels.append("Open-Meteo")
+        labels.extend(["Open-Meteo", "NASA POWER"])
     return labels
 
 
@@ -251,22 +251,31 @@ def _apply_flow(settings) -> None:
         for error in report["errors"]:
             print(f"- {error}")
         return
-    pending = show_pending_migrations(settings.db_path)
-    if pending:
-        print("Pending schema migrations:")
-        for item in pending:
-            print(f"- {item}")
+    targets = settings.apply_db_paths
+    for target in targets:
+        if not target.exists() and target != settings.db_path:
+            print(f"Live/app DB does not exist and will be initialized from seed DB: {target}")
+        if target.exists():
+            pending = show_pending_migrations(target)
+            if pending:
+                print(f"Pending schema migrations for {target}:")
+                for item in pending:
+                    print(f"- {item}")
     diff = create_diff_report(run_dir, settings.db_path)
     print_diff_report(diff)
-    if input(f"Apply this run to {settings.db_path}? [y/N]: ").strip().lower() != "y":
+    print("Apply targets:")
+    for target in targets:
+        print(f"- {target}")
+    if input("Apply this run to all targets above? [y/N]: ").strip().lower() != "y":
         return
     try:
-        report = apply_run(run_dir, settings.db_path)
+        report = apply_run_to_databases(run_dir, targets, settings.db_path)
     except Exception as exc:
         print(f"Apply failed: {exc}")
         return
     print("Apply complete.")
-    print(f"Backup: {report['backup_path']}")
+    for target in report["targets"]:
+        print(f"Backup ({target['db_path']}): {target['backup_path']}")
 
 
 def _manage_runs(settings) -> None:
@@ -355,8 +364,10 @@ def _settings_flow(config_path: Path):
         print(f"2. Runs dir: {settings.data['runs_dir']}")
         print(f"3. OpenAI model: {settings.openai_model} (OPENAI_MODEL overrides config)")
         print(f"4. OpenAI reasoning effort: {settings.openai_reasoning_effort} (OPENAI_REASONING_EFFORT overrides config)")
-        print(f"5. OPENAI_API_KEY: {'set' if read_openai_api_key() else 'missing'}")
-        print("6. Back")
+        print(f"5. Apply to live AppData DB: {'yes' if settings.apply_to_live_app_db else 'no'}")
+        print(f"6. Live AppData DB path: {settings.live_app_db_path or '[unavailable]'}")
+        print(f"7. OPENAI_API_KEY: {'set' if read_openai_api_key() else 'missing'}")
+        print("8. Back")
         choice = input("Choose setting: ").strip()
         if choice == "1":
             settings.data["db_path"] = input("DB path: ").strip() or settings.data["db_path"]
@@ -367,10 +378,17 @@ def _settings_flow(config_path: Path):
         elif choice == "4":
             settings.data["openai_reasoning_effort"] = input("OpenAI reasoning effort: ").strip() or settings.data["openai_reasoning_effort"]
         elif choice == "5":
-            print("Set OPENAI_API_KEY in your shell environment before launching this menu.")
+            settings.data["apply_to_live_app_db"] = _prompt_yes_no("Apply future runs to the live AppData DB too?", default=settings.apply_to_live_app_db)
         elif choice == "6":
+            current = str(settings.data.get("live_app_db_path") or settings.live_app_db_path or "")
+            settings.data["live_app_db_path"] = input(f"Live AppData DB path [{current}]: ").strip() or settings.data.get("live_app_db_path", "")
+        elif choice == "7":
+            print("Set OPENAI_API_KEY in your shell environment before launching this menu.")
+        elif choice == "8":
             save_settings(settings)
             return settings
+        save_settings(settings)
+        settings = load_settings(config_path)
 
 
 def _live_tests_flow() -> None:

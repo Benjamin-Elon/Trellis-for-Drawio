@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+import random
 import time
 import urllib.parse
 import urllib.request
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from dataclasses import dataclass
 from typing import Any
 
@@ -178,19 +179,39 @@ class OpenMeteoClient:
     def _url(base: str, params: dict[str, Any]) -> str:
         return base + "?" + urllib.parse.urlencode(params)
 
-    @staticmethod
-    def _get_json(url: str) -> dict[str, Any]:
+    def _get_json(self, url: str) -> dict[str, Any]:
         last_error: Exception | None = None
-        for attempt in range(1, 4):
+        max_attempts = int(self.config.get("rate_limit_max_attempts", 8))
+        for attempt in range(1, max_attempts + 1):
             try:
                 with urllib.request.urlopen(url, timeout=30) as response:
                     return json.loads(response.read().decode("utf-8"))
+            except HTTPError as exc:
+                last_error = exc
+                if exc.code != 429 or attempt == max_attempts:
+                    break
+                wait_seconds = self._rate_limit_wait_seconds(exc, attempt)
+                print(f"Open-Meteo rate limited; waiting {wait_seconds:.0f}s before retry {attempt + 1}/{max_attempts}", flush=True)
+                time.sleep(wait_seconds)
             except (ConnectionResetError, TimeoutError, URLError) as exc:
                 last_error = exc
-                if attempt == 3:
+                if attempt == max_attempts:
                     break
                 time.sleep(attempt * 2)
-        raise ProviderError(f"Open-Meteo request failed after 3 attempts: {last_error}") from last_error
+        raise ProviderError(f"Open-Meteo request failed after {max_attempts} attempts: {last_error}") from last_error
+
+    def _rate_limit_wait_seconds(self, exc: HTTPError, attempt: int) -> float:
+        max_wait = float(self.config.get("rate_limit_max_wait_seconds", 900))
+        retry_after = exc.headers.get("Retry-After") if exc.headers else None
+        if retry_after:
+            try:
+                return min(float(retry_after), max_wait)
+            except ValueError:
+                pass
+        base = float(self.config.get("rate_limit_base_wait_seconds", 60))
+        wait = base * (2 ** max(0, attempt - 1))
+        jitter = random.uniform(0, min(5.0, base))
+        return min(wait + jitter, max_wait)
 
     @staticmethod
     def _split_location_query(name: str) -> tuple[str, set[str]]:
@@ -278,3 +299,63 @@ PROVINCE_ALIASES = {
 
 def _normalize_location_token(value: Any) -> str:
     return " ".join(str(value or "").replace(".", " ").strip().casefold().split())
+
+
+class NasaPowerClient:
+    def __init__(self, config: dict[str, Any]) -> None:
+        self.config = config
+
+    def preflight(self) -> ProviderTrace:
+        data, trace = self.monthly_history(latitude=49.2827, longitude=-123.1207, start_year=2025, end_year=2025)
+        trace.request["action"] = "monthly history preflight"
+        trace.response = {"ok": bool((data.get("properties") or {}).get("parameter"))}
+        return trace
+
+    def monthly_history(self, *, latitude: float, longitude: float, start_year: int, end_year: int) -> tuple[dict[str, Any], ProviderTrace]:
+        params = {
+            "parameters": self.config.get("parameters", "T2M,T2M_MAX,T2M_MIN,PRECTOTCORR"),
+            "community": self.config.get("community", "AG"),
+            "longitude": longitude,
+            "latitude": latitude,
+            "format": "JSON",
+            "start": int(start_year),
+            "end": int(end_year),
+        }
+        url = OpenMeteoClient._url(str(self.config["monthly_url"]), params)
+        data = self._get_json(url)
+        parameter = (data.get("properties") or {}).get("parameter") or {}
+        return data, ProviderTrace("nasa-power", {"url": url}, {"parameter_keys": sorted(parameter.keys())})
+
+    def _get_json(self, url: str) -> dict[str, Any]:
+        last_error: Exception | None = None
+        max_attempts = int(self.config.get("rate_limit_max_attempts", 8))
+        for attempt in range(1, max_attempts + 1):
+            try:
+                with urllib.request.urlopen(url, timeout=60) as response:
+                    return json.loads(response.read().decode("utf-8"))
+            except HTTPError as exc:
+                last_error = exc
+                if exc.code != 429 or attempt == max_attempts:
+                    break
+                wait_seconds = self._rate_limit_wait_seconds(exc, attempt)
+                print(f"NASA POWER rate limited; waiting {wait_seconds:.0f}s before retry {attempt + 1}/{max_attempts}", flush=True)
+                time.sleep(wait_seconds)
+            except (ConnectionResetError, TimeoutError, URLError) as exc:
+                last_error = exc
+                if attempt == max_attempts:
+                    break
+                time.sleep(attempt * 2)
+        raise ProviderError(f"NASA POWER request failed after {max_attempts} attempts: {last_error}") from last_error
+
+    def _rate_limit_wait_seconds(self, exc: HTTPError, attempt: int) -> float:
+        max_wait = float(self.config.get("rate_limit_max_wait_seconds", 900))
+        retry_after = exc.headers.get("Retry-After") if exc.headers else None
+        if retry_after:
+            try:
+                return min(float(retry_after), max_wait)
+            except ValueError:
+                pass
+        base = float(self.config.get("rate_limit_base_wait_seconds", 60))
+        wait = base * (2 ** max(0, attempt - 1))
+        jitter = random.uniform(0, min(5.0, base))
+        return min(wait + jitter, max_wait)

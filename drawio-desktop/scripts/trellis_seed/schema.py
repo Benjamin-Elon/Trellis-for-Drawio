@@ -7,6 +7,7 @@ from typing import Any
 GENERATED_TABLES = [
     "Plants",
     "Cities",
+    "CityWeatherMonthly",
     "CityWeatherDaily",
     "CityWeatherForecastDaily",
     "Companions",
@@ -17,7 +18,7 @@ GENERATED_TABLES = [
     "VarietyTaskTemplates",
 ]
 
-WEATHER_TABLES = {"CityWeatherDaily", "CityWeatherForecastDaily"}
+WEATHER_TABLES = {"CityWeatherMonthly", "CityWeatherDaily", "CityWeatherForecastDaily"}
 
 PLANT_COLUMNS = {
     "plant_id", "plant_name", "family", "genus", "crop_category", "preferred_soil",
@@ -34,6 +35,23 @@ PLANT_COLUMNS = {
     "harvest_window_days", "days_maturity", "days_transplant", "days_germ",
     "gdd_to_maturity", "direct_sow", "transplant", "succession",
     "overwinter_ok", "start_cooling_threshold_c",
+}
+
+PLANT_FLAG_FIELDS = {"annual", "biennial", "perennial", "direct_sow", "transplant", "succession", "overwinter_ok"}
+PLANT_INTEGER_FIELDS = {
+    "lifespan_years", "harvest_window_days", "days_maturity", "days_transplant", "days_germ",
+} | PLANT_FLAG_FIELDS
+PLANT_REAL_FIELDS = {
+    "soil_ph_range", "root_depth_cm", "root_diam_cm", "veg_height_cm", "veg_diameter_cm",
+    "spacing_cm", "tmax_c", "topt_high_c", "topt_low_c", "tmin_c", "tbase_c",
+    "spacing_y_cm", "spacing_x_cm", "yield_per_plant_kg", "soil_temp_min_plant_c",
+    "gdd_to_maturity", "start_cooling_threshold_c",
+}
+PLANT_TEXT_FIELDS = (PLANT_COLUMNS - {"plant_id"} - PLANT_INTEGER_FIELDS - PLANT_REAL_FIELDS)
+PLANT_FIELD_TYPES = {
+    **{field: "string" for field in PLANT_TEXT_FIELDS},
+    **{field: "integer" for field in PLANT_INTEGER_FIELDS},
+    **{field: "number" for field in PLANT_REAL_FIELDS},
 }
 
 FIELD_SOURCES_SCHEMA = {
@@ -85,7 +103,10 @@ OPENAI_PLANT_SCHEMA = {
         "row": {
             "type": "object",
             "additionalProperties": False,
-            "properties": {key: {"type": ["string", "number", "integer", "null"]} for key in sorted(PLANT_COLUMNS - {"plant_id"})},
+            "properties": {
+                key: ({"type": "string", "minLength": 1} if field_type == "string" else {"type": field_type})
+                for key, field_type in sorted(PLANT_FIELD_TYPES.items())
+            },
             "required": sorted(PLANT_COLUMNS - {"plant_id"}),
         },
         "allowed_method_categories": {"type": "array", "items": {"type": "string"}},

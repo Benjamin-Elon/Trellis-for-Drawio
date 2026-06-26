@@ -10,7 +10,7 @@ from .generator import preflight
 from .jsonio import write_json
 from .migrations import apply_migrations
 from .paths import DEFAULT_CONFIG_PATH
-from .providers import OpenAIJsonClient, OpenMeteoClient
+from .providers import NasaPowerClient, OpenAIJsonClient, OpenMeteoClient
 
 
 def run_live_tests() -> bool:
@@ -37,13 +37,13 @@ def run_live_tests() -> bool:
             raise RuntimeError("OpenAI live test returned an unexpected payload.")
 
         meteo = OpenMeteoClient(settings.data["open_meteo"])
+        nasa = NasaPowerClient(settings.data["nasa_power"])
         geocode, _geo_trace = meteo.geocode("Vancouver")
-        meteo.historical_daily(
+        nasa.monthly_history(
             latitude=float(geocode["latitude"]),
             longitude=float(geocode["longitude"]),
-            timezone=str(geocode.get("timezone") or "UTC"),
-            start_date="2025-01-01",
-            end_date="2025-01-03",
+            start_year=2025,
+            end_year=2025,
         )
         meteo.forecast_daily(
             latitude=float(geocode["latitude"]),

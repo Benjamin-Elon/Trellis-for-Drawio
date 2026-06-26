@@ -16,6 +16,8 @@ def table_columns(conn: sqlite3.Connection, table: str) -> list[str]:
 def pending_migrations(conn: sqlite3.Connection) -> list[str]:
     tables = existing_tables(conn)
     pending = []
+    if "CityWeatherMonthly" not in tables:
+        pending.append("create CityWeatherMonthly")
     if "CityWeatherDaily" not in tables:
         pending.append("create CityWeatherDaily")
     if "CityWeatherForecastDaily" not in tables:
@@ -56,6 +58,24 @@ def apply_migrations(conn: sqlite3.Connection) -> list[str]:
         );
         CREATE INDEX IF NOT EXISTS idx_CityWeatherDaily_city_date
             ON CityWeatherDaily(city_id, weather_date);
+
+        CREATE TABLE IF NOT EXISTS CityWeatherMonthly (
+            city_id INTEGER NOT NULL REFERENCES Cities(city_id) ON DELETE CASCADE,
+            weather_month TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            dataset TEXT NOT NULL,
+            timezone TEXT,
+            temp_min_c REAL,
+            temp_max_c REAL,
+            temp_mean_c REAL,
+            precipitation_mm REAL,
+            gdd_base_5c REAL,
+            fetched_at TEXT NOT NULL,
+            source_url TEXT,
+            PRIMARY KEY (city_id, weather_month, provider, dataset)
+        );
+        CREATE INDEX IF NOT EXISTS idx_CityWeatherMonthly_city_month
+            ON CityWeatherMonthly(city_id, weather_month);
 
         CREATE TABLE IF NOT EXISTS CityWeatherForecastDaily (
             city_id INTEGER NOT NULL REFERENCES Cities(city_id) ON DELETE CASCADE,
@@ -100,8 +120,7 @@ def apply_migrations(conn: sqlite3.Connection) -> list[str]:
         );
         """
     )
-    for label in ("CityWeatherDaily", "CityWeatherForecastDaily", "CompanionEvidence", "VarietyTaskTemplates"):
+    for label in ("CityWeatherMonthly", "CityWeatherDaily", "CityWeatherForecastDaily", "CompanionEvidence", "VarietyTaskTemplates"):
         if label not in tables or label == "VarietyTaskTemplates":
             applied.append(f"ensured {label}")
     return applied
-

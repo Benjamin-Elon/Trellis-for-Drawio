@@ -656,14 +656,15 @@ Draw.loadPlugin(function (ui) {
 
     class TaskTemplateModel {
         static async ensureTables() {
-            const sql = `
+            const plantTemplateSql = `
                 CREATE TABLE IF NOT EXISTS PlantTaskTemplates (
                   plant_id      INTEGER NOT NULL,
                   method_id     TEXT    NOT NULL,
                   template_json TEXT    NOT NULL,
                   updated_at    TEXT    NOT NULL,
                   PRIMARY KEY (plant_id, method_id)
-                );
+                );`;
+            const varietyTemplateSql = `
                 CREATE TABLE IF NOT EXISTS VarietyTaskTemplates (
                   variety_id    INTEGER NOT NULL,
                   method_id     TEXT    NOT NULL,
@@ -671,7 +672,8 @@ Draw.loadPlugin(function (ui) {
                   updated_at    TEXT    NOT NULL,
                   PRIMARY KEY (variety_id, method_id)
                 );`;
-            await execAll(sql, []);
+            await execAll(plantTemplateSql, []); // FIX: dbBridge.exec prepares one SQL statement per call
+            await execAll(varietyTemplateSql, []); // FIX: keep table creation single-statement for better-sqlite3
         }
 
         static _safeParseTemplateRow(row) {

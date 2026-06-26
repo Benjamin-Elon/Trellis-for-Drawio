@@ -11,21 +11,23 @@ from .config import Settings, read_openai_api_key
 from .db import load_method_categories, load_methods
 from .jsonio import read_json, write_json
 from .planner import effective_tables_from_input, selected_tables_warning
-from .providers import OpenAIJsonClient, OpenMeteoClient, ProviderError, ProviderTrace
-from .schema import OPENAI_PLANT_SCHEMA, OPENAI_TEMPLATE_SCHEMA, PROVENANCE_SCHEMA, compact_json
-from .validator import source_values_from_input, validate_input, validate_row, validate_run
-from .weather import forecast_rows, history_window, summarize_city_weather
+from .providers import NasaPowerClient, OpenAIJsonClient, OpenMeteoClient, ProviderError, ProviderTrace
+from .schema import (
+    GENERATED_TABLES,
+    OPENAI_PLANT_SCHEMA,
+    OPENAI_TEMPLATE_SCHEMA,
+    PLANT_FLAG_FIELDS,
+    PLANT_INTEGER_FIELDS,
+    PLANT_REAL_FIELDS,
+    PROVENANCE_SCHEMA,
+    compact_json,
+)
+from .validator import normalize_key, source_values_from_input, validate_input, validate_row, validate_run
+from .weather import forecast_rows, history_window, summarize_city_monthly_weather
 
 
 TASK_RULE_ORDER = ["prep", "sow", "start", "harden", "transplant", "thin", "harvest"]
 VALID_STAGES = {"SOW", "GERM", "TRANSPLANT", "HARVEST_START", "HARVEST_END"}
-PLANT_FLAG_FIELDS = {"annual", "biennial", "perennial", "direct_sow", "transplant", "succession", "overwinter_ok"}
-PLANT_NUMERIC_FIELDS = {
-    "lifespan_years", "sun_hours", "root_depth_cm", "root_diam_cm", "veg_height_cm", "veg_diameter_cm",
-    "spacing_cm", "tmax_c", "topt_high_c", "topt_low_c", "tmin_c", "tbase_c", "spacing_y_cm",
-    "spacing_x_cm", "yield_per_plant_kg", "soil_temp_min_plant_c", "harvest_window_days",
-    "days_maturity", "days_transplant", "days_germ", "gdd_to_maturity", "start_cooling_threshold_c",
-}
 CONTROLLED_CROP_SOURCE_FIELDS = {
     "plant_name", "default_planting_method_category", "default_planting_method", "direct_sow", "transplant"
 }
@@ -46,14 +48,19 @@ def create_run(settings: Settings, input_path: Path, options: GenerationOptions 
     errors = validate_input(input_data)
     if errors:
         raise ValueError("Input validation failed:\n" + "\n".join(f"- {e}" for e in errors))
+    normalized = normalize_input(input_data, settings)
+    resume_run = _find_resume_run(settings, input_path, normalized)
+    if resume_run:
+        _update_run_metadata(resume_run, {"status": "running", "error": None, "resumed_at": datetime.now(timezone.utc).isoformat()})
+        return resume_run
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     run_dir = unique_artifact_dir(settings.runs_dir, "run", timestamp, input_summary_slug(input_data, input_path))
     run_id = run_dir.name
     (run_dir / "generated").mkdir(parents=True, exist_ok=True)
     (run_dir / "traces").mkdir(parents=True, exist_ok=True)
-    write_json(run_dir / "input.normalized.json", normalize_input(input_data, settings))
-    effective_tables = _effective_tables_for_options(effective_tables_from_input(normalize_input(input_data, settings)), options)
+    write_json(run_dir / "input.normalized.json", normalized)
+    effective_tables = _effective_tables_for_options(effective_tables_from_input(normalized), options)
     metadata = {
         "run_id": run_id,
         "status": "running",
@@ -125,6 +132,7 @@ def preflight(settings: Settings, input_data: dict[str, Any]) -> list[ProviderTr
         traces.append(OpenAIJsonClient(read_openai_api_key(), settings.openai_model, settings.openai_reasoning_effort).preflight())
     if input_data.get("cities"):
         traces.append(OpenMeteoClient(settings.data["open_meteo"]).preflight())
+        traces.append(NasaPowerClient(settings.data["nasa_power"]).preflight())
     return traces
 
 
@@ -141,11 +149,7 @@ def generate_run(settings: Settings, input_path: Path, options: GenerationOption
             "preflight_already_run": options.preflight_already_run,
         },
     }
-    generated: dict[str, list[dict[str, Any]]] = {name: [] for name in [
-        "Plants", "Cities", "CityWeatherDaily", "CityWeatherForecastDaily",
-        "Companions", "CompanionEvidence", "PlantAllowedMethodCategories",
-        "PlantVarieties", "PlantTaskTemplates", "VarietyTaskTemplates",
-    ]}
+    generated: dict[str, list[dict[str, Any]]] = _load_generated_checkpoint(run_dir)
 
     try:
         if options.preflight_already_run:
@@ -159,18 +163,17 @@ def generate_run(settings: Settings, input_path: Path, options: GenerationOption
 
         openai = OpenAIJsonClient(read_openai_api_key(), settings.openai_model, settings.openai_reasoning_effort)
         meteo = OpenMeteoClient(settings.data["open_meteo"])
+        nasa = NasaPowerClient(settings.data["nasa_power"])
         methods = load_methods(settings.db_path)
 
         if input_data.get("cities"):
-            _generate_cities(settings, input_data, meteo, generated, provenance)
+            _generate_cities(settings, input_data, meteo, nasa, generated, provenance, run_dir)
         if input_data.get("crops"):
             _generate_crops(settings, input_data, openai, methods, generated, provenance, generate_templates=options.generate_templates)
         if input_data.get("companions"):
             _generate_companions(input_data, openai, generated, provenance)
 
-        for table, rows in generated.items():
-            if rows:
-                write_json(run_dir / "generated" / f"{table}.json", rows)
+        _write_generated_checkpoint(run_dir, generated)
         write_json(run_dir / "provenance.json", provenance)
         validate_run(run_dir, settings.db_path)
         _update_run_metadata(run_dir, {"status": "complete"})
@@ -186,43 +189,93 @@ def _update_run_metadata(run_dir: Path, updates: dict[str, Any]) -> None:
     write_json(run_dir / "metadata.json", metadata)
 
 
-def _generate_cities(settings: Settings, input_data: dict[str, Any], meteo: OpenMeteoClient, generated: dict[str, list[dict[str, Any]]], provenance: dict[str, Any]) -> None:
-    start_date, end_date, start_year, end_year = history_window(int(settings.data.get("city_history_years", 15)))
+def _find_resume_run(settings: Settings, input_path: Path, normalized_input: dict[str, Any]) -> Path | None:
+    if not settings.runs_dir.exists():
+        return None
+    wanted_path = str(input_path)
+    for run_dir in sorted([path for path in settings.runs_dir.iterdir() if path.is_dir() and path.name.startswith("run-")], reverse=True):
+        metadata = read_json(run_dir / "metadata.json", {}) or {}
+        if metadata.get("status") != "failed" or metadata.get("input_path") != wanted_path:
+            continue
+        if read_json(run_dir / "input.normalized.json", {}) == normalized_input:
+            return run_dir
+    return None
+
+
+def _load_generated_checkpoint(run_dir: Path) -> dict[str, list[dict[str, Any]]]:
+    generated: dict[str, list[dict[str, Any]]] = {}
+    for table in GENERATED_TABLES:
+        rows = read_json(run_dir / "generated" / f"{table}.json", []) or []
+        generated[table] = rows if isinstance(rows, list) else []
+    return generated
+
+
+def _write_generated_checkpoint(run_dir: Path, generated: dict[str, list[dict[str, Any]]], tables: set[str] | None = None) -> None:
+    selected = tables or set(generated)
+    for table in GENERATED_TABLES:
+        if table not in selected:
+            continue
+        rows = generated.get(table) or []
+        if rows:
+            write_json(run_dir / "generated" / f"{table}.json", rows)
+
+
+def _generate_cities(settings: Settings, input_data: dict[str, Any], meteo: OpenMeteoClient, nasa: NasaPowerClient, generated: dict[str, list[dict[str, Any]]], provenance: dict[str, Any], run_dir: Path) -> None:
+    _start_date, _end_date, start_year, end_year = history_window(int(settings.data.get("city_history_years", 15)))
+    completed_cities = {normalize_key(row.get("city_name")) for row in generated.get("Cities", [])}
     for city in input_data.get("cities", []) or []:
         name = _city_display_name(city)
+        if normalize_key(name) in completed_cities:
+            print(f"Skipping city weather already checkpointed: {name}", flush=True)
+            continue
         geocode_query = str(city.get("city_name") or city.get("name")).strip()
         geocode_qualifiers = _city_geocode_qualifiers(city, name)
-        print(f"Generating city weather: {name}", flush=True)
-        print("  - Geocoding city", flush=True)
-        geo, trace = meteo.geocode(geocode_query, geocode_qualifiers)
-        provenance["traces"].append(trace.redacted())
-        timezone_name = str(city.get("timezone") or geo.get("timezone") or "UTC")
-        print(f"  - Fetching historical daily weather: {start_date} to {end_date}", flush=True)
-        daily, trace = meteo.historical_daily(
-            latitude=float(geo["latitude"]),
-            longitude=float(geo["longitude"]),
-            timezone=timezone_name,
-            start_date=start_date,
-            end_date=end_date,
-        )
-        provenance["traces"].append(trace.redacted())
-        city_row, weather_rows, city_provenance = summarize_city_weather(name, geo, daily, float(settings.data.get("gdd_base_c", 5)))
-        generated["Cities"].append(city_row)
-        generated["CityWeatherDaily"].extend(weather_rows)
-        print(f"  - Historical weather rows: {len(weather_rows)}", flush=True)
-        print(f"  - Fetching {int(settings.data.get('forecast_days', 16))}-day forecast", flush=True)
-        forecast, trace = meteo.forecast_daily(
-            latitude=float(geo["latitude"]),
-            longitude=float(geo["longitude"]),
-            timezone=timezone_name,
-            forecast_days=int(settings.data.get("forecast_days", 16)),
-        )
-        provenance["traces"].append(trace.redacted())
-        generated["CityWeatherForecastDaily"].extend(
-            forecast_rows(name, forecast, str(settings.data["open_meteo"].get("forecast_model", "best_match")))
-        )
-        print("  - City weather complete", flush=True)
-        provenance["tables"].setdefault("Cities", {})[name] = city_provenance | {"history_start_year": start_year, "history_end_year": end_year}
+        try:
+            print(f"Generating city weather: {name}", flush=True)
+            print("  - Geocoding city", flush=True)
+            geo, trace = meteo.geocode(geocode_query, geocode_qualifiers)
+            provenance["traces"].append(trace.redacted())
+            timezone_name = str(city.get("timezone") or geo.get("timezone") or "UTC")
+            geo["timezone"] = timezone_name
+            print(f"  - Fetching NASA POWER monthly history: {start_year} to {end_year}", flush=True)
+            monthly, trace = nasa.monthly_history(
+                latitude=float(geo["latitude"]),
+                longitude=float(geo["longitude"]),
+                start_year=start_year,
+                end_year=end_year,
+            )
+            provenance["traces"].append(trace.redacted())
+            city_row, weather_rows, city_provenance = summarize_city_monthly_weather(
+                name,
+                geo,
+                monthly,
+                float(settings.data.get("gdd_base_c", 5)),
+                str(settings.data["nasa_power"].get("dataset", "nasa-power-monthly")),
+            )
+            if not weather_rows:
+                raise ProviderError(f"NASA POWER returned no monthly weather rows for {name}.")
+            generated["Cities"].append(city_row)
+            generated["CityWeatherMonthly"].extend(weather_rows)
+            print(f"  - Monthly history rows: {len(weather_rows)}", flush=True)
+            print(f"  - Fetching {int(settings.data.get('forecast_days', 16))}-day forecast", flush=True)
+            forecast, trace = meteo.forecast_daily(
+                latitude=float(geo["latitude"]),
+                longitude=float(geo["longitude"]),
+                timezone=timezone_name,
+                forecast_days=int(settings.data.get("forecast_days", 16)),
+            )
+            provenance["traces"].append(trace.redacted())
+            generated["CityWeatherForecastDaily"].extend(
+                forecast_rows(name, forecast, str(settings.data["open_meteo"].get("forecast_model", "best_match")))
+            )
+            print("  - City weather complete", flush=True)
+            provenance["tables"].setdefault("Cities", {})[name] = city_provenance | {"history_start_year": start_year, "history_end_year": end_year}
+            completed_cities.add(normalize_key(name))
+            _write_generated_checkpoint(run_dir, generated, {"Cities", "CityWeatherMonthly", "CityWeatherForecastDaily"})
+            write_json(run_dir / "provenance.json", provenance)
+        except Exception as exc:
+            _update_run_metadata(run_dir, {"current_city": name, "error": str(exc)})
+            raise
 
 
 def _city_display_name(city: dict[str, Any]) -> str:
@@ -258,7 +311,16 @@ def _generate_crops(settings: Settings, input_data: dict[str, Any], openai: Open
             json_schema=OPENAI_PLANT_SCHEMA,
             validator=lambda candidate: _validate_crop_result(_prepare_crop_result(candidate, crop, methods), source_values, methods),
             progress_label=f"crop row: {name}",
-            system="You convert source-backed horticulture notes into Trellis SQLite seed rows. Use only the supplied sources/notes. Return strict JSON. allowed_method_categories are broad capabilities; allowed_method_ids must include only concrete fixed_methods that are actual planting methods for this crop. Do not include propagation-by-cutting unless the crop is normally grown from cuttings. provenance.field_sources must include field/source entries for required fields using exact supplied source strings.",
+            system=(
+                "You are a professional horticultural agronomist creating complete Trellis SQLite seed rows. "
+                "Fill every plant row field with a non-null value. Use supplied sources/notes first, then general agronomy knowledge and best estimates when source notes are broad. "
+                "Use the units implied by field names: _c is Celsius, _cm is centimeters, _kg is kilograms, and day fields are days. "
+                "Text fields must be non-empty strings; use 'N/A' only for text fields that truly do not apply. Numeric and integer fields must be numbers, never text or null. "
+                "Return real named cultivars/varieties only; never placeholders such as '<crop> variety 1', 'generic', 'standard', or crop-name-only varieties. "
+                "allowed_method_categories are broad capabilities; allowed_method_ids must include only concrete fixed_methods that are actual planting methods for this crop. "
+                "Do not include propagation-by-cutting unless the crop is normally grown from cuttings. "
+                "provenance.field_sources must include field/source entries for required fields using exact supplied source strings."
+            ),
             user=json.dumps({
                 "crop": crop,
                 "fixed_method_categories": sorted({m["method_category_id"] for m in methods}),
@@ -755,7 +817,10 @@ def _normalize_plant_row(row: dict[str, Any]) -> dict[str, Any]:
     for key in PLANT_FLAG_FIELDS:
         if key in row:
             row[key] = _flag_value(row.get(key))
-    for key in PLANT_NUMERIC_FIELDS:
+    for key in PLANT_INTEGER_FIELDS - PLANT_FLAG_FIELDS:
+        if key in row:
+            row[key] = _integer_value(row.get(key))
+    for key in PLANT_REAL_FIELDS:
         if key in row:
             row[key] = _number_value(row.get(key))
     return row
@@ -771,10 +836,25 @@ def _flag_value(value: Any) -> int | None:
         return 1
     if token in {"0", "false", "no", "n", "not_allowed", "none"}:
         return 0
-    try:
-        return 1 if float(token) else 0
-    except ValueError:
+    if token in {"1.0"}:
+        return 1
+    if token in {"0.0"}:
+        return 0
+    return None
+
+
+def _integer_value(value: Any) -> Any:
+    if value is None or value == "":
         return None
+    if isinstance(value, bool):
+        return 1 if value else 0
+    if isinstance(value, int):
+        return value
+    try:
+        parsed = float(str(value).strip())
+    except ValueError:
+        return value
+    return int(parsed) if parsed.is_integer() else value
 
 
 def _number_value(value: Any) -> int | float | None:
@@ -852,7 +932,52 @@ def _validate_crop_result(result: dict[str, Any], source_values: set[str], metho
     if not result.get("allowed_method_categories"):
         errors.append("allowed_method_categories is required.")
     errors.extend(_validate_allowed_method_ids(result, methods or []))
+    errors.extend(_validate_varieties(result.get("varieties"), str(row.get("plant_name") or "")))
     return errors
+
+
+def _validate_varieties(varieties: Any, plant_name: str) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(varieties, list):
+        return ["varieties must be a list."]
+    seen: set[str] = set()
+    plant_key = normalize_key(plant_name)
+    for index, variety in enumerate(varieties):
+        prefix = f"varieties[{index}]"
+        if not isinstance(variety, dict):
+            errors.append(f"{prefix} must be an object.")
+            continue
+        name = str(variety.get("variety_name") or "").strip()
+        key = normalize_key(name)
+        if not name:
+            errors.append(f"{prefix}.variety_name is required.")
+            continue
+        if key in seen:
+            errors.append(f"{prefix}.variety_name duplicates another variety: {name}")
+        seen.add(key)
+        if key == plant_key:
+            errors.append(f"{prefix}.variety_name must be a real cultivar/variety, not the crop name.")
+        if _is_placeholder_variety_name(name, plant_name):
+            errors.append(f"{prefix}.variety_name appears to be a placeholder: {name}")
+    return errors
+
+
+def _is_placeholder_variety_name(name: str, plant_name: str) -> bool:
+    key = normalize_key(name)
+    plant_key = normalize_key(plant_name)
+    if key in {"generic", "standard", "common", "default", "variety", "cultivar", "n/a", "na", "unknown"}:
+        return True
+    stripped = key.removeprefix(plant_key).strip()
+    if stripped in {"variety", "cultivar", "type", "standard"}:
+        return True
+    tokens = stripped.replace("-", " ").split()
+    if len(tokens) == 2 and tokens[0] in {"variety", "cultivar", "type"} and tokens[1].isdigit():
+        return True
+    if key.startswith(f"{plant_key} variety ") and key.rsplit(" ", 1)[-1].isdigit():
+        return True
+    if key.startswith(f"{plant_key} cultivar ") and key.rsplit(" ", 1)[-1].isdigit():
+        return True
+    return False
 
 
 def _validate_allowed_method_ids(result: dict[str, Any], methods: list[dict[str, Any]]) -> list[str]:
