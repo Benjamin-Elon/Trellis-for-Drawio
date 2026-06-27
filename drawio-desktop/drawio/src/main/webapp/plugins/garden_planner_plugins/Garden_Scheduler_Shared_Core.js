@@ -124,14 +124,17 @@
         });
         return out;
     }
-    function forecastBlendWeight(forecastISO, todayISO) {
+    function forecastBlendWeight(forecastISO, todayISO, weights = null) { // CHANGED
         const forecastDate = parseISODateUTCValue(forecastISO);
         const today = parseISODateUTCValue(todayISO) || asUTCDate(new Date().getUTCFullYear(), new Date().getUTCMonth() + 1, new Date().getUTCDate());
         if (!forecastDate || forecastDate < today) return 0;
         const daysAhead = Math.round((forecastDate.getTime() - today.getTime()) / 86400000);
-        if (daysAhead <= 3) return 0.8;
-        if (daysAhead <= 7) return 0.5;
-        if (daysAhead <= 16) return 0.25;
+        const w0 = clampNumber(weights?.forecastBlendWeight0To3Days ?? 0.8, 0, 1); // ADDED
+        const w1 = clampNumber(weights?.forecastBlendWeight4To7Days ?? 0.5, 0, 1); // ADDED
+        const w2 = clampNumber(weights?.forecastBlendWeight8To16Days ?? 0.25, 0, 1); // ADDED
+        if (daysAhead <= 3) return w0; // CHANGED
+        if (daysAhead <= 7) return w1; // CHANGED
+        if (daysAhead <= 16) return w2; // CHANGED
         return 0;
     }
     function blendTemperatureRecords(normalRecord, forecastRecord, weight) {
@@ -149,7 +152,8 @@
         monthlyNormals,
         forecastRows = [],
         todayISO = null,
-        source = 'city monthly normals'
+        source = 'city monthly normals',
+        forecastBlendWeights = null // ADDED
     }) {
         const monthly = normalizeMonthlyTemperatureNormals(monthlyNormals);
         const forecastByISO = normalizeForecastTemperatureMap(forecastRows);
@@ -163,7 +167,7 @@
             const key = dateKeyUTC(d);
             const normal = interpolateMonthlyTemperatureOnDate(d, monthly);
             const forecast = forecastByISO[key] || null;
-            const weight = forecast ? forecastBlendWeight(key, todayISO) : 0;
+            const weight = forecast ? forecastBlendWeight(key, todayISO, forecastBlendWeights) : 0; // CHANGED
             const record = blendTemperatureRecords(normal, forecast, weight);
             if (!record) {
                 diagnostics.missingNormalDays += 1;
@@ -327,7 +331,7 @@
         }
         return total / samples;
     }
-    function buildDailyGddMap({ dailyClimate, cropTemp, bedProfile = null, city = null, year = null }) {
+    function buildDailyGddMap({ dailyClimate, cropTemp, bedProfile = null, city = null, year = null, gddCalibrationEnabled = true }) { // CHANGED
         const env = cropTemp || {};
         const lower = finiteNumberOrNull(env.Tbase ?? env.tbase_c);
         const upper = finiteNumberOrNull(env.Tmax ?? env.tmax_c);
@@ -354,7 +358,7 @@
         const target = finiteNumberOrNull(city?.gdd_annual);
         const scaleByYear = {};
         Object.keys(cityBaseByYear).forEach(function (y) {
-            scaleByYear[y] = target != null && target > 0 && cityBaseByYear[y] > 0 ? (target / cityBaseByYear[y]) : 1;
+            scaleByYear[y] = gddCalibrationEnabled !== false && target != null && target > 0 && cityBaseByYear[y] > 0 ? (target / cityBaseByYear[y]) : 1; // CHANGED
         });
         const out = {};
         Object.keys(raw).forEach(function (key) { out[key] = raw[key] * (scaleByYear[key.slice(0, 4)] || 1); });
@@ -526,28 +530,43 @@
             useSoilTempGate = false,
             soilGateThresholdC = null,
             soilGateConsecutiveDays = 3,
-            overwinterAllowed = false
+            overwinterAllowed = false,
+            gddCalibrationEnabled = true, // ADDED
+            weatherNormalsSource = 'auto', // ADDED
+            forecastBlendWeight0To3Days = 0.8, // ADDED
+            forecastBlendWeight4To7Days = 0.5, // ADDED
+            forecastBlendWeight8To16Days = 0.25 // ADDED
         } = {}) {
             this.overwinterAllowed = !!overwinterAllowed;
             this.useSpringFrostGate = !!useSpringFrostGate;
-            this.springFrostRisk = springFrostRisk;
+            this.springFrostRisk = ['p10', 'p50', 'p90'].indexOf(String(springFrostRisk || '')) >= 0 ? String(springFrostRisk) : 'p50'; // CHANGED
             const thr = Number(soilGateThresholdC);
             this.soilGateThresholdC = Number.isFinite(thr) ? thr : null;
             this.useSoilTempGate = !!useSoilTempGate && this.soilGateThresholdC != null;
-            this.soilGateConsecutiveDays = Math.max(1, Number(soilGateConsecutiveDays ?? 3));
+            this.soilGateConsecutiveDays = Math.max(1, Math.min(14, Number(soilGateConsecutiveDays ?? 3))); // CHANGED
+            this.gddCalibrationEnabled = gddCalibrationEnabled !== false; // ADDED
+            this.weatherNormalsSource = ['auto', 'city_weather_monthly', 'city_weather_daily', 'city_monthly_columns'].indexOf(String(weatherNormalsSource || '')) >= 0 ? String(weatherNormalsSource) : 'auto'; // ADDED
+            this.forecastBlendWeight0To3Days = Math.max(0, Math.min(1, Number(forecastBlendWeight0To3Days ?? 0.8))); // ADDED
+            this.forecastBlendWeight4To7Days = Math.max(0, Math.min(1, Number(forecastBlendWeight4To7Days ?? 0.5))); // ADDED
+            this.forecastBlendWeight8To16Days = Math.max(0, Math.min(1, Number(forecastBlendWeight8To16Days ?? 0.25))); // ADDED
             Object.freeze(this);
         }
 
-        static fromResolvedBehavior(plant, resolvedBehavior) {
+        static fromResolvedBehavior(plant, resolvedBehavior, climatePolicy = null) { // CHANGED
             const threshold = finiteNumberOrNull(plant?.soil_temp_min_plant_c);
             const overwinterAllowed = isCrossYearCrop(plant);
             return new PolicyFlags({
                 useSpringFrostGate: true,
-                springFrostRisk: 'p50',
+                springFrostRisk: climatePolicy?.springFrostRisk || 'p50', // CHANGED
                 useSoilTempGate: !!resolvedBehavior?.usesSoilTempGate && threshold != null,
                 soilGateThresholdC: threshold,
-                soilGateConsecutiveDays: 3,
-                overwinterAllowed
+                soilGateConsecutiveDays: climatePolicy?.soilGateConsecutiveDays ?? 3, // CHANGED
+                overwinterAllowed,
+                gddCalibrationEnabled: climatePolicy?.gddCalibrationEnabled !== false, // CHANGED
+                weatherNormalsSource: climatePolicy?.weatherNormalsSource || 'auto', // ADDED
+                forecastBlendWeight0To3Days: climatePolicy?.forecastBlendWeight0To3Days ?? 0.8, // ADDED
+                forecastBlendWeight4To7Days: climatePolicy?.forecastBlendWeight4To7Days ?? 0.5, // ADDED
+                forecastBlendWeight8To16Days: climatePolicy?.forecastBlendWeight8To16Days ?? 0.25 // ADDED
             });
         }
     }
@@ -613,7 +632,8 @@
                 cropTemp: env,
                 bedProfile: this.bedProfile,
                 city: this.city,
-                year
+                year,
+                gddCalibrationEnabled: this.policy?.gddCalibrationEnabled !== false // ADDED
             });
             return { startDate, seasonEnd, year, env, dailyRates, monthlyAvg, dailyClimate, scanStart, scanEndHard };
         }

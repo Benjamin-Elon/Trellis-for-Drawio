@@ -1188,8 +1188,8 @@ Draw.loadPlugin(function (ui) {
             return applyTemperatureOffsetToMonthlyMeans(raw, calibration.usable ? calibration.offsetC : 0); // ADDED
         }
 
-        dailyRates(tbase, year) {
-            const means = this.calibratedMonthlyMeans(year); // ADDED: recompute crop-base GDD from calibrated city temperatures.
+        dailyRates(tbase, year, climatePolicy = null) { // CHANGED
+            const means = climatePolicy?.gddCalibrationEnabled === false ? this.monthlyMeans() : this.calibratedMonthlyMeans(year); // CHANGED: allow climate policy to disable city GDD calibration.
             const gddMonthly = {};
             for (let m = 1; m <= 12; m++) {
                 const Tm = means?.[m];
@@ -1204,7 +1204,7 @@ Draw.loadPlugin(function (ui) {
             return daily;
         }
 
-        async loadDailyClimateModel({ scanStart, scanEndHard, todayISO = null } = {}) { // ADDED
+        async loadDailyClimateModel({ scanStart, scanEndHard, todayISO = null, climatePolicy = null } = {}) { // CHANGED
             const start = scanStart || asUTCDate(new Date().getUTCFullYear(), 1, 1); // ADDED
             const end = scanEndHard || asUTCDate(start.getUTCFullYear(), 12, 31); // ADDED
             const fallbackNormals = sharedCore.monthlyTemperatureNormalsFromCity(this); // CHANGED
@@ -1212,10 +1212,12 @@ Draw.loadPlugin(function (ui) {
             let source = 'city monthly normals'; // ADDED
             const cityId = Number(this.city_id); // ADDED
             let forecastRows = []; // ADDED
+            const normalizedPolicy = normalizeClimateModelPatch(climatePolicy || {}); // ADDED
+            const normalsSource = normalizedPolicy.weatherNormalsSource || DEFAULT_CLIMATE_MODEL_POLICY.weatherNormalsSource; // ADDED
 
             if (Number.isFinite(cityId)) { // ADDED
                 try { // ADDED
-                    const monthlyRows = await queryAll(`
+                    const monthlyRows = normalsSource === 'city_weather_daily' || normalsSource === 'city_monthly_columns' ? [] : await queryAll(` // CHANGED
                         SELECT CAST(substr(weather_month, 6, 2) AS INTEGER) AS month,
                                AVG(temp_min_c) AS min,
                                AVG(temp_max_c) AS max,
@@ -1233,7 +1235,7 @@ Draw.loadPlugin(function (ui) {
                     if (Object.keys(monthlyFromWeather).length) { // ADDED
                         monthlyNormals = monthlyFromWeather; // ADDED
                         source = 'CityWeatherMonthly normals'; // ADDED
-                    } else { // ADDED
+                    } else if (normalsSource !== 'city_weather_monthly' && normalsSource !== 'city_monthly_columns') { // CHANGED
                         const dailyRows = await queryAll(`
                             SELECT CAST(substr(weather_date, 6, 2) AS INTEGER) AS month,
                                    AVG(temp_min_c) AS min,
@@ -1278,10 +1280,98 @@ Draw.loadPlugin(function (ui) {
                 monthlyNormals, // ADDED
                 forecastRows, // ADDED
                 todayISO, // ADDED
-                source // ADDED
+                source, // ADDED
+                forecastBlendWeights: normalizedPolicy // ADDED
             }); // ADDED
         }
     }
+
+    const CLIMATE_MODEL_DEFAULTS_ATTR = 'scheduler_climate_model_defaults_json'; // ADDED
+    const CLIMATE_MODEL_PLANT_OVERRIDES_ATTR = 'scheduler_climate_model_plant_overrides_json'; // ADDED
+    const DEFAULT_CLIMATE_MODEL_POLICY = Object.freeze({ // ADDED
+        springFrostRisk: 'p50', // ADDED
+        weatherNormalsSource: 'auto', // ADDED
+        forecastBlendWeight0To3Days: 0.8, // ADDED
+        forecastBlendWeight4To7Days: 0.5, // ADDED
+        forecastBlendWeight8To16Days: 0.25, // ADDED
+        soilGateConsecutiveDays: 3, // ADDED
+        gddCalibrationEnabled: true // ADDED
+    }); // ADDED
+    const CLIMATE_MODEL_PARAMETER_SCHEMA = Object.freeze([ // ADDED
+        Object.freeze({ key: 'springFrostRisk', label: 'Spring frost risk', type: 'enum', options: [['p10', 'p10'], ['p50', 'p50'], ['p90', 'p90']] }), // ADDED
+        Object.freeze({ key: 'weatherNormalsSource', label: 'Weather normals source', type: 'enum', options: [['auto', 'Auto'], ['city_weather_monthly', 'Monthly weather'], ['city_weather_daily', 'Daily weather'], ['city_monthly_columns', 'City monthly columns']] }), // ADDED
+        Object.freeze({ key: 'forecastBlendWeight0To3Days', label: 'Forecast blend 0-3 days', type: 'number', min: 0, max: 1, step: 0.01 }), // ADDED
+        Object.freeze({ key: 'forecastBlendWeight4To7Days', label: 'Forecast blend 4-7 days', type: 'number', min: 0, max: 1, step: 0.01 }), // ADDED
+        Object.freeze({ key: 'forecastBlendWeight8To16Days', label: 'Forecast blend 8-16 days', type: 'number', min: 0, max: 1, step: 0.01 }), // ADDED
+        Object.freeze({ key: 'soilGateConsecutiveDays', label: 'Soil-ready days', type: 'integer', min: 1, max: 14, step: 1 }), // ADDED
+        Object.freeze({ key: 'gddCalibrationEnabled', label: 'GDD calibration', type: 'boolean' }) // ADDED
+    ]); // ADDED
+
+    function normalizeClimateModelPatch(raw) { // ADDED
+        const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}; // ADDED
+        const out = {}; // ADDED
+        if (['p10', 'p50', 'p90'].indexOf(String(source.springFrostRisk || '')) >= 0) out.springFrostRisk = String(source.springFrostRisk); // ADDED
+        if (['auto', 'city_weather_monthly', 'city_weather_daily', 'city_monthly_columns'].indexOf(String(source.weatherNormalsSource || '')) >= 0) out.weatherNormalsSource = String(source.weatherNormalsSource); // ADDED
+        ['forecastBlendWeight0To3Days', 'forecastBlendWeight4To7Days', 'forecastBlendWeight8To16Days'].forEach(function (key) { // ADDED
+            const n = finiteNumberOrNull(source[key]); // ADDED
+            if (n != null) out[key] = Math.max(0, Math.min(1, n)); // ADDED
+        }); // ADDED
+        const soilDays = finiteNumberOrNull(source.soilGateConsecutiveDays); // ADDED
+        if (soilDays != null) out.soilGateConsecutiveDays = Math.max(1, Math.min(14, Math.round(soilDays))); // ADDED
+        if (source.gddCalibrationEnabled === true || source.gddCalibrationEnabled === false) out.gddCalibrationEnabled = !!source.gddCalibrationEnabled; // ADDED
+        return out; // ADDED
+    } // ADDED
+
+    function mergeClimateModelPolicy(gardenPatch, plantPatch) { // ADDED
+        return Object.assign({}, DEFAULT_CLIMATE_MODEL_POLICY, normalizeClimateModelPatch(gardenPatch), normalizeClimateModelPatch(plantPatch)); // ADDED
+    } // ADDED
+
+    function readClimateModelJsonAttr(cell, attrName, fallback) { // ADDED
+        const raw = cell?.getAttribute?.(attrName); // ADDED
+        if (!raw) return fallback; // ADDED
+        const parsed = safeJsonParse(String(raw), fallback); // ADDED
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : fallback; // ADDED
+    } // ADDED
+
+    function normalizeClimateCityKey(cityName) { // ADDED
+        return String(cityName || '').trim().toLowerCase(); // ADDED
+    } // ADDED
+
+    function buildClimatePlantOverrideKey(cityName, plantId) { // ADDED
+        return `${normalizeClimateCityKey(cityName)}::${Number(plantId)}`; // ADDED
+    } // ADDED
+
+    function readClimateModelGardenPatch(moduleCell) { // ADDED
+        return normalizeClimateModelPatch(readClimateModelJsonAttr(moduleCell, CLIMATE_MODEL_DEFAULTS_ATTR, {})); // ADDED
+    } // ADDED
+
+    function readClimateModelPlantOverrideMap(moduleCell) { // ADDED
+        return readClimateModelJsonAttr(moduleCell, CLIMATE_MODEL_PLANT_OVERRIDES_ATTR, {}); // ADDED
+    } // ADDED
+
+    function readClimateModelPlantPatch(moduleCell, cityName, plantId) { // ADDED
+        const map = readClimateModelPlantOverrideMap(moduleCell); // ADDED
+        return normalizeClimateModelPatch(map[buildClimatePlantOverrideKey(cityName, plantId)] || {}); // ADDED
+    } // ADDED
+
+    function resolveClimateModelPolicy(moduleCell, cityName, plantId, draftPlantPatch = null) { // ADDED
+        const gardenPatch = readClimateModelGardenPatch(moduleCell); // ADDED
+        const savedPlantPatch = readClimateModelPlantPatch(moduleCell, cityName, plantId); // ADDED
+        const plantPatch = draftPlantPatch == null ? savedPlantPatch : normalizeClimateModelPatch(draftPlantPatch); // ADDED
+        const effective = mergeClimateModelPolicy(gardenPatch, plantPatch); // ADDED
+        const sources = {}; // ADDED
+        CLIMATE_MODEL_PARAMETER_SCHEMA.forEach(function (def) { // ADDED
+            if (Object.prototype.hasOwnProperty.call(plantPatch, def.key)) sources[def.key] = 'Plant override'; // ADDED
+            else if (Object.prototype.hasOwnProperty.call(gardenPatch, def.key)) sources[def.key] = 'Garden default'; // ADDED
+            else sources[def.key] = 'Built-in default'; // ADDED
+        }); // ADDED
+        return { effective, sources, gardenPatch, plantPatch, overrideKey: buildClimatePlantOverrideKey(cityName, plantId) }; // ADDED
+    } // ADDED
+
+    function stringifyClimateModelAttr(value) { // ADDED
+        const normalized = value && typeof value === 'object' && !Array.isArray(value) ? value : {}; // ADDED
+        return Object.keys(normalized).length ? JSON.stringify(normalized) : null; // CHANGED
+    } // ADDED
 
 
     class PolicyFlags {
@@ -1295,31 +1385,47 @@ Draw.loadPlugin(function (ui) {
             soilGateThresholdC = null,
             soilGateConsecutiveDays = 3,
 
-            overwinterAllowed = false
+            overwinterAllowed = false,
+            gddCalibrationEnabled = true, // ADDED
+            weatherNormalsSource = 'auto', // ADDED
+            forecastBlendWeight0To3Days = 0.8, // ADDED
+            forecastBlendWeight4To7Days = 0.5, // ADDED
+            forecastBlendWeight8To16Days = 0.25 // ADDED
         } = {}) {
             this.overwinterAllowed = !!overwinterAllowed;
 
             this.useSpringFrostGate = !!useSpringFrostGate; // FIX: overwinter capability does not make early field planting frost-safe
-            this.springFrostRisk = springFrostRisk;
+            this.springFrostRisk = ['p10', 'p50', 'p90'].indexOf(String(springFrostRisk || '')) >= 0 ? String(springFrostRisk) : 'p50'; // CHANGED
 
             const thr = Number(soilGateThresholdC);
             this.soilGateThresholdC = Number.isFinite(thr) ? thr : null;
             this.useSoilTempGate = !!useSoilTempGate && this.soilGateThresholdC != null;
-            this.soilGateConsecutiveDays = Math.max(1, Number(soilGateConsecutiveDays ?? 3));
+            this.soilGateConsecutiveDays = Math.max(1, Math.min(14, Number(soilGateConsecutiveDays ?? 3))); // CHANGED
+            this.gddCalibrationEnabled = gddCalibrationEnabled !== false; // ADDED
+            this.weatherNormalsSource = ['auto', 'city_weather_monthly', 'city_weather_daily', 'city_monthly_columns'].indexOf(String(weatherNormalsSource || '')) >= 0 ? String(weatherNormalsSource) : 'auto'; // ADDED
+            this.forecastBlendWeight0To3Days = Math.max(0, Math.min(1, Number(forecastBlendWeight0To3Days ?? 0.8))); // ADDED
+            this.forecastBlendWeight4To7Days = Math.max(0, Math.min(1, Number(forecastBlendWeight4To7Days ?? 0.5))); // ADDED
+            this.forecastBlendWeight8To16Days = Math.max(0, Math.min(1, Number(forecastBlendWeight8To16Days ?? 0.25))); // ADDED
             Object.freeze(this);
         }
 
-        static fromResolvedBehavior(plant, resolvedBehavior) { // CHANGED
+        static fromResolvedBehavior(plant, resolvedBehavior, climatePolicy = null) { // CHANGED
             const threshold = finiteNumberOrNull(plant?.soil_temp_min_plant_c); // CHANGED
             const overwinterAllowed = isCrossYearCrop(plant); // FIX: biennials are cross-year crops
+            const modelPolicy = mergeClimateModelPolicy(null, climatePolicy); // ADDED
 
             return new PolicyFlags({ // CHANGED
                 useSpringFrostGate: true, // FIX: apply the field frost gate to perennials and overwinter-capable crops
-                springFrostRisk: 'p50', // CHANGED
+                springFrostRisk: modelPolicy.springFrostRisk, // CHANGED
                 useSoilTempGate: !!resolvedBehavior?.usesSoilTempGate && threshold != null, // CHANGED
                 soilGateThresholdC: threshold, // CHANGED
-                soilGateConsecutiveDays: 3, // CHANGED
-                overwinterAllowed // CHANGED
+                soilGateConsecutiveDays: modelPolicy.soilGateConsecutiveDays, // CHANGED
+                overwinterAllowed, // CHANGED
+                gddCalibrationEnabled: modelPolicy.gddCalibrationEnabled, // ADDED
+                weatherNormalsSource: modelPolicy.weatherNormalsSource, // ADDED
+                forecastBlendWeight0To3Days: modelPolicy.forecastBlendWeight0To3Days, // ADDED
+                forecastBlendWeight4To7Days: modelPolicy.forecastBlendWeight4To7Days, // ADDED
+                forecastBlendWeight8To16Days: modelPolicy.forecastBlendWeight8To16Days // ADDED
             }); // CHANGED
         } // CHANGED
 
@@ -1670,7 +1776,14 @@ Draw.loadPlugin(function (ui) {
         const resolvedBehavior = resolveMethodBehavior({ methodCategoryId, methodId });
         const planningMode = resolvedBehavior.planningMode;
 
-        const policy = PolicyFlags.fromResolvedBehavior(plant, resolvedBehavior);
+        const climateResolution = resolveClimateModelPolicy( // ADDED
+            options.climateModelModuleCell || formState.climateModelModuleCell || null, // ADDED
+            formState.cityName, // ADDED
+            formState.plantId, // ADDED
+            formState.climateModelDraftPatch // ADDED
+        ); // ADDED
+        formState.climateModelPolicy = climateResolution.effective; // ADDED
+        const policy = PolicyFlags.fromResolvedBehavior(plant, resolvedBehavior, climateResolution.effective); // CHANGED
 
         const varietyId = formState.varietyId != null ? Number(formState.varietyId) : null;
         const varietyName = varietyId
@@ -1678,9 +1791,9 @@ Draw.loadPlugin(function (ui) {
             : '';
         const scanStart = asUTCDate(Number(formState.seasonStartYear), 1, 1); // ADDED
         const scanEndHard = asUTCDate(Number(formState.seasonStartYear) + getPlantScanYears(plant) - 1, 12, 31); // ADDED
-        const dailyClimateKey = `${city.city_name || formState.cityName}|${fmtISO(scanStart)}|${fmtISO(scanEndHard)}`; // ADDED
+        const dailyClimateKey = `${city.city_name || formState.cityName}|${fmtISO(scanStart)}|${fmtISO(scanEndHard)}|${JSON.stringify(climateResolution.effective)}`; // CHANGED
         const cachedDailyClimate = formState.dailyClimateKey === dailyClimateKey ? formState.dailyClimate : null; // ADDED
-        const dailyClimate = options.dailyClimate || cachedDailyClimate || await city.loadDailyClimateModel({ scanStart, scanEndHard }); // ADDED
+        const dailyClimate = options.dailyClimate || cachedDailyClimate || await city.loadDailyClimateModel({ scanStart, scanEndHard, climatePolicy: climateResolution.effective }); // CHANGED
         formState.dailyClimate = dailyClimate; // ADDED
         formState.dailyClimateKey = dailyClimateKey; // ADDED
 
@@ -3099,6 +3212,7 @@ Draw.loadPlugin(function (ui) {
         const scanEnd = fmtISO(derived.scanEndHard);
         const selectedStart = parseISODateUTCValue(inputs.startISO); // FIX: invalid selected dates must not break diagnostics.
         const fmtNum = value => Number.isFinite(Number(value)) ? Number(value).toFixed(1) : 'n/a';
+        const policy = inputs.policy || {}; // ADDED
         const scanLines = [ // ADDED
             `Scan range: ${scanStart} to ${scanEnd}, ${scanRows} day${scanRows === 1 ? '' : 's'}`,
             scanRows ? null : `Scan status: scan_not_run selected start=${inputs.startISO || 'blank'} parsed=${selectedStart ? fmtISO(selectedStart) : 'invalid'}`
@@ -3118,10 +3232,12 @@ Draw.loadPlugin(function (ui) {
             {
                 title: 'Climate and GDD',
                 lines: [
-                    `Climate model: ${climateDiagnostics.source || 'city monthly normals'}; forecast blend days ${Number(climateDiagnostics.forecastBlendDays || 0)}`,
+                    `Climate model: ${climateDiagnostics.source || 'city monthly normals'}; forecast blend days ${Number(climateDiagnostics.forecastBlendDays || 0)}`, // CHANGED
+                    `Policy: frost ${policy.springFrostRisk || 'p50'}, normals ${policy.weatherNormalsSource || 'auto'}, soil-ready ${policy.soilGateConsecutiveDays || 3} days, GDD calibration ${policy.gddCalibrationEnabled === false ? 'disabled' : 'enabled'}`, // CHANGED
+                    `Forecast weights: 0-3d ${fmtNum(policy.forecastBlendWeight0To3Days ?? 0.8)}, 4-7d ${fmtNum(policy.forecastBlendWeight4To7Days ?? 0.5)}, 8-16d ${fmtNum(policy.forecastBlendWeight8To16Days ?? 0.25)}`, // ADDED
                     `City annual GDD: ${fmtNum(calibration.targetGdd)} at base ${fmtNum(calibration.gddBaseC)} C`,
                     `Temperature calibration offset: not used; daily GDD is scaled instead`,
-                    `GDD calibration scale: ${fmtNum(gddDiagnostics.gddScale || 1)}; city base-GDD ${fmtNum(gddDiagnostics.cityBaseAnnualGdd)} -> target ${fmtNum(gddDiagnostics.targetGdd)}`,
+                    `GDD calibration scale: ${fmtNum(gddDiagnostics.gddScale || 1)}; city base-GDD ${fmtNum(gddDiagnostics.cityBaseAnnualGdd)} -> target ${policy.gddCalibrationEnabled === false ? 'disabled' : fmtNum(gddDiagnostics.targetGdd)}`, // CHANGED
                     `Bed frost-gate shift: ${sharedCore.bedFrostGateShiftDays(inputs.bedProfile)} days; bed GDD air shift: ${fmtNum(gddDiagnostics.bedAirOffsetC)} C`,
                     `Crop-base annual GDD estimate: ${fmtNum(uncalibratedCropAnnualGdd)} raw -> ${fmtNum(cropAnnualGdd)} calibrated at base ${fmtNum(derived.env.Tbase)} C`,
                     `Crop maturity target: ${budget.mode === 'gdd' ? fmtNum(budget.amount) + ' GDD' : String(Math.round(budget.amount)) + ' days'}`
@@ -5443,6 +5559,11 @@ Draw.loadPlugin(function (ui) {
         let plantDefaultTaskDeleteRequested = false;
 
         const saveDefaultChk = makeCheckbox(false);
+        const climateModelModuleCell = (() => { // ADDED
+            const graph = ui?.editor?.graph; // ADDED
+            const model = graph && typeof graph.getModel === 'function' ? graph.getModel() : null; // ADDED
+            return model ? findGardenModuleAncestor(model, cell) : null; // ADDED
+        })(); // ADDED
 
         // Prefill plant/variety from existing cell attrs
         const cellVarietyId0 = (() => {
@@ -5475,7 +5596,10 @@ Draw.loadPlugin(function (ui) {
             bedProfile: normalizeBedProfile(scheduleBedProfile), // ADDED: keep bed-aware soil modeling stable across form recomputes.
             bedProfileSource: String(scheduleBedProfileSource || 'generic garden bed'), // ADDED
             dailyClimate: initialDailyClimate, // ADDED
-            dailyClimateKey: initialDailyClimateKey // CHANGED
+            dailyClimateKey: initialDailyClimateKey, // CHANGED
+            climateModelModuleCell, // ADDED
+            climateModelDraftPatch: null, // ADDED
+            climateModelPolicy: DEFAULT_CLIMATE_MODEL_POLICY // ADDED
         };
 
 
@@ -5591,6 +5715,149 @@ Draw.loadPlugin(function (ui) {
         inputsSection.body.appendChild(firstSowRowObj.row); // CHANGED
         appendFieldRows(advancedBody, fieldRows, ['harvestWindowDays', 'minYieldMultiplier']); // CHANGED
 
+        const climateSection = makeSection('Climate model'); // ADDED
+        climateSection.wrap.style.marginTop = '10px'; // ADDED
+        advancedBody.appendChild(climateSection.wrap); // ADDED
+        const climateControlByKey = {}; // ADDED
+        const setAsGardenClimateDefaultChk = makeCheckbox(false); // ADDED
+
+        function makeClimateOverrideInput(def) { // ADDED
+            if (def.type === 'enum') { // ADDED
+                return makeSelect(def.options.map(([value, label]) => ({ value, label })), DEFAULT_CLIMATE_MODEL_POLICY[def.key]); // ADDED
+            } // ADDED
+            if (def.type === 'boolean') { // ADDED
+                return makeCheckbox(DEFAULT_CLIMATE_MODEL_POLICY[def.key]); // ADDED
+            } // ADDED
+            const input = makeNullableNumber(DEFAULT_CLIMATE_MODEL_POLICY[def.key], { min: def.min, step: def.step }); // ADDED
+            input.max = String(def.max); // ADDED
+            return input; // ADDED
+        } // ADDED
+
+        function readClimateOverrideInputValue(def, input) { // ADDED
+            if (def.type === 'boolean') return !!input.checked; // ADDED
+            if (def.type === 'enum') return String(input.value || DEFAULT_CLIMATE_MODEL_POLICY[def.key]); // ADDED
+            const n = finiteNumberOrNull(input.value); // ADDED
+            if (def.type === 'integer') return Math.max(def.min, Math.min(def.max, Math.round(n ?? DEFAULT_CLIMATE_MODEL_POLICY[def.key]))); // ADDED
+            return Math.max(def.min, Math.min(def.max, n ?? DEFAULT_CLIMATE_MODEL_POLICY[def.key])); // ADDED
+        } // ADDED
+
+        function setClimateOverrideInputValue(def, input, value) { // ADDED
+            const normalized = normalizeClimateModelPatch({ [def.key]: value }); // ADDED
+            const next = Object.prototype.hasOwnProperty.call(normalized, def.key) ? normalized[def.key] : DEFAULT_CLIMATE_MODEL_POLICY[def.key]; // ADDED
+            if (def.type === 'boolean') input.checked = !!next; // ADDED
+            else input.value = String(next); // ADDED
+        } // ADDED
+
+        function formatClimateModelValue(def, value) { // ADDED
+            if (def.type === 'boolean') return value ? 'Enabled' : 'Disabled'; // ADDED
+            if (def.type === 'number') return Number(value).toFixed(2); // ADDED
+            return String(value); // ADDED
+        } // ADDED
+
+        function buildClimateModelPatchFromControls() { // ADDED
+            const patch = {}; // ADDED
+            CLIMATE_MODEL_PARAMETER_SCHEMA.forEach(function (def) { // ADDED
+                const control = climateControlByKey[def.key]; // ADDED
+                if (!control || control.defaultChk.checked) return; // ADDED
+                patch[def.key] = readClimateOverrideInputValue(def, control.input); // ADDED
+            }); // ADDED
+            return normalizeClimateModelPatch(patch); // ADDED
+        } // ADDED
+
+        function refreshClimateModelControls({ preserveDraft = true } = {}) { // ADDED
+            const saved = resolveClimateModelPolicy(climateModelModuleCell, formState.cityName, formState.plantId, null); // ADDED
+            const draft = preserveDraft ? formState.climateModelDraftPatch : saved.plantPatch; // ADDED
+            formState.climateModelDraftPatch = normalizeClimateModelPatch(draft); // ADDED
+            const resolved = resolveClimateModelPolicy(climateModelModuleCell, formState.cityName, formState.plantId, formState.climateModelDraftPatch); // ADDED
+            formState.climateModelPolicy = resolved.effective; // ADDED
+            CLIMATE_MODEL_PARAMETER_SCHEMA.forEach(function (def) { // ADDED
+                const control = climateControlByKey[def.key]; // ADDED
+                if (!control) return; // ADDED
+                const hasOverride = Object.prototype.hasOwnProperty.call(formState.climateModelDraftPatch, def.key); // ADDED
+                control.defaultChk.checked = !hasOverride; // ADDED
+                control.input.disabled = !hasOverride; // ADDED
+                setClimateOverrideInputValue(def, control.input, hasOverride ? formState.climateModelDraftPatch[def.key] : resolved.effective[def.key]); // ADDED
+                control.effective.textContent = `${formatClimateModelValue(def, resolved.effective[def.key])} (${resolved.sources[def.key]})`; // ADDED
+            }); // ADDED
+        } // ADDED
+
+        function handleClimateModelControlChanged() { // ADDED
+            formState.climateModelDraftPatch = buildClimateModelPatchFromControls(); // ADDED
+            refreshClimateModelControls({ preserveDraft: true }); // ADDED
+        } // ADDED
+
+        function buildClimateModelModuleAttributePatch() { // ADDED
+            if (!climateModelModuleCell) return null; // ADDED
+            const plantPatch = buildClimateModelPatchFromControls(); // ADDED
+            const overrideMap = readClimateModelPlantOverrideMap(climateModelModuleCell); // ADDED
+            const normalizedMap = {}; // ADDED
+            Object.keys(overrideMap || {}).forEach(function (key) { // ADDED
+                const patch = normalizeClimateModelPatch(overrideMap[key]); // ADDED
+                if (Object.keys(patch).length) normalizedMap[key] = patch; // ADDED
+            }); // ADDED
+            const overrideKey = buildClimatePlantOverrideKey(formState.cityName, formState.plantId); // ADDED
+            if (Object.keys(plantPatch).length) normalizedMap[overrideKey] = plantPatch; // ADDED
+            else delete normalizedMap[overrideKey]; // ADDED
+            const patch = { [CLIMATE_MODEL_PLANT_OVERRIDES_ATTR]: stringifyClimateModelAttr(normalizedMap) }; // ADDED
+            if (setAsGardenClimateDefaultChk.checked) { // ADDED
+                patch[CLIMATE_MODEL_DEFAULTS_ATTR] = stringifyClimateModelAttr(plantPatch); // ADDED
+            } // ADDED
+            return { cell: climateModelModuleCell, patch }; // ADDED
+        } // ADDED
+
+        CLIMATE_MODEL_PARAMETER_SCHEMA.forEach(function (def) { // ADDED
+            const rowWrap = document.createElement('div'); // ADDED
+            rowWrap.style.display = 'grid'; // ADDED
+            rowWrap.style.gridTemplateColumns = '180px 90px minmax(120px, 1fr) minmax(160px, 1fr)'; // ADDED
+            rowWrap.style.gap = '8px'; // ADDED
+            rowWrap.style.alignItems = 'center'; // ADDED
+            rowWrap.style.margin = '6px 0'; // ADDED
+
+            const label = document.createElement('label'); // ADDED
+            label.textContent = def.label; // ADDED
+            label.style.fontSize = '13px'; // ADDED
+
+            const defaultLabel = document.createElement('label'); // ADDED
+            defaultLabel.style.display = 'flex'; // ADDED
+            defaultLabel.style.gap = '4px'; // ADDED
+            defaultLabel.style.alignItems = 'center'; // ADDED
+            const defaultChk = makeCheckbox(true); // ADDED
+            defaultLabel.appendChild(defaultChk); // ADDED
+            defaultLabel.appendChild(document.createTextNode('Default')); // ADDED
+
+            const input = makeClimateOverrideInput(def); // ADDED
+            input.disabled = true; // ADDED
+
+            const effective = document.createElement('div'); // ADDED
+            effective.style.fontSize = '12px'; // ADDED
+            effective.style.color = '#4b5563'; // ADDED
+
+            rowWrap.appendChild(label); // ADDED
+            rowWrap.appendChild(defaultLabel); // ADDED
+            rowWrap.appendChild(input); // ADDED
+            rowWrap.appendChild(effective); // ADDED
+            climateSection.body.appendChild(rowWrap); // ADDED
+            climateControlByKey[def.key] = { def, defaultChk, input, effective }; // ADDED
+
+            defaultChk.addEventListener('change', () => { // ADDED
+                input.disabled = defaultChk.checked; // ADDED
+                handleClimateModelControlChanged(); // ADDED
+                void runUiAsync('Climate model change error', async () => { await recomputeAll('climateModelChanged'); }); // ADDED
+            }); // ADDED
+            input.addEventListener('input', () => { // ADDED
+                handleClimateModelControlChanged(); // ADDED
+                void runUiAsync('Climate model change error', async () => { await recomputeAll('climateModelChanged'); }); // ADDED
+            }); // ADDED
+            input.addEventListener('change', () => { // ADDED
+                handleClimateModelControlChanged(); // ADDED
+                void runUiAsync('Climate model change error', async () => { await recomputeAll('climateModelChanged'); }); // ADDED
+            }); // ADDED
+        }); // ADDED
+
+        const setDefaultRow = row('Set as default climate model for this garden:', setAsGardenClimateDefaultChk); // ADDED
+        climateSection.body.appendChild(setDefaultRow.row); // ADDED
+        refreshClimateModelControls({ preserveDraft: false }); // ADDED
+
         harvestSection.body.appendChild(harvestStartRowObj.row); // CHANGED
         harvestSection.body.appendChild(harvestEndRowObj.row); // CHANGED
         harvestSection.body.appendChild(daysToFirstHarvestRowObj.row); // CHANGED
@@ -5690,10 +5957,13 @@ Draw.loadPlugin(function (ui) {
                 const scanStart = asUTCDate(seasonStartYear, 1, 1);
                 const scanEndYear = seasonStartYear + getPlantScanYears(p) - 1; // FIX: honor biennial and perennial lifespans
                 const scanEndHard = asUTCDate(scanEndYear, 12, 31);
-                const dailyClimate = await city.loadDailyClimateModel({ scanStart, scanEndHard }); // ADDED
+                const climateResolution = resolveClimateModelPolicy(climateModelModuleCell, formState.cityName, formState.plantId, formState.climateModelDraftPatch); // ADDED
+                const climatePolicy = climateResolution.effective; // ADDED
+                formState.climateModelPolicy = climatePolicy; // ADDED
+                const dailyClimate = await city.loadDailyClimateModel({ scanStart, scanEndHard, climatePolicy }); // CHANGED
                 formState.dailyClimate = dailyClimate; // ADDED
-                formState.dailyClimateKey = `${city.city_name || formState.cityName}|${fmtISO(scanStart)}|${fmtISO(scanEndHard)}`; // ADDED
-                const dailyRates = city.dailyRates(env.Tbase, seasonStartYear);
+                formState.dailyClimateKey = `${city.city_name || formState.cityName}|${fmtISO(scanStart)}|${fmtISO(scanEndHard)}|${JSON.stringify(climatePolicy)}`; // CHANGED
+                const dailyRates = city.dailyRates(env.Tbase, seasonStartYear, climatePolicy); // CHANGED
                 const monthlyAvgTemp = city.monthlyMeans(); // CHANGED: physical temperatures stay unshifted; GDD scaling is in daily climate rates.
 
                 const soilGateThresholdC = (Number.isFinite(Number(p.soil_temp_min_plant_c))
@@ -5704,7 +5974,7 @@ Draw.loadPlugin(function (ui) {
                 const methodId = normId(formState.methodId); // FIX
                 const daysTransplant = Number.isFinite(Number(p.days_transplant)) ? Number(p.days_transplant) : 0;
 
-                const lsf = pickFrostByRisk(city, 'p50');
+                const lsf = pickFrostByRisk(city, climatePolicy.springFrostRisk); // CHANGED
 
                 const r = annualCore.computeAutoStartEndWindowForward({ // CHANGED
                     methodCategoryId, // CHANGED
@@ -5719,7 +5989,7 @@ Draw.loadPlugin(function (ui) {
                     scanStart,
                     scanEndHard,
                     soilGateThresholdC,
-                    soilGateConsecutiveDays: 3,
+                    soilGateConsecutiveDays: climatePolicy.soilGateConsecutiveDays, // CHANGED
                     startCoolingThresholdC: asCoolingThresholdC(p.start_cooling_threshold_c),
                     useSpringFrostGate: true, // FIX: overwinter support does not disable field frost checks
                     lastSpringFrostDOY: lsf,
@@ -5920,6 +6190,7 @@ Draw.loadPlugin(function (ui) {
                 }
 
                 case 'cityChanged':
+                case 'climateModelChanged': // ADDED
                 case 'methodChanged': {
                     // City/method change → keep user sow date if dirty,              
                     // but don't force end update unless you want to:                 
@@ -6089,6 +6360,7 @@ Draw.loadPlugin(function (ui) {
 
 
             syncStateFromControls();
+            refreshClimateModelControls({ preserveDraft: false }); // ADDED
 
             if (effectivePlant.isPerennial()) {
                 setPerennialMode(true, effectivePlant);
@@ -6184,6 +6456,8 @@ Draw.loadPlugin(function (ui) {
 
         citySel.addEventListener('change', () => {
             void runUiAsync('City change error', async () => { // FIX
+                syncStateFromControls(); // ADDED
+                refreshClimateModelControls({ preserveDraft: false }); // ADDED
                 await recomputeAll('cityChanged');
             });
         });
@@ -6459,6 +6733,8 @@ Draw.loadPlugin(function (ui) {
 
                 // Validate the complete schedule before mutating the DB or graph.
                 const scheduleResult = computeScheduleResult(inputs);
+                handleClimateModelControlChanged(); // ADDED
+                const climateModelAttributePatch = buildClimateModelModuleAttributePatch(); // ADDED
 
                 const persistPlantTaskDefault = async () => { // FIX: run DB persistence only after graph mutation succeeds
                     if (saveDefaultChk.checked) {
@@ -6488,6 +6764,7 @@ Draw.loadPlugin(function (ui) {
                     result: scheduleResult,
                     taskTemplateJson,
                     taskTemplate, // FIX: generate tasks from the in-memory template saved by this action
+                    extraAttributePatches: climateModelAttributePatch ? [climateModelAttributePatch] : [], // ADDED
                     afterGraphUpdate: persistPlantTaskDefault // FIX: undo graph edits if the database write fails
                 });
                 ui.hideDialog();
@@ -8736,25 +9013,34 @@ Draw.loadPlugin(function (ui) {
         const model = graph.getModel();
         const attributePatch = buildScheduleAttributePatch(inputs, result, options); // FIX
         const attributeSnapshot = snapshotCellAttributes(cell, Object.keys(attributePatch)); // FIX
+        const extraAttributePatches = (options.extraAttributePatches || []).filter(spec => spec && spec.cell && spec.patch); // ADDED
+        const extraAttributeSnapshots = extraAttributePatches.map(spec => ({ // ADDED
+            cell: spec.cell, // ADDED
+            snapshot: snapshotCellAttributes(spec.cell, Object.keys(spec.patch)) // ADDED
+        })); // ADDED
 
         const applyGraphPatch = async () => {
             model.beginUpdate();
             try {
                 applyCellAttributePatch(cell, attributePatch, model);
+                extraAttributePatches.forEach(spec => applyCellAttributePatch(spec.cell, spec.patch, model)); // ADDED
             } finally {
                 model.endUpdate();
             }
             graph.refresh(cell);
+            extraAttributePatches.forEach(spec => graph.refresh(spec.cell)); // ADDED
         };
 
         const restoreGraphPatch = async () => {
             model.beginUpdate();
             try {
                 restoreCellAttributeSnapshot(cell, attributeSnapshot, model);
+                extraAttributeSnapshots.forEach(spec => restoreCellAttributeSnapshot(spec.cell, spec.snapshot, model)); // ADDED
             } finally {
                 model.endUpdate();
             }
             graph.refresh(cell);
+            extraAttributeSnapshots.forEach(spec => graph.refresh(spec.cell)); // ADDED
         };
 
         await runCompensatedSaveSteps({
@@ -8843,6 +9129,9 @@ Draw.loadPlugin(function (ui) {
         const plants = await PlantModel.listBasic();
         const cities = await CityClimate.loadAll();
         if (!cities.length) throw new Error('Cities not available');
+        const graph = ui?.editor?.graph; // ADDED
+        const model = graph && typeof graph.getModel === 'function' ? graph.getModel() : null; // ADDED
+        const climateModelModuleCell = model ? findGardenModuleAncestor(model, cell) : null; // ADDED
 
         // 2) Selected plant: prefer the stable ID and retain name lookup for legacy cells
         const plantIdAttr = finiteNumberOrNull(cell && cell.getAttribute && cell.getAttribute('plant_id')); // FIX: read the stable persisted identity
@@ -8884,6 +9173,8 @@ Draw.loadPlugin(function (ui) {
 
         const cityInit = await CityClimate.loadByName(initialCityName);
         if (!cityInit) throw new Error(`City not found: ${initialCityName}`);
+        const initialClimateResolution = resolveClimateModelPolicy(climateModelModuleCell, initialCityName, selectedPlant.plant_id, null); // ADDED
+        const initialClimatePolicy = initialClimateResolution.effective; // ADDED
 
         const selectedIsPerennial = isPerennialPlant(selectedPlant); // FIX
         const perennialLifespanYears = selectedIsPerennial
@@ -8915,9 +9206,9 @@ Draw.loadPlugin(function (ui) {
 
         if (!selectedIsPerennial && Number.isFinite(HW_DAYS)) { // FIX
             const env = selectedPlant.cropTempEnvelope(); // FIX: annual-only maturity inputs
-            const dailyClimate = await cityInit.loadDailyClimateModel({ scanStart, scanEndHard }); // ADDED
+            const dailyClimate = await cityInit.loadDailyClimateModel({ scanStart, scanEndHard, climatePolicy: initialClimatePolicy }); // CHANGED
             initialDailyClimate = dailyClimate; // ADDED
-            const dailyRates = cityInit.dailyRates(env.Tbase, year); // FIX
+            const dailyRates = cityInit.dailyRates(env.Tbase, year, initialClimatePolicy); // CHANGED
             const monthlyAvgTemp = cityInit.monthlyMeans(); // CHANGED: physical temperatures stay unshifted; GDD scaling is in daily climate rates.
             const initialWindow = annualCore.computeAutoStartEndWindowForward({ // CHANGED
                 methodCategoryId: initialMethodCategoryId,
@@ -8932,10 +9223,10 @@ Draw.loadPlugin(function (ui) {
                 scanStart,
                 scanEndHard,
                 soilGateThresholdC: finiteNumberOrNull(selectedPlant.soil_temp_min_plant_c),
-                soilGateConsecutiveDays: 3,
+                soilGateConsecutiveDays: initialClimatePolicy.soilGateConsecutiveDays, // CHANGED
                 startCoolingThresholdC: asCoolingThresholdC(selectedPlant.start_cooling_threshold_c),
                 useSpringFrostGate: true, // FIX: keep spring frost checks for overwinter-capable plants
-                lastSpringFrostDOY: pickFrostByRisk(cityInit, 'p50'),
+                lastSpringFrostDOY: pickFrostByRisk(cityInit, initialClimatePolicy.springFrostRisk), // CHANGED
                 daysTransplant: Number.isFinite(Number(selectedPlant.days_transplant))
                     ? Number(selectedPlant.days_transplant)
                     : 0,
@@ -8969,7 +9260,7 @@ Draw.loadPlugin(function (ui) {
                 methodId: initialMethodId,
                 startISO: earliestFeasibleSowDate.toISOString().slice(0, 10),
                 seasonEndISO: climateEndDate.toISOString().slice(0, 10),
-                policy: PolicyFlags.fromResolvedBehavior(selectedPlant, initialResolvedBehavior),
+                policy: PolicyFlags.fromResolvedBehavior(selectedPlant, initialResolvedBehavior, initialClimatePolicy), // CHANGED
                 seasonStartYear: year,
                 harvestWindowDays: HW_DAYS,
                 bedProfile: scheduleBedContext.profile, // ADDED
@@ -9009,7 +9300,7 @@ Draw.loadPlugin(function (ui) {
             bedProfile: scheduleBedContext.profile, // ADDED
             bedProfileSource: scheduleBedContext.source, // ADDED
             dailyClimate: initialDailyClimate, // CHANGED
-            dailyClimateKey: initialDailyClimate ? `${cityInit.city_name || citySel.value}|${fmtISO(scanStart)}|${fmtISO(scanEndHard)}` : '' // CHANGED
+            dailyClimateKey: initialDailyClimate ? `${cityInit.city_name || initialCityName}|${fmtISO(scanStart)}|${fmtISO(scanEndHard)}|${JSON.stringify(initialClimatePolicy)}` : '' // CHANGED
         });
     }
 
@@ -9215,7 +9506,7 @@ Draw.loadPlugin(function (ui) {
 
                 const results = [];
                 for (const req of crops) {
-                    results.push(await suggestHarvestWindowForCropReq(req, cityName, year));
+                    results.push(await suggestHarvestWindowForCropReq(req, cityName, year, moduleCell)); // CHANGED
                 }
                 emitHarvestWindowsSuggested(moduleCellId, year, results);
             });
@@ -9265,7 +9556,7 @@ Draw.loadPlugin(function (ui) {
             return { date: null, info: null };
         }
 
-        async function suggestHarvestWindowForCropReq(req, cityName, year) {
+        async function suggestHarvestWindowForCropReq(req, cityName, year, moduleCell = null) { // CHANGED
             const cropId = String(req?.cropId || "");
             const plantId = (req?.plantId != null) ? Number(req.plantId) : NaN;
             const varietyId = (req?.varietyId != null && req.varietyId !== "") ? Number(req.varietyId) : null;
@@ -9300,12 +9591,13 @@ Draw.loadPlugin(function (ui) {
                 });
                 
                 const planningMode = resolvedBehavior.planningMode;
-                const policy = PolicyFlags.fromResolvedBehavior(plant, resolvedBehavior);
+                const climateResolution = resolveClimateModelPolicy(moduleCell, cityName, plantId, null); // ADDED
+                const policy = PolicyFlags.fromResolvedBehavior(plant, resolvedBehavior, climateResolution.effective); // CHANGED
 
                 const hw = resolveHarvestWindowDays(req?.harvestWindowDays, plant); // FIX: share the scheduler's 7-day fallback
                 const scanStart = asUTCDate(year, 1, 1); // ADDED
                 const scanEndHard = asUTCDate(year + getPlantScanYears(plant) - 1, 12, 31); // ADDED
-                const dailyClimate = await city.loadDailyClimateModel({ scanStart, scanEndHard }); // ADDED
+                const dailyClimate = await city.loadDailyClimateModel({ scanStart, scanEndHard, climatePolicy: climateResolution.effective }); // CHANGED
 
                 const inputs = new sharedCore.ScheduleInputs({ // CHANGED
                     plant,
