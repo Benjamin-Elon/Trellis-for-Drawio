@@ -3055,7 +3055,7 @@ Draw.loadPlugin(function (ui) {
         return !!left && !!right && addDaysUTC(left, 1).getTime() === right.getTime();
     }
 
-    function buildFeasibilityDiagnostics(inputs, rows) {
+    function buildFeasibilityDiagnosticsModel(inputs, rows) { // ADDED: share diagnostics data between text output and the explain dialog UI.
         const plant = inputs.plant;
         const city = inputs.city;
         const derived = inputs.derived();
@@ -3099,25 +3099,281 @@ Draw.loadPlugin(function (ui) {
         const scanEnd = fmtISO(derived.scanEndHard);
         const selectedStart = parseISODateUTCValue(inputs.startISO); // FIX: invalid selected dates must not break diagnostics.
         const fmtNum = value => Number.isFinite(Number(value)) ? Number(value).toFixed(1) : 'n/a';
-        return [
-            'Diagnostics:',
+        const scanLines = [ // ADDED
             `Scan range: ${scanStart} to ${scanEnd}, ${scanRows} day${scanRows === 1 ? '' : 's'}`,
-            scanRows ? null : `Scan status: scan_not_run selected start=${inputs.startISO || 'blank'} parsed=${selectedStart ? fmtISO(selectedStart) : 'invalid'}`, // FIX: empty scans are explicit.
-            buildFeasibilityBlockingSummary(inputs, rows),
-            `Soil threshold: ${soilThreshold == null ? 'n/a' : fmtNum(soilThreshold) + ' C'}`,
-            `Estimated first soil-ready date: ${firstReady ? fmtISO(firstReady) : 'none in scan'}`,
-            `Bed model: ${inputs.bedProfileSource || 'generic garden bed'} ${JSON.stringify(normalizeBedProfile(inputs.bedProfile))}`,
-            `Climate model: ${climateDiagnostics.source || 'city monthly normals'}; forecast blend days ${Number(climateDiagnostics.forecastBlendDays || 0)}`, // ADDED
-            `City annual GDD: ${fmtNum(calibration.targetGdd)} at base ${fmtNum(calibration.gddBaseC)} C`,
-            `Temperature calibration offset: not used; daily GDD is scaled instead`, // CHANGED
-            `GDD calibration scale: ${fmtNum(gddDiagnostics.gddScale || 1)}; city base-GDD ${fmtNum(gddDiagnostics.cityBaseAnnualGdd)} -> target ${fmtNum(gddDiagnostics.targetGdd)}`, // ADDED
-            `Bed frost-gate shift: ${sharedCore.bedFrostGateShiftDays(inputs.bedProfile)} days; bed GDD air shift: ${fmtNum(gddDiagnostics.bedAirOffsetC)} C`, // CHANGED
-            `Crop-base annual GDD estimate: ${fmtNum(uncalibratedCropAnnualGdd)} raw -> ${fmtNum(cropAnnualGdd)} calibrated at base ${fmtNum(derived.env.Tbase)} C`,
-            `Crop maturity target: ${budget.mode === 'gdd' ? fmtNum(budget.amount) + ' GDD' : String(Math.round(budget.amount)) + ' days'}`,
-            `First failing gate: ${firstFailure ? `${firstFailure.date} ${firstFailure.reason} (${humanFeasibilityReason(firstFailure.reason)})` : 'none in scan'}`,
-            `First feasible sow date: ${firstOk ? firstOk.date : 'none in scan'}`,
-            `Failure summary: ${topReasons.length ? topReasons.join(', ') : 'none'}`
-        ].filter(Boolean).join('\n'); // ADDED: readable model diagnostics before the compressed feasibility scan.
+            scanRows ? null : `Scan status: scan_not_run selected start=${inputs.startISO || 'blank'} parsed=${selectedStart ? fmtISO(selectedStart) : 'invalid'}`
+        ].filter(Boolean); // ADDED
+        const blockingLines = buildFeasibilityBlockingSummary(inputs, rows).split('\n'); // ADDED
+        const sections = [ // ADDED
+            { title: 'Scan', lines: scanLines },
+            { title: 'Blocking sequence', lines: blockingLines.filter(line => line !== 'Blocking sequence:') },
+            {
+                title: 'Soil and bed',
+                lines: [
+                    `Soil threshold: ${soilThreshold == null ? 'n/a' : fmtNum(soilThreshold) + ' C'}`,
+                    `Estimated first soil-ready date: ${firstReady ? fmtISO(firstReady) : 'none in scan'}`,
+                    `Bed model: ${inputs.bedProfileSource || 'generic garden bed'} ${JSON.stringify(normalizeBedProfile(inputs.bedProfile))}`
+                ]
+            },
+            {
+                title: 'Climate and GDD',
+                lines: [
+                    `Climate model: ${climateDiagnostics.source || 'city monthly normals'}; forecast blend days ${Number(climateDiagnostics.forecastBlendDays || 0)}`,
+                    `City annual GDD: ${fmtNum(calibration.targetGdd)} at base ${fmtNum(calibration.gddBaseC)} C`,
+                    `Temperature calibration offset: not used; daily GDD is scaled instead`,
+                    `GDD calibration scale: ${fmtNum(gddDiagnostics.gddScale || 1)}; city base-GDD ${fmtNum(gddDiagnostics.cityBaseAnnualGdd)} -> target ${fmtNum(gddDiagnostics.targetGdd)}`,
+                    `Bed frost-gate shift: ${sharedCore.bedFrostGateShiftDays(inputs.bedProfile)} days; bed GDD air shift: ${fmtNum(gddDiagnostics.bedAirOffsetC)} C`,
+                    `Crop-base annual GDD estimate: ${fmtNum(uncalibratedCropAnnualGdd)} raw -> ${fmtNum(cropAnnualGdd)} calibrated at base ${fmtNum(derived.env.Tbase)} C`,
+                    `Crop maturity target: ${budget.mode === 'gdd' ? fmtNum(budget.amount) + ' GDD' : String(Math.round(budget.amount)) + ' days'}`
+                ]
+            },
+            {
+                title: 'Outcomes',
+                lines: [
+                    `First failing gate: ${firstFailure ? `${firstFailure.date} ${firstFailure.reason} (${humanFeasibilityReason(firstFailure.reason)})` : 'none in scan'}`,
+                    `First feasible sow date: ${firstOk ? firstOk.date : 'none in scan'}`,
+                    `Failure summary: ${topReasons.length ? topReasons.join(', ') : 'none'}`
+                ]
+            }
+        ]; // ADDED
+        const textLines = [ // ADDED
+            'Diagnostics:',
+            ...scanLines,
+            ...blockingLines,
+            ...sections[2].lines,
+            ...sections[3].lines,
+            ...sections[4].lines
+        ]; // ADDED
+        return { sections, text: textLines.filter(Boolean).join('\n') }; // ADDED
+    }
+
+    function buildFeasibilityDiagnostics(inputs, rows) {
+        return buildFeasibilityDiagnosticsModel(inputs, rows).text; // CHANGED: preserve the existing plain-text diagnostics contract.
+    }
+
+    function appendExplainSection(parent, titleText) { // ADDED: create consistent sections inside the explain dialog.
+        const section = document.createElement('section'); // ADDED
+        section.style.marginBottom = '14px'; // ADDED
+
+        const title = document.createElement('div'); // ADDED
+        title.textContent = titleText; // ADDED
+        title.style.fontWeight = '600'; // ADDED
+        title.style.fontSize = '13px'; // ADDED
+        title.style.paddingBottom = '6px'; // ADDED
+        title.style.borderBottom = '1px solid #d1d5db'; // ADDED
+        title.style.marginBottom = '8px'; // ADDED
+        section.appendChild(title); // ADDED
+
+        parent.appendChild(section); // ADDED
+        return section; // ADDED
+    }
+
+    function appendExplainLineList(parent, lines) { // ADDED: render diagnostic lines without losing their original wording.
+        const list = document.createElement('div'); // ADDED
+        list.style.display = 'grid'; // ADDED
+        list.style.gridTemplateColumns = 'minmax(170px, max-content) minmax(0, 1fr)'; // ADDED
+        list.style.gap = '5px 12px'; // ADDED
+        list.style.fontSize = '12px'; // ADDED
+        (lines || []).forEach(function (line) { // ADDED
+            appendExplainDiagnosticLine(list, line); // ADDED
+        }); // ADDED
+        parent.appendChild(list); // ADDED
+    }
+
+    function appendExplainDiagnosticLine(parent, line) { // ADDED: split simple "Label: value" rows for readability.
+        const text = String(line || ''); // ADDED
+        const colonIndex = text.indexOf(':'); // ADDED
+        const isBullet = text.indexOf('- ') === 0; // ADDED
+        if (colonIndex > 0 && !isBullet) { // ADDED
+            const label = document.createElement('div'); // ADDED
+            label.textContent = text.slice(0, colonIndex); // ADDED
+            label.style.color = '#4b5563'; // ADDED
+            label.style.fontWeight = '600'; // ADDED
+            const value = document.createElement('div'); // ADDED
+            value.textContent = text.slice(colonIndex + 1).trim(); // ADDED
+            value.style.minWidth = '0'; // ADDED
+            value.style.overflowWrap = 'anywhere'; // ADDED
+            parent.appendChild(label); // ADDED
+            parent.appendChild(value); // ADDED
+            return; // ADDED
+        }
+
+        const row = document.createElement('div'); // ADDED
+        row.textContent = text; // ADDED
+        row.style.gridColumn = '1 / -1'; // ADDED
+        row.style.overflowWrap = 'anywhere'; // ADDED
+        if (isBullet) row.style.paddingLeft = '12px'; // ADDED
+        parent.appendChild(row); // ADDED
+    }
+
+    function appendExplainDiagnostics(parent, diagnosticsModel) { // ADDED: render grouped diagnostics in the explain dialog.
+        const section = appendExplainSection(parent, 'Diagnostics'); // ADDED
+        (diagnosticsModel.sections || []).forEach(function (group) { // ADDED
+            const groupEl = document.createElement('div'); // ADDED
+            groupEl.style.marginBottom = '10px'; // ADDED
+            const groupTitle = document.createElement('div'); // ADDED
+            groupTitle.textContent = group.title; // ADDED
+            groupTitle.style.fontWeight = '600'; // ADDED
+            groupTitle.style.fontSize = '12px'; // ADDED
+            groupTitle.style.marginBottom = '5px'; // ADDED
+            groupEl.appendChild(groupTitle); // ADDED
+            appendExplainLineList(groupEl, group.lines); // ADDED
+            section.appendChild(groupEl); // ADDED
+        }); // ADDED
+    }
+
+    function appendExplainScanRanges(parent, ranges) { // ADDED: render compressed feasibility ranges as a table.
+        const section = appendExplainSection(parent, 'Feasibility scan ranges'); // ADDED
+        if (!ranges.length) { // ADDED
+            const empty = document.createElement('div'); // ADDED
+            empty.textContent = 'scan_not_run: no daily feasibility rows were produced'; // ADDED
+            empty.style.fontSize = '12px'; // ADDED
+            empty.style.color = '#92400e'; // ADDED
+            empty.style.background = '#fffbeb'; // ADDED
+            empty.style.border = '1px solid #f59e0b'; // ADDED
+            empty.style.padding = '8px'; // ADDED
+            section.appendChild(empty); // ADDED
+            return; // ADDED
+        }
+
+        const wrap = document.createElement('div'); // ADDED
+        wrap.style.overflowX = 'auto'; // ADDED
+        const table = document.createElement('table'); // ADDED
+        table.style.borderCollapse = 'collapse'; // ADDED
+        table.style.width = '100%'; // ADDED
+        table.style.minWidth = '840px'; // ADDED
+        table.style.fontSize = '12px'; // ADDED
+        const headers = ['Date range', 'Days', 'Status', 'Reason', 'Detail', 'Maturity', 'Harvest end']; // ADDED
+        const thead = document.createElement('thead'); // ADDED
+        const headRow = document.createElement('tr'); // ADDED
+        headers.forEach(function (header) { // ADDED
+            const th = document.createElement('th'); // ADDED
+            th.textContent = header; // ADDED
+            th.style.border = '1px solid #ddd'; // ADDED
+            th.style.padding = '6px 8px'; // ADDED
+            th.style.background = '#f3f4f6'; // ADDED
+            th.style.fontWeight = '600'; // ADDED
+            th.style.textAlign = 'left'; // ADDED
+            headRow.appendChild(th); // ADDED
+        }); // ADDED
+        thead.appendChild(headRow); // ADDED
+        table.appendChild(thead); // ADDED
+
+        const tbody = document.createElement('tbody'); // ADDED
+        ranges.forEach(function (range) { // ADDED
+            const dateText = range.start === range.end ? range.start : `${range.start} to ${range.end}`; // ADDED
+            const values = [ // ADDED
+                dateText,
+                `${range.days}`,
+                range.ok ? 'Feasible' : 'Blocked',
+                range.ok ? 'ok' : range.reason,
+                range.detail || '',
+                range.ok ? `${range.first_maturity || 'n/a'} -> ${range.last_maturity || 'n/a'}` : '',
+                range.ok ? `${range.first_harvest_end || 'n/a'} -> ${range.last_harvest_end || 'n/a'}` : ''
+            ]; // ADDED
+            const tr = document.createElement('tr'); // ADDED
+            values.forEach(function (value, index) { // ADDED
+                const td = document.createElement('td'); // ADDED
+                td.textContent = value; // ADDED
+                td.style.border = '1px solid #eee'; // ADDED
+                td.style.padding = '6px 8px'; // ADDED
+                td.style.verticalAlign = 'top'; // ADDED
+                td.style.overflowWrap = index === 4 ? 'anywhere' : 'normal'; // ADDED
+                if (index === 2) td.style.fontWeight = '600'; // ADDED
+                if (index === 2) td.style.color = range.ok ? '#166534' : '#92400e'; // ADDED
+                tr.appendChild(td); // ADDED
+            }); // ADDED
+            tbody.appendChild(tr); // ADDED
+        }); // ADDED
+        table.appendChild(tbody); // ADDED
+        wrap.appendChild(table); // ADDED
+        section.appendChild(wrap); // ADDED
+    }
+
+    function appendExplainPreSection(parent, title, text) { // ADDED: keep raw plant and city dictionaries available.
+        const section = appendExplainSection(parent, title); // ADDED
+        const pre = document.createElement('pre'); // ADDED
+        pre.textContent = text; // ADDED
+        pre.style.margin = '0'; // ADDED
+        pre.style.padding = '8px'; // ADDED
+        pre.style.background = '#f9fafb'; // ADDED
+        pre.style.border = '1px solid #e5e7eb'; // ADDED
+        pre.style.overflow = 'auto'; // ADDED
+        pre.style.maxHeight = '220px'; // ADDED
+        pre.style.fontSize = '12px'; // ADDED
+        section.appendChild(pre); // ADDED
+    }
+
+    async function copyExplainTextToClipboard(text) { // ADDED: copy works in browsers that expose clipboard APIs.
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') { // ADDED
+            await navigator.clipboard.writeText(text); // ADDED
+            return; // ADDED
+        }
+        fallbackCopyExplainText(text); // ADDED
+    }
+
+    function fallbackCopyExplainText(text) { // ADDED: support draw.io desktop webviews without navigator.clipboard.
+        const textarea = document.createElement('textarea'); // ADDED
+        textarea.value = text; // ADDED
+        textarea.setAttribute('readonly', 'readonly'); // ADDED
+        textarea.style.position = 'fixed'; // ADDED
+        textarea.style.left = '-9999px'; // ADDED
+        textarea.style.top = '0'; // ADDED
+        document.body.appendChild(textarea); // ADDED
+        textarea.select(); // ADDED
+        try { // ADDED
+            if (!document.execCommand('copy')) throw new Error('Copy command was not accepted.'); // ADDED
+        } finally { // ADDED
+            document.body.removeChild(textarea); // ADDED
+        }
+    }
+
+    function renderExplainSowingRangeDialog(ui, diagnosticsModel, ranges, plantText, cityText, fullText) { // ADDED: structured explain dialog renderer.
+        const div = document.createElement('div'); // ADDED
+        div.style.boxSizing = 'border-box'; // ADDED
+        div.style.display = 'flex'; // ADDED
+        div.style.flexDirection = 'column'; // ADDED
+        div.style.height = '100%'; // ADDED
+        div.style.maxHeight = '640px'; // ADDED
+        div.style.padding = '12px'; // ADDED
+
+        const header = document.createElement('div'); // ADDED
+        header.style.display = 'flex'; // ADDED
+        header.style.alignItems = 'center'; // ADDED
+        header.style.justifyContent = 'space-between'; // ADDED
+        header.style.gap = '8px'; // ADDED
+        header.style.marginBottom = '10px'; // ADDED
+        const title = document.createElement('div'); // ADDED
+        title.textContent = 'Explain Sowing Range'; // ADDED
+        title.style.fontWeight = '600'; // ADDED
+        title.style.fontSize = '14px'; // ADDED
+        header.appendChild(title); // ADDED
+        const copyBtn = mxUtils.button('Copy Text', async () => { // ADDED
+            try { // ADDED
+                await copyExplainTextToClipboard(fullText); // ADDED
+                copyBtn.textContent = 'Copied'; // ADDED
+                setTimeout(() => { copyBtn.textContent = 'Copy Text'; }, 1200); // ADDED
+            } catch (copyError) { // ADDED
+                copyBtn.textContent = 'Copy failed'; // ADDED
+                copyBtn.title = copyError?.message || String(copyError); // ADDED
+                setTimeout(() => { copyBtn.textContent = 'Copy Text'; }, 1600); // ADDED
+            }
+        }); // ADDED
+        header.appendChild(copyBtn); // ADDED
+        div.appendChild(header); // ADDED
+
+        const body = document.createElement('div'); // ADDED
+        body.style.flex = '1'; // ADDED
+        body.style.minHeight = '0'; // ADDED
+        body.style.overflow = 'auto'; // ADDED
+        body.style.paddingRight = '2px'; // ADDED
+        appendExplainDiagnostics(body, diagnosticsModel); // ADDED
+        appendExplainScanRanges(body, ranges); // ADDED
+        appendExplainPreSection(body, 'Plant data', plantText); // ADDED
+        appendExplainPreSection(body, 'City data', cityText); // ADDED
+        div.appendChild(body); // ADDED
+
+        ui.showDialog(div, 960, 640, true, true); // CHANGED
     }
 
     function showCommitDialog(ui, {
@@ -6116,31 +6372,31 @@ Draw.loadPlugin(function (ui) {
                 );
 
                 const rows = await explainFeasibilityOverSeason(inputs);
-                const diagnostics = buildFeasibilityDiagnostics(inputs, rows); // ADDED
+                const diagnosticsModel = buildFeasibilityDiagnosticsModel(inputs, rows); // CHANGED
+                const diagnostics = diagnosticsModel.text; // CHANGED
                 const scanSummary = formatFeasibilityScanRanges(rows); // FIX: dialog shows compact reason ranges instead of daily JSON.
+                const scanRanges = compressFeasibilityScanRanges(rows); // ADDED
 
                 // include plant & city dictionaries
                 const plantDict = toPlainDict(plant);
                 const cityDict = toPlainDict(city);
+                const plantText = JSON.stringify(plantDict, null, 2); // ADDED
+                const cityText = JSON.stringify(cityDict, null, 2); // ADDED
 
                 const header = [
                     diagnostics,
                     '',
                     'Plant data:',
-                    JSON.stringify(plantDict, null, 2),
+                    plantText, // CHANGED
                     '',
                     'City data:',
-                    JSON.stringify(cityDict, null, 2),
+                    cityText, // CHANGED
                     '',
                     'Feasibility scan ranges:'
                 ].join('\n');
 
                 const text = header + '\n' + scanSummary; // FIX: keep raw daily rows internal/test-only.
-
-                const div = document.createElement('div');
-                div.style.whiteSpace = 'pre'; div.style.maxHeight = '70vh'; div.style.overflow = 'auto';
-                div.style.padding = '12px'; div.textContent = text;
-                ui.showDialog(div, 720, 480, true, true);
+                renderExplainSowingRangeDialog(ui, diagnosticsModel, scanRanges, plantText, cityText, text); // CHANGED
 
 
 
