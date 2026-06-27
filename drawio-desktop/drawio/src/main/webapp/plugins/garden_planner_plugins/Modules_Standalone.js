@@ -80,9 +80,40 @@ Draw.loadPlugin(function (ui) {
 
 
 
-    const MIN_W = 60, MIN_H = 40;
+    const MIN_W = 60, MIN_H = 40; // CHANGE
+    const GARDEN_MIN_CONTENT_W = 440, GARDEN_MIN_CONTENT_H = 340; // CHANGE
 
     const EPS = 0.5; // epsilon                                                      
+
+    function getModuleMinContentSize(moduleCell) { // CHANGE
+        return isGardenModule(moduleCell) // CHANGE
+            ? { width: GARDEN_MIN_CONTENT_W, height: GARDEN_MIN_CONTENT_H } // CHANGE
+            : { width: MIN_W, height: MIN_H }; // CHANGE
+    } // CHANGE
+
+    function getModuleHeaderHeight(moduleCell) { // CHANGE
+        return isSwimlane(moduleCell) ? getStartSize(moduleCell).height : 0; // CHANGE
+    } // CHANGE
+
+    function getModuleMinOuterSize(moduleCell) { // CHANGE
+        const content = getModuleMinContentSize(moduleCell); // CHANGE
+        return { width: content.width, height: content.height + getModuleHeaderHeight(moduleCell) }; // CHANGE
+    } // CHANGE
+
+    function enforceGardenModuleMinimum(moduleCell) { // CHANGE
+        if (!isGardenModule(moduleCell)) return false; // CHANGE
+        const g = model.getGeometry(moduleCell); // CHANGE
+        if (!g) return false; // CHANGE
+        const min = getModuleMinOuterSize(moduleCell); // CHANGE
+        const nextW = Math.max(Number(g.width) || 0, min.width); // CHANGE
+        const nextH = Math.max(Number(g.height) || 0, min.height); // CHANGE
+        if (Math.abs(nextW - g.width) < EPS && Math.abs(nextH - g.height) < EPS) return false; // CHANGE
+        const g2 = g.clone(); // CHANGE
+        g2.width = nextW; // CHANGE
+        g2.height = nextH; // CHANGE
+        model.setGeometry(moduleCell, g2); // CHANGE
+        return true; // CHANGE
+    } // CHANGE
 
     function applyModuleMargins(moduleCell, opts) {
         const o = opts || {};
@@ -94,13 +125,13 @@ Draw.loadPlugin(function (ui) {
         if (!mGeo) return;
 
         const u = getChildUnionRelative(moduleCell); // union in module space
-        if (!u) return;
+        const minContent = getModuleMinContentSize(moduleCell); // CHANGE
 
         // Children coords are in swimlane content space; outerHeight = content + header.
-        const headerH = isSwimlane(moduleCell) ? getStartSize(moduleCell).height : 0;
+        const headerH = getModuleHeaderHeight(moduleCell); // CHANGE
 
-        const minRight = Math.max(u.right + margin, MIN_W);
-        const minBottom = Math.max(u.bottom + margin, MIN_H);
+        const minRight = Math.max(u ? u.right + margin : 0, minContent.width); // CHANGE
+        const minBottom = Math.max(u ? u.bottom + margin : 0, minContent.height); // CHANGE
 
         // If shrinking is allowed, snap to minima; otherwise never shrink (only expand).     
         const targetW = allowShrink ? minRight : Math.max(mGeo.width, minRight);
@@ -133,6 +164,10 @@ Draw.loadPlugin(function (ui) {
     function isTeamModule(cell) {
         return !!cell && getXmlFlag(cell, "team_module");
     }
+
+    function isGardenDashboardCell(cell) { // CHANGE
+        return !!cell && cell.getAttribute && cell.getAttribute("garden_dashboard") === "1"; // CHANGE
+    } // CHANGE
 
     // Safely set/remove a style flag key=1                                       
     function setStyleFlag(cell, key, on) {
@@ -257,6 +292,16 @@ Draw.loadPlugin(function (ui) {
             model.endUpdate();
         }
         graph.refresh(cell);
+
+        if (becameGarden) {                                                                  // CHANGE
+            model.beginUpdate();                                                             // CHANGE
+            try {                                                                            // CHANGE
+                enforceGardenModuleMinimum(cell);                                            // CHANGE
+                applyModuleMargins(cell, { allowShrink: false });                            // CHANGE
+            } finally {                                                                      // CHANGE
+                model.endUpdate();                                                           // CHANGE
+            }                                                                                // CHANGE
+        }                                                                                    // CHANGE
 
         if (becameGarden) {                                                                  // FIX
             setTimeout(() => emitGardenSettingsNeededIfMissing(graph, cell), 0);             // FIX
@@ -638,7 +683,8 @@ Draw.loadPlugin(function (ui) {
 
                     // If no longer inside module content, mark for reparenting         
                     if (!rectInsideModule(b, p)) {
-                        toRoot.push({ cell: c, oldModule: p });
+                        if (isGardenDashboardCell(c)) seenModules.add(p.id); // CHANGE
+                        else toRoot.push({ cell: c, oldModule: p }); // CHANGE
                     } else {
                         seenModules.add(p.id);
                     }
@@ -692,6 +738,7 @@ Draw.loadPlugin(function (ui) {
             const cells = evt.getProperty("cells") || [];
             const seenModules = new Set();
             cells.forEach(c => {
+                if (isGardenModule(c)) enforceGardenModuleMinimum(c);          // CHANGE
                 if (isModule(c)) seenModules.add(c.id);                // module resized by user
                 const p = model.getParent(c);
                 if (p && isModule(p)) seenModules.add(p.id);           // child resized
@@ -722,6 +769,37 @@ Draw.loadPlugin(function (ui) {
     //  Role cards, menus, layouts etc… remain as you have them.
     // Ensure right-click does not alter selection unexpectedly                           
     graph.popupMenuHandler && (graph.popupMenuHandler.selectOnPopup = false);
+
+    graph.__trellisModules = { // CHANGE
+        applyModuleMargins: function (moduleCell, opts) { // CHANGE
+            return applyModuleMargins(moduleCell, opts); // CHANGE
+        }, // CHANGE
+        enforceGardenModuleMinimum: function (moduleCell) { // CHANGE
+            let changed = false; // CHANGE
+            model.beginUpdate(); // CHANGE
+            try { // CHANGE
+                changed = enforceGardenModuleMinimum(moduleCell); // CHANGE
+            } finally { // CHANGE
+                model.endUpdate(); // CHANGE
+            } // CHANGE
+            return changed; // CHANGE
+        }, // CHANGE
+        getGardenModuleMinimumSize: function (moduleCell) { // CHANGE
+            return getModuleMinOuterSize(moduleCell); // CHANGE
+        } // CHANGE
+    }; // CHANGE
+
+    graph.addListener("usl:requestApplyModuleMargins", function (_sender, evt) { // CHANGE
+        const cell = evt && evt.getProperty ? evt.getProperty("cell") : null; // CHANGE
+        if (!cell || !isModule(cell)) return; // CHANGE
+        model.beginUpdate(); // CHANGE
+        try { // CHANGE
+            enforceGardenModuleMinimum(cell); // CHANGE
+            applyModuleMargins(cell, { allowShrink: false }); // CHANGE
+        } finally { // CHANGE
+            model.endUpdate(); // CHANGE
+        } // CHANGE
+    }); // CHANGE
 
     function registerTrellisContextMenuContributor(contributor) { // NEW
         function finishRegistration() { // NEW

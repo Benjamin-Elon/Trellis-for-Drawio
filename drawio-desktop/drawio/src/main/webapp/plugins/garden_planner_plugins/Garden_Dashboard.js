@@ -37,6 +37,10 @@ Draw.loadPlugin(function (ui) {
     const BTN_SIZE = 22;
     const BTN_GAP = 6;
     const CTRL_PAD = 6;
+    const DASH_MIN_W = 320; // CHANGE
+    const DASH_DEFAULT_ASPECT = 320 / 220; // CHANGE
+    const GARDEN_MIN_CONTENT_W = 440; // CHANGE
+    const GARDEN_MIN_CONTENT_H = 340; // CHANGE
 
     const DASH_STYLE =
         "rounded=0;whiteSpace=wrap;html=1;" +
@@ -254,6 +258,120 @@ Draw.loadPlugin(function (ui) {
         }
         return null;
     }
+
+    function isDashboardCell(cell) { // CHANGE
+        return !!cell && cell.getAttribute && cell.getAttribute(DASH_ATTR) === "1"; // CHANGE
+    } // CHANGE
+
+    function getModuleHeaderHeight(moduleCell) { // CHANGE
+        if (!moduleCell) return 0; // CHANGE
+        if (graph.getStartSize) { // CHANGE
+            const size = graph.getStartSize(moduleCell) || {}; // CHANGE
+            return Number(size.height) || 0; // CHANGE
+        } // CHANGE
+        const style = getStyleSafe(moduleCell); // CHANGE
+        const m = style.match(/(?:^|;)startSize=(\d+)(?=;|$)/); // CHANGE
+        return m ? parseInt(m[1], 10) : 0; // CHANGE
+    } // CHANGE
+
+    function ensureGardenModuleMinimum(moduleCell) { // CHANGE
+        if (!isGardenModule(moduleCell)) return; // CHANGE
+        const api = graph && graph.__trellisModules; // CHANGE
+        if (api && typeof api.enforceGardenModuleMinimum === "function") { // CHANGE
+            api.enforceGardenModuleMinimum(moduleCell); // CHANGE
+            return; // CHANGE
+        } // CHANGE
+        try { // CHANGE
+            graph.fireEvent(new mxEventObject("usl:requestApplyModuleMargins", "cell", moduleCell)); // CHANGE
+        } catch (_) { } // CHANGE
+    } // CHANGE
+
+    function getGardenModuleContentSize(moduleCell) { // CHANGE
+        const g = moduleCell && model.getGeometry(moduleCell); // CHANGE
+        if (!g) return { width: GARDEN_MIN_CONTENT_W, height: GARDEN_MIN_CONTENT_H }; // CHANGE
+        return { // CHANGE
+            width: Math.max(GARDEN_MIN_CONTENT_W, Number(g.width) || 0), // CHANGE
+            height: Math.max(GARDEN_MIN_CONTENT_H, (Number(g.height) || 0) - getModuleHeaderHeight(moduleCell)) // CHANGE
+        }; // CHANGE
+    } // CHANGE
+
+    function growGardenModuleToContain(moduleCell, x, y, width, height) { // CHANGE
+        if (!isGardenModule(moduleCell)) return false; // CHANGE
+        const g = model.getGeometry(moduleCell); // CHANGE
+        if (!g) return false; // CHANGE
+        const headerH = getModuleHeaderHeight(moduleCell); // CHANGE
+        const neededW = Math.max(GARDEN_MIN_CONTENT_W, (Number(x) || 0) + (Number(width) || 0)); // CHANGE
+        const neededH = Math.max(GARDEN_MIN_CONTENT_H, (Number(y) || 0) + (Number(height) || 0)) + headerH; // CHANGE
+        const nextW = Math.max(Number(g.width) || 0, neededW); // CHANGE
+        const nextH = Math.max(Number(g.height) || 0, neededH); // CHANGE
+        if (Math.abs(nextW - g.width) < 0.5 && Math.abs(nextH - g.height) < 0.5) return false; // CHANGE
+        const g2 = g.clone(); // CHANGE
+        g2.width = nextW; // CHANGE
+        g2.height = nextH; // CHANGE
+        model.setGeometry(moduleCell, g2); // CHANGE
+        return true; // CHANGE
+    } // CHANGE
+
+    function getDashboardMeasuredAspect(dashCell) { // CHANGE
+        const entry = dashCell && overlayByDashId.get(dashCell.getId()); // CHANGE
+        const size = measureDashboardUiNaturalSize(entry); // CHANGE
+        return size.width > 0 && size.height > 0 ? size.width / size.height : DASH_DEFAULT_ASPECT; // CHANGE
+    } // CHANGE
+
+    function clampDashboardGeometry(dashCell, opts) { // CHANGE
+        const o = opts || {}; // CHANGE
+        if (!isDashboardCell(dashCell) || graph.__gardenDashboardClamping) return false; // CHANGE
+        const g = model.getGeometry(dashCell); // CHANGE
+        if (!g) return false; // CHANGE
+        const moduleCell = findGardenModuleAncestor(graph, dashCell); // CHANGE
+        if (moduleCell && o.allowModuleGrow !== false) ensureGardenModuleMinimum(moduleCell); // CHANGE
+
+        const ratio = Math.max(0.01, Number(o.aspectRatio) || getDashboardMeasuredAspect(dashCell)); // CHANGE
+        let width = Math.max(DASH_MIN_W, Number(g.width) || DASH_MIN_W); // CHANGE
+        let height = Math.max(1, Number(g.height) || (DASH_MIN_W / ratio)); // CHANGE
+
+        if (o.preserveWidth) { // CHANGE
+            width = Math.max(DASH_MIN_W, width); // CHANGE
+            height = Math.max(1, width / ratio); // CHANGE
+        } else if (o.preserveSize) { // CHANGE
+            width = Math.max(DASH_MIN_W, width); // CHANGE
+            height = Math.max(1, height); // CHANGE
+        } else if (o.preserveArea) { // CHANGE
+            const area = Math.max(DASH_MIN_W, width * height); // CHANGE
+            width = Math.max(DASH_MIN_W, Math.sqrt(area * ratio)); // CHANGE
+            height = Math.max(1, width / ratio); // CHANGE
+        } else if (width / height > ratio) { // CHANGE
+            width = Math.max(DASH_MIN_W, height * ratio); // CHANGE
+        } else { // CHANGE
+            height = Math.max(1, width / ratio); // CHANGE
+        } // CHANGE
+
+        if (moduleCell) { // CHANGE
+            const content = getGardenModuleContentSize(moduleCell); // CHANGE
+            if (width > content.width || height > content.height) growGardenModuleToContain(moduleCell, Number(g.x) || 0, Number(g.y) || 0, width, height); // CHANGE
+            const updatedContent = getGardenModuleContentSize(moduleCell); // CHANGE
+            width = Math.min(width, Math.max(DASH_MIN_W, updatedContent.width)); // CHANGE
+            height = Math.min(height, Math.max(1, updatedContent.height)); // CHANGE
+        } // CHANGE
+
+        const next = g.clone(); // CHANGE
+        next.width = width; // CHANGE
+        next.height = height; // CHANGE
+        if (moduleCell) { // CHANGE
+            const content = getGardenModuleContentSize(moduleCell); // CHANGE
+            next.x = Math.max(0, Math.min(Number(next.x) || 0, Math.max(0, content.width - next.width))); // CHANGE
+            next.y = Math.max(0, Math.min(Number(next.y) || 0, Math.max(0, content.height - next.height))); // CHANGE
+        } // CHANGE
+
+        if (Math.abs(next.x - g.x) < 0.5 && Math.abs(next.y - g.y) < 0.5 && Math.abs(next.width - g.width) < 0.5 && Math.abs(next.height - g.height) < 0.5) return false; // CHANGE
+        graph.__gardenDashboardClamping = true; // CHANGE
+        try { // CHANGE
+            model.setGeometry(dashCell, next); // CHANGE
+        } finally { // CHANGE
+            graph.__gardenDashboardClamping = false; // CHANGE
+        } // CHANGE
+        return true; // CHANGE
+    } // CHANGE
 
     function isValidYear(n) { // NEW
         return Number.isFinite(n) && n > 1900 && n < 3000; // NEW
@@ -815,13 +933,23 @@ Draw.loadPlugin(function (ui) {
 
         wrap.style.position = "absolute";
         wrap.style.zIndex = "10";
-        wrap.style.pointerEvents = "auto";
+        wrap.style.pointerEvents = "none"; // CHANGE
         wrap.style.boxSizing = "border-box";
         wrap.style.padding = "0";
         wrap.style.overflow = "hidden";
 
         // Visual: keep overlay readable but inside the cell bounds 
         wrap.style.background = "rgba(255,255,255,0.0)";
+
+        const uiScaleBox = document.createElement("div"); // CHANGE
+        uiScaleBox.style.position = "absolute"; // CHANGE
+        uiScaleBox.style.left = "0"; // CHANGE
+        uiScaleBox.style.top = "0"; // CHANGE
+        uiScaleBox.style.display = "flex"; // CHANGE
+        uiScaleBox.style.flexDirection = "column"; // CHANGE
+        uiScaleBox.style.boxSizing = "border-box"; // CHANGE
+        uiScaleBox.style.transformOrigin = "top left"; // CHANGE
+        uiScaleBox.style.pointerEvents = "none"; // CHANGE
 
         // Header bar (controls) 
         const header = document.createElement("div");
@@ -833,31 +961,34 @@ Draw.loadPlugin(function (ui) {
         header.style.padding = CTRL_PAD + "px";
         header.style.boxSizing = "border-box";
         header.style.background = "rgba(255,255,255,0.0)";
-        header.style.pointerEvents = "auto";
+        header.style.pointerEvents = "none"; // CHANGE
 
         // Header bar button layout
         const leftBar = document.createElement("div");
         leftBar.style.display = "flex";
         leftBar.style.alignItems = "center";
+        leftBar.style.pointerEvents = "none"; // CHANGE
 
         const centerBar = document.createElement("div");
         centerBar.style.display = "flex";
         centerBar.style.alignItems = "center";
         centerBar.style.justifyContent = "center";
         centerBar.style.flex = "1 1 auto";
+        centerBar.style.pointerEvents = "none"; // CHANGE
 
         const rightBar = document.createElement("div");
         rightBar.style.display = "flex";
         rightBar.style.alignItems = "center";
         rightBar.style.justifyContent = "flex-end";
+        rightBar.style.pointerEvents = "none"; // CHANGE
 
         const contentViewport = document.createElement("div");
         contentViewport.style.flex = "1 1 auto";
         contentViewport.style.minHeight = "0";
-        contentViewport.style.overflow = "auto";
+        contentViewport.style.overflow = "hidden"; // CHANGE
         contentViewport.style.boxSizing = "border-box";
         contentViewport.style.padding = CTRL_PAD + "px";
-        contentViewport.style.pointerEvents = "auto";
+        contentViewport.style.pointerEvents = "none"; // CHANGE
 
         contentViewport.style.background = "#fff";
         contentViewport.style.border = "1px solid #999";
@@ -874,6 +1005,7 @@ Draw.loadPlugin(function (ui) {
             b.style.cursor = "pointer";
             b.style.padding = "0";
             b.style.lineHeight = "1";
+            b.style.pointerEvents = "auto"; // CHANGE
             return b;
         };
 
@@ -901,6 +1033,7 @@ Draw.loadPlugin(function (ui) {
         planBtn.style.padding = "0 8px";
         planBtn.style.fontFamily = "Arial";
         planBtn.style.fontSize = "12px";
+        planBtn.style.pointerEvents = "auto"; // CHANGE
 
         const equipmentBtn = document.createElement("button"); // NEW
         equipmentBtn.textContent = "Equipment"; // NEW
@@ -912,6 +1045,7 @@ Draw.loadPlugin(function (ui) {
         equipmentBtn.style.padding = "0 8px"; // NEW
         equipmentBtn.style.fontFamily = "Arial"; // NEW
         equipmentBtn.style.fontSize = "12px"; // NEW
+        equipmentBtn.style.pointerEvents = "auto"; // CHANGE
 
         const allocateBtn = document.createElement("button");
         allocateBtn.textContent = "Allocate";
@@ -923,6 +1057,7 @@ Draw.loadPlugin(function (ui) {
         allocateBtn.style.padding = "0 8px";
         allocateBtn.style.fontFamily = "Arial";
         allocateBtn.style.fontSize = "12px";
+        allocateBtn.style.pointerEvents = "auto"; // CHANGE
 
         const exportBtn = document.createElement("button");
         exportBtn.textContent = "Export";
@@ -934,6 +1069,7 @@ Draw.loadPlugin(function (ui) {
         exportBtn.style.padding = "0 8px";
         exportBtn.style.fontFamily = "Arial";
         exportBtn.style.fontSize = "12px";
+        exportBtn.style.pointerEvents = "auto"; // CHANGE
 
         // Content area 
         const content = document.createElement("div");
@@ -942,17 +1078,20 @@ Draw.loadPlugin(function (ui) {
         content.style.borderRadius = "0";
         content.style.padding = "0";
         content.style.boxSizing = "border-box";
+        content.style.width = "max-content"; // CHANGE
+        content.style.pointerEvents = "none"; // CHANGE
 
         const contentScaleBox = document.createElement("div");
-        contentScaleBox.style.transformOrigin = "top left";
-        contentScaleBox.style.width = "fit-content";
-        contentScaleBox.style.height = "fit-content";
+        contentScaleBox.style.width = "max-content"; // CHANGE
+        contentScaleBox.style.height = "max-content"; // CHANGE
+        contentScaleBox.style.pointerEvents = "none"; // CHANGE
 
 
         contentScaleBox.appendChild(content);
         contentViewport.appendChild(contentScaleBox);
-        wrap.appendChild(header);
-        wrap.appendChild(contentViewport);
+        uiScaleBox.appendChild(header); // CHANGE
+        uiScaleBox.appendChild(contentViewport); // CHANGE
+        wrap.appendChild(uiScaleBox); // CHANGE
 
         function syncYearLabel() {
             yearLabel.textContent = String(getDashboardYear(dashCell));
@@ -974,7 +1113,7 @@ Draw.loadPlugin(function (ui) {
 
             if (moduleCell) applyYearVisibilityToModule(moduleCell, getDashboardYear(dashCell)); // CHANGE
 
-            recomputeAndRenderDashboard(dashCell);
+            recomputeAndRenderDashboard(dashCell, { allowGeometryChange: true, preserveWidth: true }); // CHANGE
         });
 
 
@@ -994,7 +1133,7 @@ Draw.loadPlugin(function (ui) {
 
             if (moduleCell) applyYearVisibilityToModule(moduleCell, getDashboardYear(dashCell)); // CHANGE
 
-            recomputeAndRenderDashboard(dashCell);
+            recomputeAndRenderDashboard(dashCell, { allowGeometryChange: true, preserveWidth: true }); // CHANGE
         });
 
         planBtn.addEventListener("click", (ev) => {
@@ -1096,7 +1235,7 @@ Draw.loadPlugin(function (ui) {
         graph.container.appendChild(wrap);
 
         const entry = {
-            wrap, header,
+            wrap, uiScaleBox, header, // CHANGE
             leftBar, centerBar, rightBar,
             contentViewport, contentScaleBox, content,
             prev, next,
@@ -1106,33 +1245,6 @@ Draw.loadPlugin(function (ui) {
 
         overlayByDashId.set(dashId, entry);
 
-        function isOverlayControlTarget(el) {
-            if (!el) return false;
-            // Treat header controls and form-like elements as interactive.         
-            if (el.closest && el.closest("button,a,input,select,textarea,label")) return true;
-            if (entry && entry.header && entry.header.contains(el)) return true;
-            return false;
-        }
-
-        function selectDashboardCell(ev) {
-            // If the user clicked a control, let existing handlers run.            
-            if (isOverlayControlTarget(ev.target)) return;
-
-            // Select the dashboard cell explicitly.                                
-            graph.setSelectionCell(dashCell);
-
-            ev.preventDefault();
-            ev.stopPropagation();
-        }
-
-        wrap.addEventListener("pointerdown", selectDashboardCell, true);
-        wrap.addEventListener("mousedown", selectDashboardCell, true);
-        wrap.addEventListener("contextmenu", function (ev) {
-            // Ensure right-click also selects the dashboard before menu shows.     
-            if (isOverlayControlTarget(ev.target)) return;
-            graph.setSelectionCell(dashCell);
-        }, true);
-
         syncYearLabel();
         return entry;
     }
@@ -1140,11 +1252,11 @@ Draw.loadPlugin(function (ui) {
     // -------------------- Zoom Helpers ------------------------------
 
     function applyDashboardUiScale(entry, dashCell) {
-        if (!entry || !entry.contentScaleBox) return;
+        if (!entry || !entry.uiScaleBox) return; // CHANGE
         const s = getEffectiveDashUiScale(entry, dashCell);
-        entry.contentScaleBox.style.transformOrigin = "top left";
-        entry.contentScaleBox.style.transform = `scale(${s})`;
-        syncScaledContentBoxSize(entry, s);
+        syncDashboardUiNaturalBox(entry); // CHANGE
+        entry.uiScaleBox.style.transformOrigin = "top left"; // CHANGE
+        entry.uiScaleBox.style.transform = `scale(${s})`; // CHANGE
     }
 
     function getNaturalContentWidthPx(entry) {
@@ -1160,59 +1272,57 @@ Draw.loadPlugin(function (ui) {
         return Math.max(0, h);
     }
 
-    function getGraphZoomScale() {
-        const s = graph && graph.view && graph.view.scale;
-        return Number.isFinite(s) ? s : 1;
-    }
+    function measureHeaderNaturalSize(entry) { // CHANGE
+        if (!entry) return { width: 0, height: 0 }; // CHANGE
+        const bars = [entry.leftBar, entry.centerBar, entry.rightBar]; // CHANGE
+        let width = 2 * CTRL_PAD; // CHANGE
+        let height = 0; // CHANGE
+        for (const bar of bars) { // CHANGE
+            if (!bar) continue; // CHANGE
+            width += bar.scrollWidth || bar.offsetWidth || 0; // CHANGE
+            height = Math.max(height, bar.scrollHeight || bar.offsetHeight || 0); // CHANGE
+        } // CHANGE
+        return { width, height: height + (2 * CTRL_PAD) }; // CHANGE
+    } // CHANGE
 
-    function syncScaledContentBoxSize(entry, scale) {
-        if (!entry || !entry.contentScaleBox) return;
-        const cw = getNaturalContentWidthPx(entry);                                          // uses existing helper
-        const ch = getNaturalContentHeightPx(entry);
-        if (!(cw > 0) || !(ch > 0)) {
-            entry.contentScaleBox.style.width = "";
-            entry.contentScaleBox.style.height = "";
-            return;
-        }
-        entry.contentScaleBox.style.width = Math.ceil(cw * scale) + "px";
-        entry.contentScaleBox.style.height = Math.ceil(ch * scale) + "px";
-    }
+    function measureDashboardUiNaturalSize(entry) { // CHANGE
+        if (!entry) return { width: DASH_MIN_W, height: DASH_MIN_W / DASH_DEFAULT_ASPECT }; // CHANGE
+        const headerSize = measureHeaderNaturalSize(entry); // CHANGE
+        const contentW = getNaturalContentWidthPx(entry); // CHANGE
+        const contentH = getNaturalContentHeightPx(entry); // CHANGE
+        const viewportW = contentW + (2 * CTRL_PAD) + 2; // CHANGE
+        const viewportH = contentH + (2 * CTRL_PAD) + 2; // CHANGE
+        return { // CHANGE
+            width: Math.max(DASH_MIN_W, Math.ceil(Math.max(headerSize.width, viewportW))), // CHANGE
+            height: Math.max(1, Math.ceil(headerSize.height + viewportH)) // CHANGE
+        }; // CHANGE
+    } // CHANGE
 
-    function getViewportInnerSizePx(entry) {
-        if (!entry || !entry.contentViewport) return { w: 0, h: 0 };
-        const w = entry.contentViewport.clientWidth || 0;
-        const h = entry.contentViewport.clientHeight || 0;
-        const innerW = Math.max(0, w - 2 * CTRL_PAD);
-        const innerH = Math.max(0, h - 2 * CTRL_PAD);
-        return { w: innerW, h: innerH };
-    }
+    function syncDashboardUiNaturalBox(entry) { // CHANGE
+        if (!entry || !entry.uiScaleBox) return; // CHANGE
+        const size = measureDashboardUiNaturalSize(entry); // CHANGE
+        const headerH = measureHeaderNaturalSize(entry).height; // CHANGE
+        entry.uiScaleBox.style.width = size.width + "px"; // CHANGE
+        entry.uiScaleBox.style.height = size.height + "px"; // CHANGE
+        if (entry.header) entry.header.style.width = size.width + "px"; // CHANGE
+        if (entry.contentViewport) { // CHANGE
+            entry.contentViewport.style.width = size.width + "px"; // CHANGE
+            entry.contentViewport.style.height = Math.max(0, size.height - headerH) + "px"; // CHANGE
+        } // CHANGE
+    } // CHANGE
 
-    function getMinDashUiScale(entry) {
-        const { w: vw, h: vh } = getViewportInnerSizePx(entry);
-        const cw = getNaturalContentWidthPx(entry);
-        const ch = getNaturalContentHeightPx(entry);
-        if (!(vw > 0) || !(vh > 0) || !(cw > 0) || !(ch > 0)) return 0.5;
-
-        const fitW = vw / cw;
-        const fitH = vh / ch;
-        const fit = Math.min(fitW, fitH);
-
-        return Math.max(0.5, Math.min(2.5, fit));
-    }
-
-    function getEffectiveDashUiScale(entry, dashCell) {
-        const zoom = getGraphZoomScale();
-        const fit = getMinDashUiScale(entry);
-        const desired = zoom;
-        return Math.max(fit, Math.max(0.5, Math.min(2.5, desired)));
-    }
+    function getEffectiveDashUiScale(entry, dashCell) { // CHANGE
+        const st = dashCell && graph.view.getState(dashCell); // CHANGE
+        const size = measureDashboardUiNaturalSize(entry); // CHANGE
+        if (!st || !(size.width > 0) || !(size.height > 0)) return 1; // CHANGE
+        return Math.min(Math.max(0, st.width) / size.width, Math.max(0, st.height) / size.height); // CHANGE
+    } // CHANGE
 
     function applyScaledHeaderLayout(entry) {
         if (!entry) return;
 
-        const s = (graph.view && Number.isFinite(graph.view.scale)) ? graph.view.scale : 1;
-        const gapPx = Math.round(BTN_GAP * s);
-        const padPx = Math.round(CTRL_PAD * s);
+        const gapPx = BTN_GAP; // CHANGE
+        const padPx = CTRL_PAD; // CHANGE
 
         entry.header.style.padding = padPx + "px";
 
@@ -1240,11 +1350,19 @@ Draw.loadPlugin(function (ui) {
     }
 
 
-    function renderOverlay(dashCell, metrics, year) {
+    function renderOverlay(dashCell, metrics, year, opts) { // CHANGE
         const entry = ensureOverlay(dashCell);
         entry.syncYearLabel();
         entry.content.innerHTML = formatOverlayTableHtml(metrics, year);
-        syncScaledContentBoxSize(entry, getEffectiveDashUiScale(entry, dashCell));
+        syncDashboardUiNaturalBox(entry); // CHANGE
+        if (opts && opts.allowGeometryChange) { // CHANGE
+            model.beginUpdate(); // CHANGE
+            try { // CHANGE
+                clampDashboardGeometry(dashCell, { preserveArea: !opts.preserveWidth, preserveWidth: !!opts.preserveWidth, allowModuleGrow: true }); // CHANGE
+            } finally { // CHANGE
+                model.endUpdate(); // CHANGE
+            } // CHANGE
+        } // CHANGE
         positionOverlay(dashCell);
     }
 
@@ -1258,7 +1376,7 @@ Draw.loadPlugin(function (ui) {
     }
 
     // -------------------- Dashboard update orchestration --------------------
-    function recomputeAndRenderDashboard(dashCell) {
+    function recomputeAndRenderDashboard(dashCell, opts) { // CHANGE
         if (!dashCell) return;
         const moduleCell = findModuleAncestor(graph, dashCell);
         if (!moduleCell) return;
@@ -1267,7 +1385,7 @@ Draw.loadPlugin(function (ui) {
         const metrics = computeModuleMetrics(moduleCell, year);
 
         // Render the full UI as a DOM overlay. 
-        renderOverlay(dashCell, metrics, year);
+        renderOverlay(dashCell, metrics, year, opts); // CHANGE
     }
 
     function ensureOverlayForDashboard(dashCell) {
@@ -1292,13 +1410,14 @@ Draw.loadPlugin(function (ui) {
 
         const initialYear = getModuleCurrentYear(moduleCell) || new Date().getFullYear(); // NEW
         setDashboardYear(inserted, initialYear, moduleCell); // CHANGE
+        ensureGardenModuleMinimum(moduleCell); // CHANGE
         applyYearVisibilityToModule(moduleCell, initialYear); // CHANGE
 
         // Ensure it is visually on top of other children (optional)
         try { graph.orderCells(false, [inserted]); } catch (e) { }
 
         ensureOverlayForDashboard(inserted);
-        recomputeAndRenderDashboard(inserted);
+        recomputeAndRenderDashboard(inserted, { allowGeometryChange: true }); // CHANGE
 
         return inserted;
     }
@@ -1371,6 +1490,42 @@ Draw.loadPlugin(function (ui) {
     window.addEventListener("resize", function () {
         scheduleOverlayReposition();
     });
+
+    function collectTouchedDashboards(cells) { // CHANGE
+        const out = []; // CHANGE
+        const seen = new Set(); // CHANGE
+        for (const cell of (cells || [])) { // CHANGE
+            const dash = isDashboardCell(cell) ? cell : (isGardenModule(cell) ? findDashboardCell(cell) : findDashboardAncestor(cell)); // CHANGE
+            if (!dash || seen.has(dash.getId())) continue; // CHANGE
+            seen.add(dash.getId()); // CHANGE
+            out.push(dash); // CHANGE
+        } // CHANGE
+        return out; // CHANGE
+    } // CHANGE
+
+    graph.addListener(mxEvent.CELLS_MOVED, function (_sender, evt) { // CHANGE
+        const dashboards = collectTouchedDashboards(evt.getProperty("cells") || []); // CHANGE
+        if (!dashboards.length) return; // CHANGE
+        model.beginUpdate(); // CHANGE
+        try { // CHANGE
+            dashboards.forEach(dash => clampDashboardGeometry(dash, { preserveSize: true, allowModuleGrow: true })); // CHANGE
+        } finally { // CHANGE
+            model.endUpdate(); // CHANGE
+        } // CHANGE
+        scheduleOverlayReposition(); // CHANGE
+    }); // CHANGE
+
+    graph.addListener(mxEvent.CELLS_RESIZED, function (_sender, evt) { // CHANGE
+        const dashboards = collectTouchedDashboards(evt.getProperty("cells") || []); // CHANGE
+        if (!dashboards.length) return; // CHANGE
+        model.beginUpdate(); // CHANGE
+        try { // CHANGE
+            dashboards.forEach(dash => clampDashboardGeometry(dash, { preserveArea: false, allowModuleGrow: true })); // CHANGE
+        } finally { // CHANGE
+            model.endUpdate(); // CHANGE
+        } // CHANGE
+        scheduleOverlayReposition(); // CHANGE
+    }); // CHANGE
 
     // On model changes, reposition overlays (and optionally recompute when selected). 
     model.addListener(mxEvent.CHANGE, function () {
