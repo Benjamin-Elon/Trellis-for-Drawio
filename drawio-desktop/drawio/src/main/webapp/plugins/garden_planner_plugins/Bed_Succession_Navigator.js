@@ -210,6 +210,23 @@ Draw.loadPlugin(function (ui) {
         return !!cell && cell.getAttribute && cell.getAttribute('tiler_group') === '1';
     }
 
+    function isLodSummary(cell) { // CHANGE
+        return !!cell && cell.getAttribute && cell.getAttribute('lod_summary') === '1'; // CHANGE
+    } // CHANGE
+
+    function findTilerGroupSelection(cell) { // CHANGE
+        let cur = cell; // CHANGE
+        while (cur) { // CHANGE
+            if (isTilerGroup(cur)) return cur; // CHANGE
+            if (isLodSummary(cur)) { // CHANGE
+                const parent = model.getParent(cur); // CHANGE
+                return isTilerGroup(parent) ? parent : null; // CHANGE
+            } // CHANGE
+            cur = model.getParent(cur); // CHANGE
+        } // CHANGE
+        return null; // CHANGE
+    } // CHANGE
+
     function getState(cell) {
         return cell ? graph.view.getState(cell) : null;
     }
@@ -963,7 +980,8 @@ Draw.loadPlugin(function (ui) {
         } else {
             const oldAnchor = st.anchorId;
             st.order = order;
-            const k = order.findIndex(c => c.id === oldAnchor);
+            const preferredIdx = preferredAnchorId ? order.findIndex(c => c.id === preferredAnchorId) : -1; // CHANGE
+            const k = preferredIdx >= 0 ? preferredIdx : order.findIndex(c => c.id === oldAnchor); // CHANGE
             st.currentIdx = k >= 0 ? k : 0;
             st.anchorId = st.order[st.currentIdx].id;
         }
@@ -1654,7 +1672,7 @@ Draw.loadPlugin(function (ui) {
     }
 
     // -------------------- Orchestration --------------------
-    function refreshClustersInParent(parent, preferredAnchorId, selectedId) {
+    function refreshClustersInParent(parent, preferredAnchorId, selectedId) { // CHANGE
         const comps = buildAllComponentsInParent(parent);
         const liveKeys = new Set();
 
@@ -1663,7 +1681,7 @@ Draw.loadPlugin(function (ui) {
             liveKeys.add(key);
 
             // Only show UI/dimming for the cluster containing the selected tiler group
-            const isSelectedCluster = selectedId && members.some(c => c.id === selectedId);
+            const isSelectedCluster = selectedId && members.some(c => c.id === selectedId); // CHANGE
             if (!isSelectedCluster) {
                 hideUIFor(key);
                 clearVisibilityFor(key);
@@ -1742,11 +1760,12 @@ Draw.loadPlugin(function (ui) {
 
     function refreshAllForSelectionOrAnchor() {
         const sel = graph.getSelectionCell();
-        const preferred = sel && isTilerGroup(sel) ? sel.id : null;
+        const selectedTilerGroup = findTilerGroupSelection(sel); // CHANGE
+        const preferred = selectedTilerGroup ? selectedTilerGroup.id : null; // CHANGE
         lastSelectedTGId = preferred || null;
 
         // If no tiler group is selected, hide all cluster UI and restore baseline visuals.
-        if (!lastSelectedTGId) {
+        if (!lastSelectedTGId) { // CHANGE
             for (const [k] of clusterStates.entries()) {
                 hideUIFor(k);
                 clearVisibilityFor(k);
@@ -1755,10 +1774,10 @@ Draw.loadPlugin(function (ui) {
         }
 
         // Drive clustering only for the selection's parent as before
-        const selCell = model.getCell(lastSelectedTGId);
+        const selCell = model.getCell(lastSelectedTGId); // CHANGE
         const p = selCell ? model.getParent(selCell) : null;
         if (p) {
-            refreshClustersInParent(p, preferred, lastSelectedTGId);
+            refreshClustersInParent(p, preferred, lastSelectedTGId); // CHANGE
             // Prune clusters not under this parent
             for (const [k, st] of clusterStates.entries()) {
                 if (!st.order.every(c => model.getParent(c) === p)) {
@@ -1774,7 +1793,7 @@ Draw.loadPlugin(function (ui) {
         const parents = parentsToScan();
         const live = new Set();
         parents.forEach(par => {
-            refreshClustersInParent(par, preferred, lastSelectedTGId);
+            refreshClustersInParent(par, preferred, lastSelectedTGId); // CHANGE
             for (const k of clusterStates.keys()) live.add(k);
         });
         for (const [k, st] of clusterStates.entries()) {
