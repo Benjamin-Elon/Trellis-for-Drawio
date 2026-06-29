@@ -6961,7 +6961,7 @@ Draw.loadPlugin(function (ui) {
         sowingSeasonSel.addEventListener('change', () => { // ADDED
             void runUiAsync('Sowing season change error', async () => { // ADDED
                 formState.activeSowingSeasonId = sowingSeasonSel.value || ''; // ADDED
-                formState.startISO = resolveStartForSowingSeasonSwitch(formState.sowingSeasons, formState.activeSowingSeasonId, formState.startISO || startInput.value); // CHANGED
+                formState.startISO = resolveStartForSowingSeasonSwitch(formState.sowingSeasons, formState.activeSowingSeasonId, startInput.value || formState.startISO); // CHANGED
                 startInput.value = formState.startISO; // ADDED
                 userEditedStartThisSession = true; // CHANGED
                 syncStartDateBounds(); // ADDED
