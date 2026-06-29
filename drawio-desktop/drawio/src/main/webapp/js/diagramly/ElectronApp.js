@@ -1,4 +1,4 @@
-// Trellis changes: desktop plugin filtering. // CHANGE
+// Trellis changes: desktop plugin filtering and developer-build update gating. // CHANGE
 /**
  * Copyright (c) 2020-2025, JGraph Holdings Ltd
  * Copyright (c) 2020-2025, draw.io AG
@@ -1946,7 +1946,10 @@ mxStencilRegistry.allowEval = false;
 	
 	App.prototype.checkForUpdates = function()
 	{
-		electron.sendMessage('checkForUpdates');
+		if (urlParams['canCheckForUpdates'] == '1') // NEW
+		{
+			electron.sendMessage('checkForUpdates'); // CHANGE
+		}
 	};
 	
 	App.prototype.toggleSpellCheck = function()

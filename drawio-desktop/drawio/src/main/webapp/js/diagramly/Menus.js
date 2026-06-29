@@ -1,4 +1,4 @@
-// Trellis changes: support URL. // CHANGE
+// Trellis changes: support URL and removed built-in update menu option. // CHANGE
 /**
  * Copyright (c) 2006-2020, JGraph Holdings Ltd
  * Copyright (c) 2006-2020, draw.io AG
@@ -1433,12 +1433,6 @@
 					{
 						editorUi.openLink('https://www.drawio.com');
 					});
-					
-					editorUi.actions.addAction('check4Updates', function()
-					{
-						editorUi.checkForUpdates();
-					});
-
 					editorUi.actions.put('desktopZoomIn', new Action('zoomIn', function()
 					{
 						editorUi.desktopZoomIn();
@@ -1456,11 +1450,6 @@
 
 					this.addMenuItems(menu, ['-', 'keyboardShortcuts', 'quickStart',
 						'website', 'support', '-'], parent);
-
-					if (urlParams['disableUpdate'] != '1')
-					{
-						this.addMenuItems(menu, ['check4Updates', '-'], parent);
-					}
 
 					this.addMenuItems(menu, ['desktopResetZoom', 'desktopZoomIn',
 						'desktopZoomOut', '-', 'openDevTools', '-', 'about'], parent);

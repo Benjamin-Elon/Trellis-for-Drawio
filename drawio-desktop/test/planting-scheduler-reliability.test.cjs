@@ -1586,13 +1586,29 @@ test('orphan saved sow date is visible in selector state and blocks validation',
     }), /outside the selectable sowing seasons/); // ADDED
 }); // ADDED
 
-test('switching sowing seasons resets sow date to the selected window start', () => { // ADDED
+test('switching sowing seasons preserves an in-window sow date and otherwise defaults to the selected window start', () => { // CHANGED
     const windows = [ // ADDED
         { id: 'spring', label: 'Spring (Apr 1-May 1)', startISO: '2026-04-01', endISO: '2026-05-01' }, // ADDED
         { id: 'fall', label: 'Fall (Sep 1-Oct 1)', startISO: '2026-09-01', endISO: '2026-10-01' } // ADDED
     ]; // ADDED
-    assert.equal(hooks.resolveStartForSowingSeasonSwitch(windows, 'fall'), '2026-09-01'); // ADDED
+    assert.equal(hooks.resolveStartForSowingSeasonSwitch(windows, 'fall', '2026-09-15'), '2026-09-15'); // ADDED
+    assert.equal(hooks.resolveStartForSowingSeasonSwitch(windows, 'fall', '2026-04-15'), '2026-09-01'); // CHANGED
     assert.equal(hooks.resolveStartForSowingSeasonSwitch(windows, hooks.ORPHAN_SOWING_SEASON_ID), ''); // ADDED
+}); // ADDED
+
+test('sowing season change refreshes derived UI after harvest recomputation', () => { // ADDED
+    const source = fs.readFileSync(schedulerPath, 'utf8'); // ADDED
+    const handlerStart = source.indexOf("sowingSeasonSel.addEventListener('change'"); // ADDED
+    const handlerEnd = source.indexOf("seasonYearInput.addEventListener", handlerStart); // ADDED
+    assert.ok(handlerStart >= 0 && handlerEnd > handlerStart, 'expected to find sowing season change handler'); // ADDED
+    const handlerBody = source.slice(handlerStart, handlerEnd); // ADDED
+    const harvestIndex = handlerBody.indexOf('await recomputeLastHarvestFromSchedule()'); // ADDED
+    const refreshIndex = handlerBody.indexOf('await refreshTasksTabUI()'); // ADDED
+    assert.ok(harvestIndex >= 0, 'season change should recompute harvest before refreshing dependent UI'); // ADDED
+    assert.ok(refreshIndex > harvestIndex, 'task/timeline refresh should run after harvest recomputation'); // ADDED
+    assert.equal(handlerBody.includes('await updateTaskPreview()'), false, 'season change should use shared task/timeline refresh orchestration'); // ADDED
+    assert.equal(handlerBody.includes('updateTimeline()'), false, 'season change should not render timeline before latestScheduleResult is refreshed'); // ADDED
+    assert.match(handlerBody, /userEditedStartThisSession\s*=\s*true/, 'season selection should be treated as a user-selected schedule anchor'); // ADDED
 }); // ADDED
 
 test('derived sowing season summary matches selector labels', () => { // ADDED

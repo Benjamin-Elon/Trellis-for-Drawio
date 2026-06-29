@@ -62,13 +62,26 @@ test('production Electron bootstrap loads desktop hooks before App.main', () => 
 	assert.ok(hookCall < readyGate, 'desktop hooks should load before App.main can run');
 });
 
-test('bundled desktop update menu action falls back to Electron IPC', () => {
+test('bundled desktop update menu option is removed', () => { // CHANGE
 	for (const fileName of bundledFiles) {
 		const source = readBundledFile(fileName);
 
-		// Trellis ships these minified upstream files directly, so the menu action must not depend on an omitted prototype method.
-		assert.match(source, /update IPC fallback/, `${fileName} should document the Trellis update fallback`);
-		assert.match(source, /electron\.sendMessage\("checkForUpdates"\)/, `${fileName} should send update checks through Electron IPC`);
-		assert.doesNotMatch(source, /addAction\("check4Updates",function\(\)\{[a-z]\.checkForUpdates\(\)\}\)/, `${fileName} should not call checkForUpdates without a fallback`);
+		assert.doesNotMatch(source, /actions\.addAction\("check4Updates"/, `${fileName} should not define the old update menu action`); // CHANGE
+		assert.doesNotMatch(source, /addMenuItems\([a-z],\["check4Updates","-"\]/, `${fileName} should not insert the old update menu item`); // CHANGE
 	}
+});
+
+test('source desktop update menu options are removed while dialog IPC remains', () => { // CHANGE
+	const electronSource = readBundledFile('src/main/electron.js');
+	const menusSource = readBundledFile('drawio/src/main/webapp/js/diagramly/Menus.js');
+	const electronAppSource = readBundledFile('drawio/src/main/webapp/js/diagramly/ElectronApp.js');
+
+	assert.match(electronSource, /'canCheckForUpdates': canCheckForUpdates\(\) \? 1 : 0, \/\/ NEW/, 'Electron startup params should expose updater capability');
+	assert.match(electronSource, /if \(!canCheckForUpdates\(\)\) return; \/\/ CHANGE/, 'IPC update requests should no-op when updates are unavailable');
+	assert.match(electronSource, /ipcMain\.on\('checkForUpdates', checkForUpdatesFn\)/, 'Dialog update IPC should remain available'); // NEW
+	assert.doesNotMatch(electronSource, /label: 'Check for updates'/, 'Native update menu item should be removed'); // CHANGE
+	assert.doesNotMatch(electronSource, /checkForUpdates,\s*\{ type: 'separator' \}/, 'Native app submenu should not include checkForUpdates'); // NEW
+	assert.doesNotMatch(electronSource, /Update checks are only available in packaged Trellis for Drawio releases/, 'Main process should not show the old packaged-build warning');
+	assert.doesNotMatch(menusSource, /check4Updates/, 'Renderer Help menu should not include check4Updates'); // CHANGE
+	assert.match(electronAppSource, /if \(urlParams\['canCheckForUpdates'\] == '1'\) \/\/ NEW/, 'ElectronApp update method should not send IPC when updates are unavailable');
 });

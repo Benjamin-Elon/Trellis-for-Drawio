@@ -1,4 +1,4 @@
-// Trellis changes: preload file-system bridge and app-info bridge for renderer plugins. // CHANGE
+// Trellis changes: preload file-system bridge and app-info/release bridge for renderer plugins. // CHANGE
 console.log('[Preload] Script running');
 
 const {
@@ -113,6 +113,15 @@ contextBridge.exposeInMainWorld('trellisApp', { // NEW
 			); // NEW
 		}); // NEW
 	}, // CHANGE
+	getReleases() { // NEW
+		return new Promise((resolve, reject) => { // NEW
+			requestViaIPC( // NEW
+				{ action: 'getTrellisReleases' }, // NEW
+				(data) => resolve(Array.isArray(data) ? data : []), // NEW
+				(msg) => reject(new Error(msg || 'getTrellisReleases failed')) // NEW
+			); // NEW
+		}); // NEW
+	}, // NEW
 	restoreBuiltInDatabase() { // NEW
 		return new Promise((resolve, reject) => { // NEW
 			requestViaIPC( // NEW

@@ -2644,8 +2644,9 @@ Draw.loadPlugin(function (ui) {
         } // ADDED
         return normalized[0].id; // ADDED
     } // ADDED
-    function resolveStartForSowingSeasonSwitch(windows, activeSowingSeasonId) { // ADDED
+    function resolveStartForSowingSeasonSwitch(windows, activeSowingSeasonId, currentStartISO = '') { // CHANGED
         const activeWindow = normalizeSowingSeasons(windows).find(window => window.id === String(activeSowingSeasonId || '').trim()); // ADDED
+        if (activeWindow && sowDateInWindow(currentStartISO, activeWindow)) return String(currentStartISO || '').trim(); // ADDED
         return activeWindow ? activeWindow.startISO : ''; // ADDED
     } // ADDED
     function classifySelectedSowDate({ // CHANGED
@@ -5199,6 +5200,7 @@ Draw.loadPlugin(function (ui) {
         };
 
         const contextSection = makeSection('Context'); // CHANGED
+        contextSection.wrap.classList.add('usl-scheduler-section--allow-popover'); // ADDED
         const plantSection = makeSection('Crop'); // CHANGED
         const windowSection = makeSection('Feasibility'); // CHANGED
         const timelineSection = makeSection('Timeline'); // CHANGED
@@ -5994,8 +5996,6 @@ Draw.loadPlugin(function (ui) {
         windowSection.body.appendChild(endRow.row); // CHANGED
 
         inputsSection.body.appendChild(firstSowRowObj.row); // CHANGED
-        appendFieldRows(advancedBody, fieldRows, ['harvestWindowDays', 'minYieldMultiplier']); // CHANGED
-
         const climateSection = makeSection('Climate model'); // ADDED
         climateSection.wrap.style.marginTop = '10px'; // ADDED
         advancedBody.appendChild(climateSection.wrap); // ADDED
@@ -6199,6 +6199,7 @@ Draw.loadPlugin(function (ui) {
         refreshClimateModelControls({ preserveDraft: false }); // ADDED
         refreshContextSummary(); // ADDED
 
+        appendFieldRows(harvestSection.body, fieldRows, ['harvestWindowDays', 'minYieldMultiplier']); // CHANGED
         harvestSection.body.appendChild(harvestStartRowObj.row); // CHANGED
         harvestSection.body.appendChild(harvestEndRowObj.row); // CHANGED
         harvestSection.body.appendChild(daysToFirstHarvestRowObj.row); // CHANGED
@@ -6960,15 +6961,14 @@ Draw.loadPlugin(function (ui) {
         sowingSeasonSel.addEventListener('change', () => { // ADDED
             void runUiAsync('Sowing season change error', async () => { // ADDED
                 formState.activeSowingSeasonId = sowingSeasonSel.value || ''; // ADDED
-                formState.startISO = resolveStartForSowingSeasonSwitch(formState.sowingSeasons, formState.activeSowingSeasonId); // CHANGED
+                formState.startISO = resolveStartForSowingSeasonSwitch(formState.sowingSeasons, formState.activeSowingSeasonId, formState.startISO || startInput.value); // CHANGED
                 startInput.value = formState.startISO; // ADDED
-                userEditedStartThisSession = false; // ADDED
+                userEditedStartThisSession = true; // CHANGED
                 syncStartDateBounds(); // ADDED
                 refreshSowingSeasonSelector(); // ADDED
                 updateStartNote(); // ADDED
-                updateTimeline(); // ADDED
                 await recomputeLastHarvestFromSchedule(); // ADDED
-                await updateTaskPreview(); // ADDED
+                await refreshTasksTabUI(); // CHANGED
             }); // ADDED
         }); // ADDED
 
@@ -8153,6 +8153,7 @@ Draw.loadPlugin(function (ui) {
             .usl-scheduler-row-label{flex:0 0 180px;min-width:0!important;font-weight:700;color:var(--usl-neutral-700)}
             .usl-scheduler-row > :not(label){flex:1 1 220px;min-width:0}
             .usl-scheduler-section{border:1px solid var(--usl-neutral-300);border-radius:8px;background:#fff;overflow:hidden;margin-top:12px!important}
+            .usl-scheduler-section--allow-popover{overflow:visible}
             .usl-scheduler-section-heading{padding:9px 10px!important;border-bottom:1px solid var(--usl-neutral-300)!important;margin-bottom:0!important;background:var(--usl-neutral-100);font-weight:700!important;font-size:13px!important}
             .usl-scheduler-section-body{padding:10px}
             .usl-scheduler-summary{border:1px solid var(--usl-neutral-300)!important;border-radius:8px!important;background:linear-gradient(180deg,#fff,var(--usl-neutral-100))!important;margin-bottom:10px!important}

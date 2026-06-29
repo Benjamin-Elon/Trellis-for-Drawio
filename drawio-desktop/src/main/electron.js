@@ -1,4 +1,4 @@
-// Trellis changes: file-system/database bridges, forked support/update URLs, updater guards, app-info metadata. // CHANGE
+// Trellis changes: file-system/database bridges, forked support/update URLs, updater guards, app-info/release metadata. // CHANGE
 /*
  * Trellis update progress change (2026-06-24):
  * Download-only updater progress uses guarded helpers with indeterminate fallback,
@@ -151,6 +151,8 @@ autoUpdater.autoDownload = silentUpdate
 autoUpdater.autoInstallOnAppQuit = silentUpdate
 const trellisReleaseUrl = 'https://github.com/Benjamin-Elon/Trellis-for-Drawio'; // Trellis release: single source for public release links.
 const trellisSupportUrl = `${trellisReleaseUrl}/issues`; // Trellis release: keep support links on the fork.
+const trellisReleasesApiUrl = 'https://api.github.com/repos/Benjamin-Elon/Trellis-for-Drawio/releases?per_page=10'; // NEW
+const trellisReleasesTimeoutMs = 15000; // NEW
 const trellisUpdateProgressTitle = 'Trellis for Drawio Update'; // NEW
 const trellisUpdateProgressText = 'Downloading Trellis for Drawio update...'; // NEW
 let trellisUpdateDownloadInProgress = false; // NEW
@@ -360,6 +362,7 @@ var queryObj = {
 	'mode': 'device',
 	'export': 'https://convert.diagrams.net/node/export',
 	'disableUpdate': disableUpdate ? 1 : 0,
+	'canCheckForUpdates': canCheckForUpdates() ? 1 : 0, // NEW
 	'enableSpellCheck': enableSpellCheck ? 1 : 0,
 	'enableStoreBkp': enableStoreBkp ? 1 : 0,
 	'isGoogleFontsEnabled': isGoogleFontsEnabled ? 1 : 0
@@ -1192,19 +1195,14 @@ app.whenReady().then(() => {
 		if (e != null && e.senderFrame != null &&
 			!validateSender(e.senderFrame)) return null;
 
+		if (!canCheckForUpdates()) return; // CHANGE
+
 		const updateCheckStarted = checkForTrellisUpdates(); // Trellis release: use electron-builder metadata instead of a hard-coded feed.
 
-		if (store != null) {
-			store.set('dontCheckUpdates', false);
-		}
+		if (!updateCheckStarted) return; // CHANGE
 
-		if (!updateCheckStarted) {
-			dialog.showMessageBox({
-				type: 'info',
-				title: 'Updates unavailable',
-				message: 'Update checks are only available in packaged Trellis for Drawio releases.',
-			});
-			return;
+		if (store != null) {
+			store.set('dontCheckUpdates', false); // CHANGE
 		}
 
 		if (!updateNoAvailAdded) {
@@ -1258,11 +1256,6 @@ app.whenReady().then(() => {
 		win.webContents.zoomFactor = 1;
 	};
 
-	let checkForUpdates = {
-		label: 'Check for updates',
-		click: checkForUpdatesFn
-	}
-
 	let zoomIn = {
 		label: 'Zoom In',
 		click: zoomInFn
@@ -1295,8 +1288,6 @@ app.whenReady().then(() => {
 					label: 'Support',
 					click() { shell.openExternal(trellisSupportUrl); } // Trellis release: point Support to this project.
 				},
-				checkForUpdates,
-				{ type: 'separator' },
 				resetZoom,
 				zoomIn,
 				zoomOut,
@@ -1320,10 +1311,6 @@ app.whenReady().then(() => {
 				{ role: 'selectAll' }
 			]
 		}]
-
-		if (disableUpdate) {
-			template[0].submenu.splice(2, 1);
-		}
 
 		const menuBar = menu.buildFromTemplate(template)
 		menu.setApplicationMenu(menuBar)
@@ -2542,6 +2529,27 @@ function getTrellisAppInfo() { // NEW
 	}; // NEW
 } // NEW
 
+async function getTrellisReleases() { // NEW
+	const controller = new AbortController(); // NEW
+	const timeout = setTimeout(() => controller.abort(), trellisReleasesTimeoutMs); // NEW
+
+	try { // NEW
+		const response = await fetch(trellisReleasesApiUrl, { // NEW
+			headers: { Accept: 'application/vnd.github+json' }, // NEW
+			signal: controller.signal // NEW
+		}); // NEW
+
+		if (!response.ok) throw new Error(`GitHub releases request failed: ${response.status}`); // NEW
+
+		const releases = await response.json(); // NEW
+		if (!Array.isArray(releases)) throw new Error('GitHub releases response was not an array'); // NEW
+		return releases; // NEW
+	} // NEW
+	finally { // NEW
+		clearTimeout(timeout); // NEW
+	} // NEW
+} // NEW
+
 function watchFile(filePath) {
 	let win = BrowserWindow.getFocusedWindow();
 
@@ -2638,6 +2646,9 @@ ipcMain.on("rendererReq", async (event, args) => {
 				break;
 			case 'getTrellisAppInfo': // NEW
 				ret = getTrellisAppInfo(); // NEW
+				break; // NEW
+			case 'getTrellisReleases': // NEW
+				ret = await getTrellisReleases(); // NEW
 				break; // NEW
 			case 'restoreBuiltInTrellisDatabase': // NEW
 				ret = restoreBuiltInTrellisDatabase(); // NEW

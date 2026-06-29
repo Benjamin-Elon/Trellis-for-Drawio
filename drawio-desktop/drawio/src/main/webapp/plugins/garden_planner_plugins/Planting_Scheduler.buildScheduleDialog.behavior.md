@@ -81,9 +81,9 @@ The dialog uses two tabs.
    - Validity status
 7. Planting
    - Sow date or planting date
-   - Harvest window days
-   - Minimum yield multiplier
 8. Harvest
+   - Harvest window days <!-- CHANGED -->
+   - Minimum yield multiplier <!-- CHANGED -->
    - First harvest
    - Last harvest
    - Days to first harvest

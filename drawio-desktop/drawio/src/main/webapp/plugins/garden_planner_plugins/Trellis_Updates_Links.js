@@ -179,6 +179,14 @@
         return requestXhrJson(url, options);
     }
 
+    function requestLiveReleases() { // NEW
+        if (window.trellisApp && typeof window.trellisApp.getReleases === "function") { // NEW
+            return window.trellisApp.getReleases(); // NEW
+        } // NEW
+
+        return requestRemoteJson(RELEASES_API_URL, { headers: { Accept: "application/vnd.github+json" } }); // CHANGE
+    } // NEW
+
     function requestLocalJson(url) {
         if (typeof mxUtils !== "undefined" && mxUtils.get) {
             return new Promise(function (resolve, reject) {
@@ -255,14 +263,14 @@
         style.textContent = [
             ".trellis-updates-dialog{font-family:Arial,sans-serif;color:#1f2933;padding:14px;box-sizing:border-box;height:100%;display:flex;flex-direction:column;gap:12px}",
             ".trellis-updates-title{font-size:18px;font-weight:700}",
-            ".trellis-updates-tabs{display:flex;gap:6px;border-bottom:1px solid #d7dde5}",
-            ".trellis-updates-tab{border:1px solid #c9d2de;border-bottom:0;background:#f7f9fb;padding:7px 12px;cursor:pointer;border-radius:4px 4px 0 0}",
-            ".trellis-updates-tab[aria-selected='true']{background:#fff;font-weight:700}",
-            ".trellis-updates-pane{display:none;min-height:0;overflow:auto;flex:1}",
-            ".trellis-updates-pane-active{display:block}",
+            ".trellis-updates-panels{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(260px,.85fr);gap:14px;min-height:0;flex:1}",
+            ".trellis-updates-pane{min-height:0;overflow:auto;border:1px solid #d7dde5;border-radius:4px;background:#fff;padding:12px;box-sizing:border-box}",
+            ".trellis-updates-pane-title{font-size:15px;font-weight:700;margin:0 0 8px}",
+            ".trellis-updates-section-title{font-size:13px;font-weight:700;margin:12px 0 6px}",
             ".trellis-updates-actions{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 12px}",
             ".trellis-updates-btn{border:1px solid #9fb0c2;background:#fff;padding:7px 10px;border-radius:4px;cursor:pointer}",
             ".trellis-updates-btn-primary{background:#2563eb;color:#fff;border-color:#2563eb}",
+            ".trellis-updates-btn:disabled{opacity:.55;cursor:default}",
             ".trellis-updates-status{padding:8px 10px;background:#f5f7fa;border:1px solid #d7dde5;border-radius:4px;margin:8px 0}",
             ".trellis-release-list{max-height:210px;overflow:auto;border:1px solid #d7dde5;border-radius:4px;background:#fff}",
             ".trellis-release{padding:10px;border-bottom:1px solid #e6ebf1}",
@@ -270,11 +278,14 @@
             ".trellis-release-title{font-weight:700}",
             ".trellis-release-meta{font-size:12px;color:#64748b;margin-top:3px}",
             ".trellis-release-summary{margin-top:6px;line-height:1.4}",
-            ".trellis-link-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px}",
-            ".trellis-link-card{border:1px solid #d7dde5;border-radius:4px;padding:10px;background:#fff}",
+            ".trellis-link-group{border:1px solid #d7dde5;border-radius:4px;margin-top:10px;background:#fff}",
+            ".trellis-link-group-title{font-weight:700;padding:8px 10px;border-bottom:1px solid #e6ebf1;background:#f8fafc}",
+            ".trellis-link-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;padding:9px 10px;border-bottom:1px solid #e6ebf1}",
+            ".trellis-link-row:last-child{border-bottom:0}",
             ".trellis-link-title{font-weight:700;margin-bottom:4px}",
             ".trellis-link-value{font-size:12px;color:#475569;word-break:break-word}",
-            ".trellis-empty{color:#64748b;font-style:italic}"
+            ".trellis-empty{color:#64748b;font-style:italic}",
+            "@media (max-width:760px){.trellis-updates-panels{grid-template-columns:1fr}.trellis-updates-pane{max-height:none}}"
         ].join("\n");
         root.appendChild(style);
     }
@@ -361,26 +372,27 @@
 
     function renderLinks(container, appInfo, ui) {
         clearNode(container);
-        const links = [
-            ["Patreon", LINK_CONFIG.patreon],
-            ["YouTube", LINK_CONFIG.youtube],
-            ["GitHub issues", appInfo.issuesUrl],
-            ["GitHub releases", appInfo.releasesUrl],
-            ["Website", LINK_CONFIG.website],
-            ["Email", LINK_CONFIG.email],
-            ["Phone", LINK_CONFIG.phone]
+        const groups = [ // CHANGE
+            ["Support", [["Patreon", LINK_CONFIG.patreon], ["YouTube", LINK_CONFIG.youtube]]], // NEW
+            ["Project", [["GitHub issues", appInfo.issuesUrl], ["GitHub releases", appInfo.releasesUrl]]], // NEW
+            ["Contact", [["Website", LINK_CONFIG.website], ["Email", LINK_CONFIG.email], ["Phone", LINK_CONFIG.phone]]] // NEW
         ];
 
         container.appendChild(createEl("div", "trellis-updates-status", "Contact: " + LINK_CONFIG.name));
-        const grid = createEl("div", "trellis-link-grid");
-        links.forEach(function (entry) {
-            const card = createEl("div", "trellis-link-card");
-            card.appendChild(createEl("div", "trellis-link-title", entry[0]));
-            card.appendChild(createEl("div", "trellis-link-value", entry[1]));
-            card.appendChild(createButton("Open", function () { openLink(ui, entry[1]); }, false));
-            grid.appendChild(card);
+        groups.forEach(function (group) { // CHANGE
+            const groupEl = createEl("div", "trellis-link-group"); // NEW
+            groupEl.appendChild(createEl("div", "trellis-link-group-title", group[0])); // NEW
+            group[1].forEach(function (entry) { // NEW
+                const row = createEl("div", "trellis-link-row"); // NEW
+                const content = createEl("div"); // NEW
+                content.appendChild(createEl("div", "trellis-link-title", entry[0])); // NEW
+                content.appendChild(createEl("div", "trellis-link-value", entry[1])); // NEW
+                row.appendChild(content); // NEW
+                row.appendChild(createButton("Open", function () { openLink(ui, entry[1]); }, false)); // NEW
+                groupEl.appendChild(row); // NEW
+            }); // NEW
+            container.appendChild(groupEl); // NEW
         });
-        container.appendChild(grid);
     }
 
     function buildDialog(ui) {
@@ -389,44 +401,28 @@
         addStyles(root);
         root.appendChild(createEl("div", "trellis-updates-title", ACTION_LABEL));
 
-        const tabs = createEl("div", "trellis-updates-tabs");
-        const updatesTab = createButton("Updates", function () { selectTab("updates"); }, false);
-        const linksTab = createButton("Links", function () { selectTab("links"); }, false);
-        updatesTab.className = "trellis-updates-tab";
-        linksTab.className = "trellis-updates-tab";
-        updatesTab.setAttribute("role", "tab");
-        linksTab.setAttribute("role", "tab");
-        tabs.appendChild(updatesTab);
-        tabs.appendChild(linksTab);
-        root.appendChild(tabs);
-
+        const panels = createEl("div", "trellis-updates-panels"); // NEW
         const updatesPane = createEl("div", "trellis-updates-pane");
         const linksPane = createEl("div", "trellis-updates-pane");
-        root.appendChild(updatesPane);
-        root.appendChild(linksPane);
+        panels.appendChild(updatesPane); // NEW
+        panels.appendChild(linksPane); // NEW
+        root.appendChild(panels); // NEW
 
         const installed = createEl("div", "trellis-updates-status", "Loading app information...");
         const releaseContainer = createEl("div");
         const changelogContainer = createEl("div");
         const actions = createEl("div", "trellis-updates-actions");
         const updateButton = createButton("Check for updates", function () { checkForUpdates(state.appInfo); }, true, { disabled: true, title: getUpdateUnavailableReason(state.appInfo) }); // CHANGE
+        updatesPane.appendChild(createEl("div", "trellis-updates-pane-title", "Updates")); // NEW
         actions.appendChild(updateButton); // CHANGE
         actions.appendChild(createButton("Open GitHub releases", function () { openLink(ui, state.appInfo.releasesUrl); }, false));
-        actions.appendChild(createButton("Retry GitHub releases", function () { loadLiveReleases(releaseContainer, state.appInfo, ui); }, false));
         updatesPane.appendChild(installed);
         updatesPane.appendChild(actions);
-        updatesPane.appendChild(createEl("h3", "", "GitHub releases"));
+        updatesPane.appendChild(createEl("div", "trellis-updates-section-title", "GitHub releases")); // CHANGE
         updatesPane.appendChild(releaseContainer);
-        updatesPane.appendChild(createEl("h3", "", "Local changelog"));
+        updatesPane.appendChild(createEl("div", "trellis-updates-section-title", "Local changelog")); // CHANGE
         updatesPane.appendChild(changelogContainer);
-
-        function selectTab(tabName) {
-            const updatesSelected = tabName === "updates";
-            updatesTab.setAttribute("aria-selected", updatesSelected ? "true" : "false");
-            linksTab.setAttribute("aria-selected", updatesSelected ? "false" : "true");
-            updatesPane.className = updatesSelected ? "trellis-updates-pane trellis-updates-pane-active" : "trellis-updates-pane";
-            linksPane.className = updatesSelected ? "trellis-updates-pane" : "trellis-updates-pane trellis-updates-pane-active";
-        }
+        linksPane.appendChild(createEl("div", "trellis-updates-pane-title", "Links")); // NEW
 
         function updateInstalled(info) {
             clearNode(installed);
@@ -436,7 +432,6 @@
             updateCheckButton(updateButton, info); // NEW
         }
 
-        selectTab("updates");
         renderChangelog(changelogContainer, { entries: [] });
         renderLinks(linksPane, state.appInfo, ui);
         loadAppInfo().then(function (appInfo) {
@@ -453,11 +448,11 @@
     function loadLiveReleases(container, appInfo, ui) {
         clearNode(container);
         container.appendChild(createEl("div", "trellis-updates-status", "Loading GitHub releases..."));
-        return requestRemoteJson(RELEASES_API_URL, { headers: { Accept: "application/vnd.github+json" } }).then(function (data) {
+        return requestLiveReleases().then(function (data) { // CHANGE
             renderReleaseList(container, data, appInfo, ui);
         }).catch(function () {
             clearNode(container);
-            const fallback = createEl("div", "trellis-updates-status", "GitHub releases could not be loaded.");
+            const fallback = createEl("div", "trellis-updates-status", "Live GitHub releases are unavailable right now."); // CHANGE
             fallback.appendChild(createButton("Open GitHub releases", function () { openLink(ui, appInfo.releasesUrl); }, false));
             fallback.appendChild(createButton("Retry", function () { loadLiveReleases(container, appInfo, ui); }, false));
             container.appendChild(fallback);
@@ -469,7 +464,7 @@
         ui.__trellisUpdatesLinksInstalled = true;
 
         ui.actions.addAction(ACTION_ID, function () {
-            ui.showDialog(buildDialog(ui), 720, 540, true, true);
+            ui.showDialog(buildDialog(ui), 960, 620, true, true); // CHANGE
         });
 
         const action = ui.actions.get && ui.actions.get(ACTION_ID);
@@ -499,6 +494,7 @@
             summarizeReleaseBody: summarizeReleaseBody,
             newerThanInstalled: newerThanInstalled,
             requestLocalJson: requestLocalJson,
+            requestLiveReleases: requestLiveReleases, // NEW
             buildDialog: buildDialog,
             getUpdateUnavailableReason: getUpdateUnavailableReason, // NEW
             renderReleaseList: renderReleaseList
