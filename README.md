@@ -2,6 +2,8 @@ Trellis for Drawio extends Draw.io with a coordinated suite of plugins that turn
 
 Several of the plugins depend on local database access, requiring the slightly modified version of Draw.io included in this repository . The only changes are a file system bridge for Database access, and new built-in plugins.
 
+**Licensing:** Trellis for Drawio is a mixed-license distribution. Upstream draw.io and third-party material keep their existing notices, while Trellis-owned additions are source-available for community and noncommercial use. Commercial use of Trellis-owned additions requires written approval and approved ongoing support. See [drawio-desktop/LICENSES.md](drawio-desktop/LICENSES.md). <!-- NEW -->
+
 **Features:**
 
 - Create comprehensive yearly business/garden plans.

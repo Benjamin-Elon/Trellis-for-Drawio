@@ -3951,17 +3951,37 @@ App.prototype.showSplash = function(force)
 	{
 		var dlg = new SplashDialog(this);
 		
-		this.showDialog(dlg.container, 340, (mxClient.IS_CHROMEAPP ||
-			EditorUi.isElectronApp) ? 200 : 230, true, true,
+		this.showDialog(dlg.container, 760, 720, true, true, // CHANGE
 			mxUtils.bind(this, function(cancel, isEsc)
 			{
-				// Creates a blank diagram if the dialog is closed
 				if ((cancel || isEsc) && !mxClient.IS_CHROMEAPP)
 				{
-					var prev = Editor.useLocalStorage;
-					this.createFile(this.defaultFilename + (EditorUi.isElectronApp? '.drawio' : ''),
-						null, null, null, null, null, null, urlParams['local'] != '1');
-					Editor.useLocalStorage = prev;
+					if (dlg.isTrellisLicenseWizardComplete == null || dlg.isTrellisLicenseWizardComplete()) // NEW
+					{ // NEW
+						// Creates a blank diagram if the completed splash is closed // CHANGE
+						var prev = Editor.useLocalStorage; // CHANGE
+						this.createFile(this.defaultFilename + (EditorUi.isElectronApp? '.drawio' : ''), // CHANGE
+							null, null, null, null, null, null, urlParams['local'] != '1'); // CHANGE
+						Editor.useLocalStorage = prev; // CHANGE
+					} // NEW
+					else // NEW
+					{ // NEW
+						if (EditorUi.isElectronApp && typeof electron !== 'undefined' && electron.request != null) // NEW
+						{ // NEW
+							electron.request({ // NEW
+								action: 'exit' // NEW
+							}); // NEW
+						} // NEW
+						else // NEW
+						{ // NEW
+							window.close(); // NEW
+						} // NEW
+						if (dlg.showTrellisExitMessage != null) // NEW
+						{ // NEW
+							dlg.showTrellisExitMessage(); // NEW
+						} // NEW
+						return false; // NEW
+					} // NEW
 				}
 			}), true);
 	});
