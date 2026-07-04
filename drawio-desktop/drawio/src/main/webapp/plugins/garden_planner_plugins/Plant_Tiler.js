@@ -1915,6 +1915,7 @@ Draw.loadPlugin(function (ui) {
         let settingsBtn = null; // CHANGE
         let addBedBtn = null; // CHANGE
         let addGroupBtn = null; // CHANGE
+        let irrigationSourceBtn = null; // NEW
         let activeModuleCell = null; // CHANGE
         let activeBedCell = null; // CHANGE
         let activeOverlayMode = ""; // CHANGE
@@ -1973,9 +1974,11 @@ Draw.loadPlugin(function (ui) {
             settingsBtn = makeButton("Set Garden Settings"); // CHANGE
             addBedBtn = makeButton("Add Garden Bed"); // CHANGE
             addGroupBtn = makeButton("Add New Plant Group"); // CHANGE
+            irrigationSourceBtn = makeButton("Create Irrigation Source"); // NEW
             toolbar.appendChild(settingsBtn); // CHANGE
             toolbar.appendChild(addBedBtn); // CHANGE
             toolbar.appendChild(addGroupBtn); // CHANGE
+            toolbar.appendChild(irrigationSourceBtn); // NEW
 
             mxEvent.addListener(settingsBtn, "click", async function (evt) { // CHANGE
                 mxEvent.consume(evt); // CHANGE
@@ -2007,6 +2010,14 @@ Draw.loadPlugin(function (ui) {
                 hideToolbar(); // CHANGE
             }); // CHANGE
 
+            mxEvent.addListener(irrigationSourceBtn, "click", function (evt) { // NEW
+                mxEvent.consume(evt); // NEW
+                const moduleCell = activeModuleCell; // NEW
+                if (!moduleCell || !hasGardenSettingsSet(moduleCell) || gardenModuleHasIrrigationSource(moduleCell)) return; // NEW
+                openIrrigationSourceFormForModule(moduleCell); // NEW
+                hideToolbar(); // NEW
+            }); // NEW
+
             const host = ensureOverlayHost(); // CHANGE
             if (host) host.appendChild(toolbar); // CHANGE
             return toolbar; // CHANGE
@@ -2015,6 +2026,37 @@ Draw.loadPlugin(function (ui) {
         function hideToolbar() { // CHANGE
             if (toolbar) toolbar.style.display = "none"; // CHANGE
         } // CHANGE
+
+        function gardenModuleHasIrrigationSource(moduleCell) { // NEW
+            return collectModuleDescendants(moduleCell).some(function (cell) { // NEW
+                return getXmlAttr(cell, "irrigation_endpoint_type", "") === "source"; // NEW
+            }); // NEW
+        } // NEW
+
+        function collectModuleDescendants(moduleCell) { // NEW
+            const graphModel = graph.getModel && graph.getModel(); // FIX
+            const out = []; // NEW
+            (function visit(parent) { // NEW
+                const count = graphModel && graphModel.getChildCount ? graphModel.getChildCount(parent) : ((parent && parent.children && parent.children.length) || 0); // FIX
+                for (let i = 0; i < count; i++) { // NEW
+                    const child = graphModel && graphModel.getChildAt ? graphModel.getChildAt(parent, i) : parent.children[i]; // FIX
+                    if (!child) continue; // NEW
+                    out.push(child); // NEW
+                    visit(child); // NEW
+                } // NEW
+            })(moduleCell); // NEW
+            return out; // NEW
+        } // NEW
+
+        function openIrrigationSourceFormForModule(moduleCell) { // NEW
+            if (window.TrellisIrrigationPlanner && typeof window.TrellisIrrigationPlanner.openIrrigationMode === "function") { // NEW
+                window.TrellisIrrigationPlanner.openIrrigationMode(moduleCell, { sourceForm: true, preserveViewport: true }); // NEW
+                return; // NEW
+            } // NEW
+            if (graph.setSelectionCell) graph.setSelectionCell(moduleCell); // NEW
+            const action = ui.actions && ui.actions.get && ui.actions.get("trellisIrrigationCreateSourceEndpoint"); // NEW
+            if (action && typeof action.funct === "function") action.funct(); // NEW
+        } // NEW
 
         openGardenSettingsDialogWithOverlaySuppressed = async function (moduleCell, onClose) { // NEW
             gardenSettingsOverlaySuppressed = true; // NEW
@@ -2137,12 +2179,14 @@ Draw.loadPlugin(function (ui) {
 
         function syncToolbarState() { // CHANGE
             const moduleCell = activeModuleCell; // CHANGE
-            if (!toolbar || !settingsBtn || !addBedBtn || !addGroupBtn || !moduleCell) return; // CHANGE
+            if (!toolbar || !settingsBtn || !addBedBtn || !addGroupBtn || !irrigationSourceBtn || !moduleCell) return; // CHANGE
             const hasSettings = hasGardenSettingsSet(moduleCell); // CHANGE
             const bedMode = activeOverlayMode === "bed"; // CHANGE
+            const showIrrigationSource = !bedMode && !gardenModuleHasIrrigationSource(moduleCell); // NEW
             settingsBtn.style.display = bedMode ? "none" : ""; // CHANGE
             addBedBtn.style.display = bedMode ? "none" : ""; // CHANGE
             addGroupBtn.style.display = ""; // CHANGE
+            irrigationSourceBtn.style.display = showIrrigationSource ? "" : "none"; // NEW
             settingsBtn.textContent = hasSettings ? "Edit Garden Settings" : "Set Garden Settings"; // CHANGE
             addBedBtn.disabled = !hasSettings; // CHANGE
             addBedBtn.title = hasSettings ? "Add the default-sized garden bed at the selected location" : "Set garden settings before adding beds"; // CHANGE
@@ -2152,6 +2196,10 @@ Draw.loadPlugin(function (ui) {
             addGroupBtn.title = hasSettings ? (bedMode ? "Add a new plant group fitted to this garden bed" : "Add a new plant group at the selected location") : "Set garden settings before adding plants"; // CHANGE
             addGroupBtn.style.opacity = hasSettings ? "1" : "0.55"; // CHANGE
             addGroupBtn.style.cursor = hasSettings ? "pointer" : "default"; // CHANGE
+            irrigationSourceBtn.disabled = !hasSettings; // NEW
+            irrigationSourceBtn.title = hasSettings ? "Enter irrigation design mode and create the first irrigation source" : "Set garden settings before creating an irrigation source"; // NEW
+            irrigationSourceBtn.style.opacity = hasSettings ? "1" : "0.55"; // NEW
+            irrigationSourceBtn.style.cursor = hasSettings ? "pointer" : "default"; // NEW
         } // CHANGE
 
         function refreshForSelection() { // CHANGE
