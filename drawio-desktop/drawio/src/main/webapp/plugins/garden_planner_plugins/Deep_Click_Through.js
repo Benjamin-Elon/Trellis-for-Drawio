@@ -82,6 +82,10 @@ Draw.loadPlugin(function (ui) { // CHANGE
         return cell.getAttribute('garden_bed') === '1' || cell.getAttribute('gardenBed') === '1' || cell.getAttribute('is_garden_bed') === '1'; // CHANGE
     } // CHANGE
 
+    function isGardenModule(cell) { // NEW
+        return !!cell && cell.getAttribute && (cell.getAttribute('garden_module') === '1' || cell.getAttribute('trellis_garden_module') === '1'); // NEW
+    } // NEW
+
     function isLodSummary(cell) { // CHANGE
         return !!cell && cell.getAttribute && cell.getAttribute('lod_summary') === '1'; // CHANGE
     } // CHANGE
@@ -227,6 +231,32 @@ Draw.loadPlugin(function (ui) { // CHANGE
         return false; // CHANGE
     } // CHANGE
 
+    function isOnlySelectedCell(graph, cell) { // NEW
+        const selected = graph && graph.getSelectionCells ? (graph.getSelectionCells() || []) : []; // NEW
+        return selected.length === 1 && selected[0] === cell; // NEW
+    } // NEW
+
+    function isDoubleClickOrTextEditClick(evt) { // NEW
+        return !!evt && Number(evt.detail || 0) > 1; // NEW
+    } // NEW
+
+    function shouldDeselectGardenModuleOnPlainClick(graph, cell, evt) { // NEW
+        return !isDoubleClickOrTextEditClick(evt) && isGardenModule(cell) && isOnlySelectedCell(graph, cell); // NEW
+    } // NEW
+
+    function clearSelection(graph) { // NEW
+        if (graph && graph.clearSelection) graph.clearSelection(); // NEW
+        else if (graph && graph.setSelectionCells) graph.setSelectionCells([]); // NEW
+        else if (graph && graph.setSelectionCell) graph.setSelectionCell(null); // NEW
+    } // NEW
+
+    function closeIrrigationModeIfAvailable(graph) { // NEW
+        const graphApi = graph && graph.__trellisIrrigationPlanner; // NEW
+        const windowApi = typeof window !== 'undefined' && window.TrellisIrrigationPlanner; // NEW
+        const close = graphApi && graphApi.closeIrrigationMode || windowApi && windowApi.closeIrrigationMode; // NEW
+        if (typeof close === 'function') close(); // NEW
+    } // NEW
+
     function getDeepestCellForMouseEvent(graph, me, fallback) { // CHANGE
         if (!graph || !me) return fallback || null; // CHANGE
         const pt = mxUtils.convertPoint(graph.container, me.getX(), me.getY()); // CHANGE
@@ -319,6 +349,12 @@ Draw.loadPlugin(function (ui) { // CHANGE
             this.addSelectionCell(cell); // CHANGE
             return; // CHANGE
         } // CHANGE
+
+        if (shouldDeselectGardenModuleOnPlainClick(this, cell, evt)) { // NEW
+            closeIrrigationModeIfAvailable(this); // NEW
+            clearSelection(this); // NEW
+            return; // NEW
+        } // NEW
 
         this.setSelectionCell(cell); // CHANGE
     }; // CHANGE
