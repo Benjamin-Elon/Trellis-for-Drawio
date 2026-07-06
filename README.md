@@ -1,8 +1,6 @@
-Trellis for Drawio extends Draw.io with a coordinated suite of plugins that turn diagrams into a visual garden planning and management system.
+Trellis for Drawio extends Draw.io with a coordinated suite of plugins that turn diagrams into a spacial garden planning and management system.
 
-Several of the plugins depend on local database access, requiring the slightly modified version of Draw.io included in this repository . The only changes are a file system bridge for Database access, and new built-in plugins.
-
-**Licensing:** Trellis for Drawio is a mixed-license distribution. Upstream draw.io and third-party material keep their existing notices, while Trellis-owned additions are source-available for community and noncommercial use. Commercial use of Trellis-owned additions requires written approval and approved ongoing support. See [drawio-desktop/LICENSES.md](drawio-desktop/LICENSES.md). <!-- NEW -->
+**Licensing:** Trellis for Drawio is a mixed-license distribution. Upstream draw.io and third-party material keep their existing notices, while Trellis-owned additions are source-available for community and noncommercial use. Commercial use of Trellis-owned additions requires written approval. See [drawio-desktop/LICENSES.md](drawio-desktop/LICENSES.md).
 
 **Features:**
 
@@ -10,6 +8,7 @@ Several of the plugins depend on local database access, requiring the slightly m
 - Draw beds, garden zones, and modules.
 - Drag crops into place and generate schedules based on climate, GDD, frost windows, and plant traits.
 - Plan multi-crop successions and turnovers.
+- Design irrigation systems.
 - Manage and coordinate tasks with Automated, linked Kanban boards.
 - Build multi-person workflows and ownership using role cards and team modules.
 - Automatically track and visualize when diagram elements were created or edited, using time-based coloring, filtering, and navigation to explore change history directly on the canvas.
@@ -23,6 +22,8 @@ Several of the plugins depend on local database access, requiring the slightly m
 - Urban agriculture projects
 - Designers seeking visual + computational diagrams
 - Anyone who dislikes juggling spreadsheets and calendar apps
+- Ecological Landscapers
+- Plant Nurseries
 
 **Why Draw.io?** 
 
@@ -36,32 +37,32 @@ Draw.io offers:
 
 **To run this:**
 
-1. npm install (in the root directory of this repo)
-2. npm start (in the root directory of this repo runs the app. For debugging, use npm start --enable-logging.)
+1. yarn install (in the root directory of this repo)
+2. yarn.cmd start (in the root directory of this repo runs the app. For debugging, use npm start --enable-logging.)
 
 **To Build The Project:** 
 
 In the root directory of this repo:
-"npm run release-win"
-"npm run release-win32"
-"npm run release-win-arm64"
-"npm run release-appx"
-"npm run release-linux"
-"npm run release-snap"
+1. yarn.cmd release:prepare
 
 
 **Getting started:**
 
-1. Run or build the project.
+1. Install, Run or build the project.
 2. Go to plugin menu (under extras) and install the built in plugins.
 3. Create modules --> team and garden modules
 4. Most actions are in the right click context menu.
 5. **Have Fun and contribute if you so desire!**
+
+I have big plans for this project.
+
+Eventually, I would like this to become a community-level coordination and planning environment.
+
+Collaborative peer-networked diagramming, always local first.  
 
 **High priority TODO Features:**
 - Add automatic fit garden plantings to year plan plugin
 - Add users plugin and extend changeMap plugin with user selector
 - Extend planner to include bed turnover and companion mode
 - Extend scheduler with proper perennial scheduling.
-- Add equipment plugin
-- Add labor plugin (depends on inventory plugin)
+- Add labor plugin
