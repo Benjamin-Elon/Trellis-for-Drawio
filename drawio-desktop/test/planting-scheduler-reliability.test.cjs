@@ -359,9 +359,11 @@ test('lifecycle timeline shows annual direct sow and harvest milestones', () => 
     }); // ADDED
     assert.equal(model.hidden, false); // ADDED
     assert.deepEqual(Array.from(model.visibleMilestones, m => m.stage), ['SOW', 'HARVEST_START', 'HARVEST_END']); // ADDED
+    assert.deepEqual(Array.from(model.visibleMilestones, m => m.abbr), ['S', 'HS', 'HE']); // ADDED
     assert.equal(model.visibleMilestones.find(m => m.stage === 'SOW').iso, '2026-04-01'); // ADDED
     assert.equal(model.visibleMilestones.find(m => m.stage === 'HARVEST_START').iso, '2026-05-01'); // ADDED
     assert.equal(model.visibleMilestones.find(m => m.stage === 'HARVEST_END').iso, '2026-05-08'); // ADDED
+    assert.equal(model.visibleMilestones.find(m => m.stage === 'HARVEST_START').tooltip, 'HS - First harvest: 2026-05-01'); // ADDED
 }); // ADDED
 
 test('lifecycle timeline includes transplant milestone for transplant schedules', () => { // ADDED
@@ -376,6 +378,7 @@ test('lifecycle timeline includes transplant milestone for transplant schedules'
     const transplant = model.visibleMilestones.find(m => m.stage === 'TRANSPLANT'); // ADDED
     assert.ok(transplant); // ADDED
     assert.equal(transplant.iso, '2026-04-22'); // ADDED
+    assert.equal(transplant.abbr, 'T'); // ADDED
 }); // ADDED
 
 test('lifecycle timeline renders all feasible sowing seasons as bands', () => { // ADDED
@@ -440,7 +443,7 @@ test('lifecycle timeline today marker appears only inside range', () => { // ADD
     assert.equal(outside.todayPercent, null); // ADDED
 }); // ADDED
 
-test('lifecycle timeline stacks dense labels and keeps exact stage details', () => { // ADDED
+test('lifecycle timeline hides germination and maturity while retaining marker tooltip text', () => { // CHANGED
     const plant = makePlant(); // ADDED
     const scheduleResult = { // ADDED
         kind: 'annual', // ADDED
@@ -454,9 +457,28 @@ test('lifecycle timeline stacks dense labels and keeps exact stage details', () 
         }] // ADDED
     }; // ADDED
     const model = hooks.buildLifecycleTimelineViewModel({ plant, seasonStartYear: 2026, startISO: '2026-04-01', scheduleResult }); // ADDED
-    assert.ok(model.labelRows.length > 1); // ADDED
-    assert.ok(model.details.includes('Germ: 2026-04-02')); // ADDED
-    assert.ok(model.details.includes('Maturity: 2026-04-04')); // ADDED
+    assert.deepEqual(Array.from(model.visibleMilestones, m => m.stage), ['SOW', 'TRANSPLANT', 'HARVEST_START', 'HARVEST_END']); // CHANGED
+    assert.deepEqual(Array.from(model.visibleMilestones, m => m.abbr), ['S', 'T', 'HS', 'HE']); // ADDED
+    assert.equal(model.milestones.find(m => m.stage === 'GERM').visible, false); // ADDED
+    assert.equal(model.milestones.find(m => m.stage === 'MATURITY').visible, false); // ADDED
+    assert.equal(Object.prototype.hasOwnProperty.call(model, 'labelRows'), false); // ADDED
+    assert.equal(Object.prototype.hasOwnProperty.call(model, 'details'), false); // ADDED
+    assert.equal(model.visibleMilestones.find(m => m.stage === 'SOW').tooltip, 'S - Sow: 2026-04-01\nClick to focus sow date.'); // ADDED
+}); // CHANGED
+
+test('lifecycle timeline marker layout leaves separated markers unshifted', () => { // ADDED
+    const offsets = hooks.layoutLifecycleTimelineMarkerOffsets([{ percent: 10 }, { percent: 30 }], 200, 24); // ADDED
+    assert.deepEqual(Array.from(offsets), [0, 0]); // CHANGED
+}); // ADDED
+
+test('lifecycle timeline marker layout spaces dense markers deterministically', () => { // ADDED
+    const offsets = hooks.layoutLifecycleTimelineMarkerOffsets([{ percent: 50 }, { percent: 55 }], 400, 24); // ADDED
+    assert.deepEqual(Array.from(offsets), [-12, 12]); // CHANGED
+}); // ADDED
+
+test('lifecycle timeline marker layout falls back to zero offsets without width', () => { // ADDED
+    const offsets = hooks.layoutLifecycleTimelineMarkerOffsets([{ percent: 50 }, { percent: 55 }], 0, 24); // ADDED
+    assert.deepEqual(Array.from(offsets), [0, 0]); // CHANGED
 }); // ADDED
 
 test('lifecycle timeline task association uses start anchors only', () => { // ADDED
@@ -1111,6 +1133,26 @@ test('annual sowing seasons derive one continuous season-bound window', () => { 
     assert.equal(result.seasons.length, 1); // ADDED
     assert.equal(result.seasons[0].startISO, '2026-01-01'); // ADDED
     assert.match(result.seasons[0].endISO, /^2026-/); // ADDED
+}); // ADDED
+
+test('indoor transplant sowing season shifts earlier by transplant lead time', () => { // ADDED
+    const plant = makePlant({ days_transplant: 21 }); // ADDED
+    const frostParams = { useSpringFrostGate: true, lastSpringFrostDOY: 100 }; // ADDED
+    const direct = hooks.computeAnnualSowingSeasons({ // ADDED
+        ...makeAutoWindowParams({ plant, methodCategoryId: 'direct_sow', methodId: 'direct_sow.field' }), // ADDED
+        ...frostParams // ADDED
+    }); // ADDED
+    const outdoor = hooks.computeAnnualSowingSeasons({ // ADDED
+        ...makeAutoWindowParams({ plant, methodCategoryId: 'transplant', methodId: 'transplant.outdoor' }), // ADDED
+        ...frostParams // ADDED
+    }); // ADDED
+    const indoor = hooks.computeAnnualSowingSeasons({ // ADDED
+        ...makeAutoWindowParams({ plant, methodCategoryId: 'transplant', methodId: 'transplant.indoor' }), // ADDED
+        ...frostParams // ADDED
+    }); // ADDED
+    assert.equal(direct.seasons[0].startISO, '2026-04-10'); // ADDED
+    assert.equal(outdoor.seasons[0].startISO, '2026-04-10'); // ADDED
+    assert.equal(indoor.seasons[0].startISO, '2026-03-20'); // ADDED
 }); // ADDED
 
 test('hot-climate annual derives separate early and late sowing seasons', () => { // ADDED
@@ -2173,13 +2215,17 @@ test('task preview and save share generated dates before display filtering', asy
         plant, // ADDED
         schedule: result.schedule, // ADDED
         timelines: result.timelines, // ADDED
-        taskTemplate: template // ADDED
+        taskTemplate: template, // ADDED
+        methodCategoryId: 'direct_sow', // ADDED
+        methodId: 'direct_sow.field' // ADDED
     }); // ADDED
     const previewTasks = await hooks.buildTasksForPlan({ // ADDED
         plant, // ADDED
         schedule: result.schedule, // ADDED
         timelines: result.timelines, // ADDED
         taskTemplate: template, // ADDED
+        methodCategoryId: 'direct_sow', // ADDED
+        methodId: 'direct_sow.field', // ADDED
         includePreviewMetadata: true // ADDED
     }); // ADDED
     assert.deepEqual( // ADDED
@@ -2189,6 +2235,11 @@ test('task preview and save share generated dates before display filtering', asy
     assert.equal(Object.keys(savedTasks[0]).includes('previewRuleKey'), false); // ADDED
     assert.equal(Object.keys(previewTasks[0]).includes('previewRuleKey'), false); // ADDED
     assert.equal(previewTasks[0].previewRuleKey, 'water::0'); // ADDED
+    assert.deepEqual( // ADDED
+        previewTasks.map(task => [task.scheduler_method_category_id, task.scheduler_method_id, task.scheduler_task_key, task.scheduler_occurrence_index]), // ADDED
+        savedTasks.map(task => [task.scheduler_method_category_id, task.scheduler_method_id, task.scheduler_task_key, task.scheduler_occurrence_index]) // ADDED
+    ); // ADDED
+    assert.deepEqual(Array.from(savedTasks, task => task.scheduler_task_key), ['water::0::0', 'water::0::1', 'water::0::2']); // ADDED
 }); // ADDED
 
 test('task titles use plant and variety for built-in and custom task rules', async () => { // ADDED
@@ -2376,6 +2427,32 @@ test('perennial task generation omits rules whose annual anchors are missing', a
     assert.equal(tasks[0].rule_id, 'plant'); // ADDED
 }); // ADDED
 
+test('generated tasks include stable scheduler anchor and method metadata', async () => { // ADDED
+    const plant = makePlant({ days_transplant: 21 }); // ADDED
+    const result = hooks.computeScheduleResult(makeInputs({ // ADDED
+        plant, // ADDED
+        planningMode: 'transplant_indoor', // ADDED
+        methodCategoryId: 'transplant', // ADDED
+        methodId: 'transplant.indoor' // ADDED
+    })); // ADDED
+    const tasks = await hooks.buildTasksForPlan({ // ADDED
+        plant, // ADDED
+        schedule: result.schedule, // ADDED
+        timelines: result.timelines, // ADDED
+        methodCategoryId: 'transplant', // ADDED
+        methodId: 'transplant.indoor', // ADDED
+        taskTemplate: { // ADDED
+            rules: [{ id: 'start', title: 'Start indoors {plant}', startAnchorStage: 'SOW', endMode: 'fixed_days', durationDays: 0 }] // ADDED
+        } // ADDED
+    }); // ADDED
+    assert.equal(tasks[0].scheduler_rule_id, 'start'); // ADDED
+    assert.equal(tasks[0].scheduler_anchor_stage, 'SOW'); // ADDED
+    assert.equal(tasks[0].scheduler_method_category_id, 'transplant'); // ADDED
+    assert.equal(tasks[0].scheduler_method_id, 'transplant.indoor'); // ADDED
+    assert.equal(tasks[0].scheduler_task_key, 'start::0::0'); // ADDED
+    assert.equal(tasks[0].scheduler_occurrence_index, 0); // ADDED
+}); // ADDED
+
 test('database persistence failure restores snapshotted graph attributes', async () => {
     const cell = makeAttributeCell({ sow_date: '2026-04-01', method_id: 'direct_sow.field' });
     const patch = { sow_date: '2026-05-01', method_id: 'transplant.indoor', lifespan_end: '2029-12-31' };
@@ -2410,6 +2487,36 @@ test('task dispatch failure restores snapshotted graph attributes', async () => 
     assert.equal(cell.getAttribute('harvest_end'), '2026-06-01');
     assert.equal(cell.value.hasAttribute('lifespan_start'), false);
 });
+
+test('task anchor form state is built from stable scheduler metadata', () => { // ADDED
+    const scheduleCell = makeAttributeCell({ // ADDED
+        plant_id: '7', // ADDED
+        variety_id: '11', // ADDED
+        city_id: '3', // ADDED
+        city_name: 'Test City', // ADDED
+        method_category_id: 'transplant', // ADDED
+        method_id: 'transplant.indoor', // ADDED
+        season_start_year: '2026' // ADDED
+    }); // ADDED
+    const taskCard = makeAttributeCell({ // ADDED
+        scheduler_anchor_stage: 'SOW', // ADDED
+        scheduler_method_category_id: 'transplant', // ADDED
+        scheduler_method_id: 'transplant.indoor' // ADDED
+    }); // ADDED
+    const state = hooks.buildTaskAnchorScheduleFormState({ scheduleCell, taskCard, startISO: '2026-03-20' }); // ADDED
+    assert.equal(state.plantId, 7); // ADDED
+    assert.equal(state.varietyId, 11); // ADDED
+    assert.equal(state.methodId, 'transplant.indoor'); // ADDED
+    assert.equal(state.startISO, '2026-03-20'); // ADDED
+    assert.equal(state.seasonStartYear, 2026); // ADDED
+}); // ADDED
+
+test('task anchor form state rejects invalid dates and stale method metadata', () => { // ADDED
+    const scheduleCell = makeAttributeCell({ plant_id: '7', method_category_id: 'transplant', method_id: 'transplant.outdoor' }); // ADDED
+    const taskCard = makeAttributeCell({ scheduler_method_category_id: 'transplant', scheduler_method_id: 'transplant.indoor' }); // ADDED
+    assert.throws(() => hooks.buildTaskAnchorScheduleFormState({ scheduleCell, taskCard, startISO: 'bad-date' }), /valid start date/); // ADDED
+    assert.throws(() => hooks.resolveTaskAnchorMethod(taskCard, scheduleCell), /task method no longer matches/); // ADDED
+}); // ADDED
 
 test('async UI boundary reports labeled rejection', async () => {
     let reported = '';
@@ -2457,6 +2564,88 @@ test('task replacement creates only the latest supplied task set', () => {
         ['create', latestTasks]
     ]);
 });
+
+function makeGeneratedSyncTask(key, attrs = {}) { // ADDED
+    return { // ADDED
+        title: 'Water', // ADDED
+        startISO: '2026-04-01', // ADDED
+        endISO: '2026-04-01', // ADDED
+        scheduler_task_key: key, // ADDED
+        scheduler_occurrence_index: Number(String(key).split('::').pop() || 0), // ADDED
+        ...attrs // ADDED
+    }; // ADDED
+} // ADDED
+
+function makeGeneratedSyncRecord(key, attrs = {}) { // ADDED
+    return { // ADDED
+        schedulerTaskKey: key, // ADDED
+        source: { // ADDED
+            title: 'Water', // ADDED
+            start: '2026-04-01', // ADDED
+            end: '2026-04-01', // ADDED
+            base_start: '2026-04-01', // ADDED
+            base_end: '2026-04-01', // ADDED
+            scheduler_task_key: key, // ADDED
+            scheduler_occurrence_index: String(Number(String(key).split('::').pop() || 0)), // ADDED
+            ...attrs // ADDED
+        } // ADDED
+    }; // ADDED
+} // ADDED
+
+test('differential task sync planner leaves unchanged generated tasks alone', () => { // ADDED
+    const plan = taskHooks.planDifferentialTaskSync( // ADDED
+        [makeGeneratedSyncRecord('water::0::0')], // ADDED
+        [makeGeneratedSyncTask('water::0::0')] // ADDED
+    ); // ADDED
+    assert.equal(plan.legacyReplace, false); // ADDED
+    assert.equal(plan.creates.length, 0); // ADDED
+    assert.equal(plan.updates.length, 0); // ADDED
+    assert.equal(plan.removes.length, 0); // ADDED
+    assert.equal(plan.unchanged.length, 1); // ADDED
+}); // ADDED
+
+test('differential task sync planner updates changed dates and clears date overrides', () => { // ADDED
+    const task = makeGeneratedSyncTask('water::0::0', { startISO: '2026-04-03', endISO: '2026-04-04' }); // ADDED
+    const plan = taskHooks.planDifferentialTaskSync( // ADDED
+        [makeGeneratedSyncRecord('water::0::0', { date_override: '1', card_note: 'Keep this' })], // ADDED
+        [task] // ADDED
+    ); // ADDED
+    assert.equal(plan.legacyReplace, false); // ADDED
+    assert.equal(plan.updates.length, 1); // ADDED
+    assert.equal(plan.updates[0].record.source.card_note, 'Keep this'); // ADDED
+    const attrs = taskHooks.buildGeneratedTaskSyncAttributes(task); // ADDED
+    assert.equal(attrs.start, '2026-04-03'); // ADDED
+    assert.equal(attrs.base_start, '2026-04-03'); // ADDED
+    assert.equal(attrs.end, '2026-04-04'); // ADDED
+    assert.equal(attrs.date_override, null); // ADDED
+    assert.equal(Object.hasOwn(attrs, 'card_note'), false); // ADDED
+}); // ADDED
+
+test('differential task sync planner creates new tasks and removes missing tasks', () => { // ADDED
+    const plan = taskHooks.planDifferentialTaskSync( // ADDED
+        [makeGeneratedSyncRecord('water::0::0'), makeGeneratedSyncRecord('water::0::1')], // ADDED
+        [makeGeneratedSyncTask('water::0::1'), makeGeneratedSyncTask('water::0::2')] // ADDED
+    ); // ADDED
+    assert.equal(plan.legacyReplace, false); // ADDED
+    assert.deepEqual(Array.from(plan.creates, item => item.key), ['water::0::2']); // ADDED
+    assert.deepEqual(Array.from(plan.removes, item => item.key), ['water::0::0']); // ADDED
+    assert.deepEqual(Array.from(plan.unchanged, item => item.key), ['water::0::1']); // ADDED
+}); // ADDED
+
+test('differential task sync planner matches repeated occurrences by scheduler task key', () => { // ADDED
+    const plan = taskHooks.planDifferentialTaskSync( // ADDED
+        [makeGeneratedSyncRecord('water::0::1'), makeGeneratedSyncRecord('water::0::0')], // ADDED
+        [makeGeneratedSyncTask('water::0::0'), makeGeneratedSyncTask('water::0::1')] // ADDED
+    ); // ADDED
+    assert.equal(plan.legacyReplace, false); // ADDED
+    assert.deepEqual(Array.from(plan.unchanged, item => item.key), ['water::0::0', 'water::0::1']); // ADDED
+}); // ADDED
+
+test('differential task sync planner falls back to replacement for unsafe legacy identities', () => { // ADDED
+    assert.equal(taskHooks.planDifferentialTaskSync([makeGeneratedSyncRecord('water::0::0')], [{ title: 'Legacy' }]).legacyReplace, true); // ADDED
+    assert.equal(taskHooks.planDifferentialTaskSync([{ source: { title: 'Legacy card' } }], [makeGeneratedSyncTask('water::0::0')]).legacyReplace, true); // ADDED
+    assert.equal(taskHooks.planDifferentialTaskSync([makeGeneratedSyncRecord('water::0::0')], [makeGeneratedSyncTask('water::0::0'), makeGeneratedSyncTask('water::0::0')]).legacyReplace, true); // ADDED
+}); // ADDED
 
 test('repeat series identity normalizes links and text without using dates', () => { // NEW
     const first = { // NEW
@@ -2578,8 +2767,43 @@ test('new task cards store scheduler dates as active and baseline dates', () => 
 test('new task cards copy scheduler task type metadata', () => { // NEW
     assert.deepEqual({ ...taskHooks.buildSchedulerTaskMetadataAttributes({ task_type_id: 'watering' }) }, { task_type_id: 'watering' }); // CHANGE
     assert.deepEqual({ ...taskHooks.buildSchedulerTaskMetadataAttributes({ taskTypeId: 'general' }) }, { task_type_id: 'general' }); // CHANGE
+    assert.deepEqual({ ...taskHooks.buildSchedulerTaskMetadataAttributes({ // ADDED
+        rule_id: 'start', // ADDED
+        startAnchorStage: 'SOW', // ADDED
+        methodCategoryId: 'transplant', // ADDED
+        methodId: 'transplant.indoor', // ADDED
+        scheduler_task_key: 'start::0::0', // ADDED
+        scheduler_occurrence_index: 0 // ADDED
+    }) }, { // ADDED
+        scheduler_rule_id: 'start', // ADDED
+        scheduler_anchor_stage: 'SOW', // ADDED
+        scheduler_method_category_id: 'transplant', // ADDED
+        scheduler_method_id: 'transplant.indoor', // ADDED
+        scheduler_task_key: 'start::0::0', // ADDED
+        scheduler_occurrence_index: '0' // ADDED
+    }); // ADDED
     assert.deepEqual({ ...taskHooks.buildSchedulerTaskMetadataAttributes({}) }, {}); // CHANGE
 }); // NEW
+
+test('task editor delegates scheduler sow anchor edits before local date overrides', () => { // ADDED
+    const source = fs.readFileSync(taskManagerPath, 'utf8'); // ADDED
+    const schedulerCall = source.indexOf('tryApplySchedulerAnchorDateEdit(card, startInput.value)'); // ADDED
+    const localOverride = source.indexOf('const datePatch = buildCardDateOverridePatch(card.value, startInput.value)'); // ADDED
+    assert.ok(schedulerCall >= 0, 'expected scheduler anchor edit delegation'); // ADDED
+    assert.ok(localOverride > schedulerCall, 'scheduler anchor edit should run before local override patching'); // ADDED
+    assert.equal(taskHooks.isSchedulerSowAnchorTask({ scheduler_anchor_stage: 'SOW', scheduler_method_id: 'transplant.indoor' }), true); // ADDED
+    assert.equal(taskHooks.isSchedulerSowAnchorTask({ scheduler_anchor_stage: 'TRANSPLANT', scheduler_method_id: 'transplant.indoor' }), false); // ADDED
+}); // ADDED
+
+test('scheduler anchor edits dispatch differential task sync events', () => { // ADDED
+    const schedulerSource = fs.readFileSync(schedulerPath, 'utf8'); // ADDED
+    const taskManagerSource = fs.readFileSync(taskManagerPath, 'utf8'); // ADDED
+    assert.match(schedulerSource, /taskDispatchMode:\s*'sync'/); // ADDED
+    assert.match(schedulerSource, /mode:\s*options\.taskDispatchMode \|\| "replace"/); // ADDED
+    assert.match(taskManagerSource, /replacement\.mode !== 'replace' && replacement\.mode !== 'sync'/); // ADDED
+    assert.match(taskManagerSource, /if \(replacement\.mode === 'sync'\)/); // ADDED
+    assert.match(taskManagerSource, /applyDifferentialTaskSync\(\{\s*targetGroupId,\s*tasks\s*\}\)/); // ADDED
+}); // ADDED
 
 test('manual card date shifts preserve calendar duration across edge cases', () => {
     const cases = [
@@ -2758,7 +2982,10 @@ test('unified card editor exposes notes on all cards and dates only when eligibl
 
 test('combined card saves use one value replacement and reflow only for date changes', () => {
     const source = fs.readFileSync(taskManagerPath, 'utf8');
-    const valueWrites = source.match(/model\.setValue\(card,\s*cloneCardValueWithAttributes\(card,\s*attributes\)\)/g) || [];
+    const commitStart = source.indexOf('function commitCardPatch(card, attributes, opts)'); // CHANGED
+    const commitEnd = source.indexOf('function tryApplySchedulerAnchorDateEdit', commitStart); // CHANGED
+    const commitSource = source.slice(commitStart, commitEnd); // CHANGED
+    const valueWrites = commitSource.match(/model\.setValue\(card,\s*cloneCardValueWithAttributes\(card,\s*attributes\)\)/g) || []; // CHANGED
     assert.equal(valueWrites.length, 1);
     assert.match(source, /function commitCardPatch\(card,\s*attributes,\s*opts\)/);
     assert.match(source, /if \(shouldReflow\) \{\s*scanAndReflowBoard\(board,\s*\{\s*insideUpdate:\s*true\s*\}\)/);

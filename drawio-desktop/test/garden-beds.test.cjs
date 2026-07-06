@@ -68,6 +68,7 @@ function makeXmlCell(document, id, attrs, style = "") { // NEW
 
 function loadPlugin(options = {}) { // NEW
     const dom = new JSDOM("<!doctype html><body><div id='graph'></div></body>"); // NEW
+    if (options.innerHeight != null) Object.defineProperty(dom.window, "innerHeight", { value: options.innerHeight, configurable: true }); // ADDED
     const document = dom.window.document; // NEW
     const root = new TestCell("root"); // NEW
     const moduleCell = appendChild(root, makeXmlCell(document, "module", { garden_module: "1", label: "Garden" }, "swimlane;module=1")); // NEW
@@ -92,7 +93,7 @@ function loadPlugin(options = {}) { // NEW
     const ui = { // NEW
         editor: { graph }, // NEW
         alert(message) { ui.lastAlert = message; }, // NEW
-        showDialog(div) { ui.lastDialog = div; }, // NEW
+        showDialog(div, width, height, modal, closable) { ui.lastDialog = div; ui.lastDialogArgs = { width, height, modal, closable }; }, // CHANGE
         hideDialog() { ui.hidden = true; } // NEW
     }; // NEW
     const context = { // NEW
@@ -133,6 +134,13 @@ function chooseDialogPreset(ui, key) { // NEW
     presetSelect.value = key; // NEW
     presetSelect.dispatchEvent(new ui.lastDialog.ownerDocument.defaultView.Event("change")); // NEW
 } // NEW
+
+function chooseSeasonExtension(ui, value) { // ADDED
+    const seasonSelect = ui.lastDialog.querySelectorAll("select")[8]; // ADDED
+    assert.ok(seasonSelect, "missing season extension select"); // ADDED
+    seasonSelect.value = value; // ADDED
+    seasonSelect.dispatchEvent(new ui.lastDialog.ownerDocument.defaultView.Event("change")); // ADDED
+} // ADDED
 
 function getSelectedBedOverlays(graph) { // NEW
     return Array.from(graph.container.querySelectorAll(".trellis-bed-conditions-overlay")); // NEW
@@ -231,7 +239,7 @@ test("bed dialog exposes copy, paste, and clear actions", () => { // CHANGE
     api.writeBedConditions(bed, { sunExposure: "full_sun", irrigation: "drip", trellis: "available" }); // NEW
 
     api._test.showConditionEditorDialog(bed); // CHANGE
-    assert.deepEqual(getDialogButtonLabels(ui), ["Copy", "Paste", "Clear", "Cancel", "Save"]); // CHANGE
+    assert.deepEqual(getDialogButtonLabels(ui), ["Set as defaults", "Copy", "Paste", "Clear", "Cancel", "Save"]); // CHANGE
     getDialogButton(ui, "Copy").click(); // CHANGE
 
     setup.graph.getSelectionCells = () => [bed, bed2]; // NEW
@@ -285,7 +293,7 @@ test("selected bed overlay opens the bed conditions editor", () => { // NEW
     const button = getSelectedBedOverlays(graph)[0].querySelector("button"); // NEW
     assert.equal(button.textContent, "Set Bed Conditions"); // NEW
     button.click(); // NEW
-    assert.deepEqual(getDialogButtonLabels(ui), ["Copy", "Paste", "Clear", "Cancel", "Save"]); // CHANGE
+    assert.deepEqual(getDialogButtonLabels(ui), ["Set as defaults", "Copy", "Paste", "Clear", "Cancel", "Save"]); // CHANGE
 }); // NEW
 
 test("preset identity persists as selected baseline until cleared", () => { // CHANGE
@@ -328,6 +336,9 @@ test("greenhouse preset persists new infrastructure fields and allows extra prot
     let stored = JSON.parse(bed.getAttribute("bed_conditions_json")); // NEW
     assert.equal(stored.presetKey, "greenhouse"); // NEW
     assert.equal(stored.seasonExtension, "greenhouse"); // NEW
+    assert.equal(stored.seasonExtensionAirOffsetC, 3); // ADDED
+    assert.equal(stored.seasonExtensionSoilOffsetC, 2); // ADDED
+    assert.equal(stored.seasonExtensionFrostShiftDays, -21); // ADDED
     assert.equal(stored.cropProtection, "unknown"); // NEW
     assert.equal(stored.bedUse, "seed_starting"); // NEW
     assert.equal(bed.getAttribute("season_extension"), "greenhouse"); // NEW
@@ -431,15 +442,16 @@ test("season extension defaults and overrides normalize for scheduler use", () =
 test("advanced season extension UI is conditional and saves metric overrides", () => { // NEW
     const { api, bed, ui } = loadPlugin(); // NEW
     api._test.showConditionEditorDialog(bed); // NEW
-    const selects = ui.lastDialog.querySelectorAll("select"); // NEW
     const advanced = ui.lastDialog.querySelector("[data-bed-season-extension-advanced='1']"); // NEW
     assert.ok(advanced, "missing advanced season extension section"); // NEW
     assert.equal(advanced.style.display, "none"); // NEW
-    selects[8].value = "greenhouse"; // NEW
-    selects[8].dispatchEvent(new ui.lastDialog.ownerDocument.defaultView.Event("change")); // NEW
+    chooseSeasonExtension(ui, "greenhouse"); // CHANGE
     assert.equal(advanced.style.display, "block"); // NEW
     assert.match(advanced.textContent, /Defaults: air \+3 C, soil \+2 C, frost -21 days/); // NEW
     const inputs = advanced.querySelectorAll("input[type='number']"); // NEW
+    assert.equal(inputs[0].value, "3"); // ADDED
+    assert.equal(inputs[1].value, "2"); // ADDED
+    assert.equal(inputs[2].value, "-21"); // ADDED
     inputs[0].value = "4.5"; // NEW
     inputs[1].value = "2.25"; // NEW
     inputs[2].value = "-30"; // NEW
@@ -458,12 +470,14 @@ test("advanced season extension UI converts imperial display temperatures to sto
     const { api, moduleCell, bed, ui } = loadPlugin(); // NEW
     moduleCell.value.setAttribute("unit_system", "imperial"); // NEW
     api._test.showConditionEditorDialog(bed); // NEW
-    const selects = ui.lastDialog.querySelectorAll("select"); // NEW
     const advanced = ui.lastDialog.querySelector("[data-bed-season-extension-advanced='1']"); // NEW
-    selects[8].value = "heated_greenhouse"; // NEW
-    selects[8].dispatchEvent(new ui.lastDialog.ownerDocument.defaultView.Event("change")); // NEW
+    chooseSeasonExtension(ui, "heated_greenhouse"); // CHANGE
     assert.match(advanced.textContent, /Defaults: air \+9 F, soil \+5\.4 F, frost -45 days, min 41 F/); // NEW
     const inputs = advanced.querySelectorAll("input[type='number']"); // NEW
+    assert.equal(inputs[0].value, "41"); // ADDED
+    assert.equal(inputs[1].value, "37.4"); // ADDED
+    assert.equal(inputs[2].value, "-45"); // ADDED
+    assert.equal(inputs[3].value, "41"); // ADDED
     inputs[0].value = "41"; // NEW
     inputs[1].value = "37.4"; // NEW
     inputs[2].value = "-60"; // NEW
@@ -476,3 +490,47 @@ test("advanced season extension UI converts imperial display temperatures to sto
     assert.equal(stored.seasonExtensionFrostShiftDays, -60); // NEW
     assert.equal(stored.seasonExtensionMinAirTempC, 10); // NEW
 }); // NEW
+
+test("season extension defaults save on parent module and populate later dialogs", () => { // ADDED
+    const { api, moduleCell, bed, ui } = loadPlugin(); // ADDED
+    api._test.showConditionEditorDialog(bed); // ADDED
+    chooseSeasonExtension(ui, "greenhouse"); // ADDED
+    const advanced = ui.lastDialog.querySelector("[data-bed-season-extension-advanced='1']"); // ADDED
+    const inputs = advanced.querySelectorAll("input[type='number']"); // ADDED
+    inputs[0].value = "4.5"; // ADDED
+    inputs[1].value = "2.25"; // ADDED
+    inputs[2].value = "-30"; // ADDED
+    getDialogButton(ui, "Set as defaults").click(); // ADDED
+    const moduleDefaults = JSON.parse(moduleCell.getAttribute("season_extension_defaults_json")); // ADDED
+    assert.deepEqual(plainRows(moduleDefaults.defaults.greenhouse), { airOffsetC: 4.5, soilOffsetC: 2.25, frostShiftDays: -30, minAirTempC: null }); // ADDED
+    assert.equal(bed.getAttribute("bed_conditions_json"), null); // ADDED
+    getDialogButton(ui, "Cancel").click(); // ADDED
+
+    api._test.showConditionEditorDialog(bed); // ADDED
+    chooseSeasonExtension(ui, "greenhouse"); // ADDED
+    const nextInputs = ui.lastDialog.querySelector("[data-bed-season-extension-advanced='1']").querySelectorAll("input[type='number']"); // ADDED
+    assert.equal(nextInputs[0].value, "4.5"); // ADDED
+    assert.equal(nextInputs[1].value, "2.25"); // ADDED
+    assert.equal(nextInputs[2].value, "-30"); // ADDED
+    assert.deepEqual(plainRows(api._test.seasonExtensionEffects({ seasonExtension: "greenhouse" })), { seasonExtension: "greenhouse", airOffsetC: 3, soilOffsetC: 2, frostShiftDays: -21, minAirTempC: null }); // ADDED
+}); // ADDED
+
+test("advanced season extension controls sit at the bottom of infrastructure", () => { // ADDED
+    const { api, bed, ui } = loadPlugin(); // ADDED
+    api._test.showConditionEditorDialog(bed); // ADDED
+    const advanced = ui.lastDialog.querySelector("[data-bed-season-extension-advanced='1']"); // ADDED
+    assert.ok(advanced, "missing advanced section"); // ADDED
+    assert.equal(advanced.parentNode.firstChild.textContent, "Infrastructure"); // ADDED
+    assert.equal(advanced.parentNode.lastElementChild, advanced); // ADDED
+}); // ADDED
+
+test("bed condition dialog caps to viewport and scrolls its body", () => { // ADDED
+    const { api, bed, ui } = loadPlugin({ innerHeight: 520 }); // ADDED
+    api._test.showConditionEditorDialog(bed); // ADDED
+    const body = ui.lastDialog.querySelector("[data-bed-conditions-dialog-body='1']"); // ADDED
+    assert.equal(ui.lastDialogArgs.height, 440); // ADDED
+    assert.equal(ui.lastDialog.style.display, "flex"); // ADDED
+    assert.equal(ui.lastDialog.style.maxHeight, "440px"); // ADDED
+    assert.equal(body.style.overflowY, "auto"); // ADDED
+    assert.equal(body.style.minHeight, "0px"); // ADDED
+}); // ADDED

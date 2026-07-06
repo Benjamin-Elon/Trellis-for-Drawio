@@ -70,6 +70,46 @@ test('schedule summary keeps non-warning feasibility as plain text', () => { // 
     assert.equal(summaryView.fields.feasibility.textContent, 'The selected sow date is in Spring.'); // ADDED
 }); // ADDED
 
+test('lifecycle marker tooltip shows immediately and avoids native title', () => { // ADDED
+    const document = hooks.__testWindow.document; // ADDED
+    const win = document.defaultView; // ADDED
+    const track = document.createElement('div'); // ADDED
+    const marker = document.createElement('button'); // ADDED
+    const text = 'HS - First harvest: 2026-05-01\nClick to edit the first task rule starting here.'; // ADDED
+    track.style.position = 'relative'; // ADDED
+    marker.setAttribute('data-timeline-percent', '50'); // ADDED
+    marker.setAttribute('data-timeline-offset-px', '0'); // ADDED
+    marker.title = 'Native title should be removed'; // ADDED
+    track.appendChild(marker); // ADDED
+    document.body.appendChild(track); // ADDED
+    hooks.attachLifecycleTimelineMarkerTooltip(marker, track, text); // ADDED
+
+    assert.equal(marker.hasAttribute('title'), false); // ADDED
+    assert.equal(marker.getAttribute('aria-label'), text); // ADDED
+
+    marker.dispatchEvent(new win.MouseEvent('mouseenter')); // ADDED
+    const tooltip = track.querySelector('.usl-lifecycle-marker-tooltip'); // ADDED
+    assert.ok(tooltip); // ADDED
+    assert.equal(tooltip.style.display, 'block'); // ADDED
+    assert.equal(tooltip.textContent, text); // ADDED
+
+    marker.dispatchEvent(new win.MouseEvent('mouseleave')); // ADDED
+    assert.equal(tooltip.style.display, 'none'); // ADDED
+    marker.dispatchEvent(new win.FocusEvent('focus')); // ADDED
+    assert.equal(tooltip.style.display, 'block'); // ADDED
+    marker.dispatchEvent(new win.FocusEvent('blur')); // ADDED
+    assert.equal(tooltip.style.display, 'none'); // ADDED
+    marker.dispatchEvent(new win.FocusEvent('focus')); // ADDED
+    marker.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape' })); // ADDED
+    assert.equal(tooltip.style.display, 'none'); // ADDED
+
+    let clickCount = 0; // ADDED
+    marker.addEventListener('click', () => { clickCount += 1; }); // ADDED
+    marker.dispatchEvent(new win.MouseEvent('click')); // ADDED
+    assert.equal(clickCount, 1); // ADDED
+    track.remove(); // ADDED
+}); // ADDED
+
 test('annual task preview fallback range remains sow through harvest', () => {
     const result = hooks.computeScheduleResult(makeInputs(hooks, { startISO: '2026-04-01' }));
     const range = hooks.resolveTaskPreviewScheduleRange(result);

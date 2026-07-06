@@ -13,7 +13,8 @@ Draw.loadPlugin(function (ui) { // NEW
     if (!model) return; // NEW
 
     const ATTRS = { // NEW
-        BED_JSON: "bed_conditions_json" // NEW
+        BED_JSON: "bed_conditions_json", // CHANGE
+        SEASON_EXTENSION_DEFAULTS_JSON: "season_extension_defaults_json" // ADDED
     }; // NEW
 
     const MIRROR_ATTRS = { // NEW
@@ -220,6 +221,56 @@ Draw.loadPlugin(function (ui) { // NEW
         return SEASON_EXTENSION_EFFECTS[key] || SEASON_EXTENSION_EFFECTS.unknown; // ADDED
     } // ADDED
 
+    function normalizeSeasonExtensionDefault(key, source) { // ADDED
+        const defaults = seasonExtensionDefaults(key); // ADDED
+        const p = source && typeof source === "object" ? source : {}; // ADDED
+        return { // ADDED
+            airOffsetC: normalizeOptionalNumber(p.airOffsetC) ?? defaults.airOffsetC, // ADDED
+            soilOffsetC: normalizeOptionalNumber(p.soilOffsetC) ?? defaults.soilOffsetC, // ADDED
+            frostShiftDays: normalizeOptionalNumber(p.frostShiftDays) ?? defaults.frostShiftDays, // ADDED
+            minAirTempC: key === "heated_greenhouse" ? (normalizeOptionalNumber(p.minAirTempC) ?? defaults.minAirTempC) : null // ADDED
+        }; // ADDED
+    } // ADDED
+
+    function parseSeasonExtensionDefaults(raw) { // ADDED
+        if (!raw) return {}; // ADDED
+        try { // ADDED
+            const parsed = JSON.parse(raw); // ADDED
+            const source = parsed && typeof parsed === "object" && parsed.defaults && typeof parsed.defaults === "object" ? parsed.defaults : parsed; // ADDED
+            const out = {}; // ADDED
+            FIELD_BY_KEY.seasonExtension.values.forEach(function (key) { // ADDED
+                if (key === "unknown" || key === "none" || !source || typeof source[key] !== "object") return; // ADDED
+                out[key] = normalizeSeasonExtensionDefault(key, source[key]); // ADDED
+            }); // ADDED
+            return out; // ADDED
+        } catch (e) { // ADDED
+            return {}; // ADDED
+        } // ADDED
+    } // ADDED
+
+    function readModuleSeasonExtensionDefaults(moduleCell) { // ADDED
+        return parseSeasonExtensionDefaults(getCellAttr(moduleCell, ATTRS.SEASON_EXTENSION_DEFAULTS_JSON, "")); // ADDED
+    } // ADDED
+
+    function resolveSeasonExtensionDefault(targetCell, key) { // ADDED
+        const normalizedKey = normalizeEnumValue("seasonExtension", key); // ADDED
+        const moduleCell = findGardenModuleAncestor(targetCell); // ADDED
+        const moduleDefaults = readModuleSeasonExtensionDefaults(moduleCell); // ADDED
+        return moduleDefaults[normalizedKey] || seasonExtensionDefaults(normalizedKey); // ADDED
+    } // ADDED
+
+    function writeModuleSeasonExtensionDefault(targetCell, key, effect) { // ADDED
+        const normalizedKey = normalizeEnumValue("seasonExtension", key); // ADDED
+        const moduleCell = findGardenModuleAncestor(targetCell); // ADDED
+        if (!moduleCell || normalizedKey === "unknown" || normalizedKey === "none") return null; // ADDED
+        const moduleDefaults = readModuleSeasonExtensionDefaults(moduleCell); // ADDED
+        moduleDefaults[normalizedKey] = normalizeSeasonExtensionDefault(normalizedKey, effect); // ADDED
+        const attrs = {}; // ADDED
+        attrs[ATTRS.SEASON_EXTENSION_DEFAULTS_JSON] = JSON.stringify({ schemaVersion: 1, defaults: moduleDefaults }); // ADDED
+        setCellAttrs(moduleCell, attrs); // ADDED
+        return moduleDefaults[normalizedKey]; // ADDED
+    } // ADDED
+
     function seasonExtensionEffects(profile) { // ADDED
         const p = profile && typeof profile === "object" ? profile : {}; // ADDED
         const key = normalizeEnumValue("seasonExtension", p.seasonExtension); // ADDED
@@ -415,7 +466,7 @@ Draw.loadPlugin(function (ui) { // NEW
     function cToDisplayTemp(c, units) { // ADDED
         const n = Number(c); // ADDED
         if (!Number.isFinite(n)) return ""; // ADDED
-        return units === "imperial" ? String(Math.round((n * 9 / 5 + 32) * 10) / 10) : String(Math.round(n * 10) / 10); // ADDED
+        return units === "imperial" ? String(Math.round((n * 9 / 5 + 32) * 100) / 100) : String(Math.round(n * 100) / 100); // CHANGE
     } // ADDED
 
     function displayTempToC(value, units) { // ADDED
@@ -436,7 +487,12 @@ Draw.loadPlugin(function (ui) { // NEW
     function formatSigned(value, suffix) { // ADDED
         const n = Number(value); // ADDED
         if (!Number.isFinite(n)) return ""; // ADDED
-        return `${n > 0 ? "+" : ""}${Math.round(n * 10) / 10}${suffix || ""}`; // ADDED
+        return `${n > 0 ? "+" : ""}${Math.round(n * 100) / 100}${suffix || ""}`; // CHANGE
+    } // ADDED
+
+    function conditionDialogHeight() { // ADDED
+        const viewportHeight = typeof window !== "undefined" && Number.isFinite(Number(window.innerHeight)) ? Number(window.innerHeight) : 730; // ADDED
+        return Math.max(360, Math.min(650, viewportHeight - 80)); // ADDED
     } // ADDED
 
     function makeSeasonExtensionAdvancedSection(container, targetCell, current, controls) { // ADDED
@@ -444,16 +500,34 @@ Draw.loadPlugin(function (ui) { // NEW
         const tempLabel = units === "imperial" ? "F" : "C"; // ADDED
         const section = appendSection(container, "Advanced season extension"); // ADDED
         section.setAttribute("data-bed-season-extension-advanced", "1"); // ADDED
+        const defaultsRow = document.createElement("div"); // ADDED
+        defaultsRow.style.display = "flex"; // ADDED
+        defaultsRow.style.alignItems = "center"; // ADDED
+        defaultsRow.style.justifyContent = "space-between"; // ADDED
+        defaultsRow.style.gap = "8px"; // ADDED
+        defaultsRow.style.margin = "2px 0 8px"; // ADDED
         const defaults = document.createElement("div"); // ADDED
-        defaults.style.gridColumn = "1 / -1"; // ADDED
+        defaults.style.flex = "1 1 auto"; // ADDED
         defaults.style.fontSize = "12px"; // ADDED
         defaults.style.color = "#374151"; // ADDED
-        defaults.style.margin = "2px 0 8px"; // ADDED
-        section.appendChild(defaults); // ADDED
+        defaultsRow.appendChild(defaults); // ADDED
         const airInput = makeNumberInput(current.seasonExtensionAirOffsetC == null ? "" : cToDisplayTemp(current.seasonExtensionAirOffsetC, units)); // ADDED
         const soilInput = makeNumberInput(current.seasonExtensionSoilOffsetC == null ? "" : cToDisplayTemp(current.seasonExtensionSoilOffsetC, units)); // ADDED
         const frostInput = makeNumberInput(current.seasonExtensionFrostShiftDays); // ADDED
         const minInput = makeNumberInput(current.seasonExtensionMinAirTempC == null ? "" : cToDisplayTemp(current.seasonExtensionMinAirTempC, units)); // ADDED
+        const saveDefaultsButton = mxUtils.button("Set as defaults", function () { // ADDED
+            const key = controls.seasonExtension.value; // ADDED
+            const effect = readInputsAsEffect(key, resolveSeasonExtensionDefault(targetCell, key)); // ADDED
+            model.beginUpdate(); // ADDED
+            try { // ADDED
+                writeModuleSeasonExtensionDefault(targetCell, key, effect); // ADDED
+            } finally { // ADDED
+                model.endUpdate(); // ADDED
+            } // ADDED
+            refresh(); // ADDED
+        }); // ADDED
+        defaultsRow.appendChild(saveDefaultsButton); // ADDED
+        section.appendChild(defaultsRow); // ADDED
         controls.seasonExtensionAirOffsetC = airInput; // ADDED
         controls.seasonExtensionSoilOffsetC = soilInput; // ADDED
         controls.seasonExtensionFrostShiftDays = frostInput; // ADDED
@@ -462,30 +536,57 @@ Draw.loadPlugin(function (ui) { // NEW
         appendField(section, { label: `Soil offset (${tempLabel})` }, soilInput); // ADDED
         appendField(section, { label: "Frost shift (days)" }, frostInput); // ADDED
         appendField(section, { label: `Min air (${tempLabel})` }, minInput); // ADDED
-        function refresh() { // ADDED
+        function setInputsFromEffect(effect) { // ADDED
+            airInput.value = cToDisplayTemp(effect.airOffsetC, units); // ADDED
+            soilInput.value = cToDisplayTemp(effect.soilOffsetC, units); // ADDED
+            frostInput.value = effect.frostShiftDays == null ? "" : String(effect.frostShiftDays); // ADDED
+            minInput.value = effect.minAirTempC == null ? "" : cToDisplayTemp(effect.minAirTempC, units); // ADDED
+        } // ADDED
+        function readInputsAsEffect(key, fallback) { // ADDED
+            return { // ADDED
+                airOffsetC: displayTempToC(airInput.value, units) ?? fallback.airOffsetC, // ADDED
+                soilOffsetC: displayTempToC(soilInput.value, units) ?? fallback.soilOffsetC, // ADDED
+                frostShiftDays: normalizeOptionalNumber(frostInput.value) ?? fallback.frostShiftDays, // ADDED
+                minAirTempC: key === "heated_greenhouse" ? (displayTempToC(minInput.value, units) ?? fallback.minAirTempC) : null // ADDED
+            }; // ADDED
+        } // ADDED
+        function refresh(options) { // ADDED
             const key = controls.seasonExtension.value; // ADDED
             const show = key && key !== "unknown" && key !== "none"; // ADDED
-            const effect = seasonExtensionDefaults(key); // ADDED
+            const effect = resolveSeasonExtensionDefault(targetCell, key); // CHANGE
+            if (options && options.resetValues) setInputsFromEffect(effect); // ADDED
             section.style.display = show ? "block" : "none"; // ADDED
+            saveDefaultsButton.style.display = show ? "" : "none"; // ADDED
             minInput.parentNode.style.display = key === "heated_greenhouse" ? "grid" : "none"; // ADDED
             defaults.textContent = show // ADDED
                 ? `Defaults: air ${formatSigned(units === "imperial" ? effect.airOffsetC * 9 / 5 : effect.airOffsetC, " " + tempLabel)}, soil ${formatSigned(units === "imperial" ? effect.soilOffsetC * 9 / 5 : effect.soilOffsetC, " " + tempLabel)}, frost ${formatSigned(effect.frostShiftDays, " days")}${key === "heated_greenhouse" ? `, min ${cToDisplayTemp(effect.minAirTempC, units)} ${tempLabel}` : ""}. Blank fields use defaults.` // ADDED
                 : ""; // ADDED
         } // ADDED
-        controls.seasonExtension.addEventListener("change", refresh); // ADDED
+        controls.seasonExtension.addEventListener("change", function () { refresh({ resetValues: true }); }); // CHANGE
         refresh(); // ADDED
         return { units, section, refresh }; // CHANGED
     } // ADDED
 
     function showConditionEditorDialog(targetCell) { // NEW
         const current = readBedConditions(targetCell); // NEW
+        const dialogHeight = conditionDialogHeight(); // ADDED
         const div = document.createElement("div"); // NEW
-        div.style.padding = "14px"; // NEW
         div.style.fontSize = "13px"; // NEW
+        div.style.display = "flex"; // ADDED
+        div.style.flexDirection = "column"; // ADDED
+        div.style.height = "100%"; // ADDED
+        div.style.maxHeight = dialogHeight + "px"; // ADDED
+        const body = document.createElement("div"); // ADDED
+        body.setAttribute("data-bed-conditions-dialog-body", "1"); // ADDED
+        body.style.flex = "1 1 auto"; // ADDED
+        body.style.minHeight = "0px"; // CHANGE
+        body.style.overflowY = "auto"; // ADDED
+        body.style.padding = "14px"; // ADDED
+        div.appendChild(body); // ADDED
         const title = document.createElement("h3"); // NEW
         title.textContent = "Bed Conditions"; // NEW
         title.style.margin = "0 0 10px"; // NEW
-        div.appendChild(title); // NEW
+        body.appendChild(title); // CHANGE
 
         const presetRow = document.createElement("label"); // NEW
         presetRow.style.display = "grid"; // NEW
@@ -502,23 +603,23 @@ Draw.loadPlugin(function (ui) { // NEW
         if (current.presetKey) presetSelect.value = current.presetKey; // NEW
         presetRow.appendChild(document.createTextNode("Preset")); // NEW
         presetRow.appendChild(presetSelect); // NEW
-        div.appendChild(presetRow); // NEW
+        body.appendChild(presetRow); // CHANGE
 
         const controls = Object.create(null); // NEW
-        const growing = appendSection(div, "Growing Conditions"); // NEW
+        const growing = appendSection(body, "Growing Conditions"); // CHANGE
         ["sunExposure", "soilMoisture", "drainage", "soilTexture", "fertility"].forEach(function (key) { // NEW
             controls[key] = makeSelect(FIELD_BY_KEY[key], current[key]); // NEW
             appendField(growing, FIELD_BY_KEY[key], controls[key]); // NEW
         }); // NEW
 
-        const infra = appendSection(div, "Infrastructure"); // NEW
+        const infra = appendSection(body, "Infrastructure"); // CHANGE
         ["irrigation", "trellis", "seasonExtension", "cropProtection", "windExposure", "frostRisk"].forEach(function (key) { // CHANGE
             controls[key] = makeSelect(FIELD_BY_KEY[key], current[key]); // NEW
             appendField(infra, FIELD_BY_KEY[key], controls[key]); // NEW
         }); // NEW
-        const advancedSeasonExtension = makeSeasonExtensionAdvancedSection(div, targetCell, current, controls); // ADDED
+        const advancedSeasonExtension = makeSeasonExtensionAdvancedSection(infra, targetCell, current, controls); // CHANGE
 
-        const use = appendSection(div, "Use"); // NEW
+        const use = appendSection(body, "Use"); // CHANGE
         controls.bedUse = makeSelect(FIELD_BY_KEY.bedUse, current.bedUse); // NEW
         appendField(use, FIELD_BY_KEY.bedUse, controls.bedUse); // NEW
 
@@ -536,10 +637,11 @@ Draw.loadPlugin(function (ui) { // NEW
 
         presetSelect.addEventListener("change", function () { // NEW
             const preset = PRESETS[presetSelect.value]; // NEW
-            Object.keys((preset && preset.values) || {}).forEach(function (key) { // NEW
-                if (controls[key]) controls[key].value = preset.values[key]; // NEW
+            const presetValues = (preset && preset.values) || {}; // ADDED
+            Object.keys(presetValues).forEach(function (key) { // CHANGE
+                if (controls[key]) controls[key].value = presetValues[key]; // CHANGE
             }); // NEW
-            advancedSeasonExtension.refresh(); // ADDED
+            advancedSeasonExtension.refresh({ resetValues: Object.prototype.hasOwnProperty.call(presetValues, "seasonExtension") }); // CHANGE
         }); // NEW
 
         function readDialogProfile() { // NEW
@@ -557,6 +659,9 @@ Draw.loadPlugin(function (ui) { // NEW
             return next; // NEW
         } // NEW
 
+        const footer = document.createElement("div"); // ADDED
+        footer.style.flex = "0 0 auto"; // ADDED
+        footer.style.padding = "0 14px 14px"; // ADDED
         const actionRow = document.createElement("div"); // NEW
         actionRow.style.display = "flex"; // NEW
         actionRow.style.justifyContent = "space-between"; // NEW
@@ -587,7 +692,7 @@ Draw.loadPlugin(function (ui) { // NEW
         })); // NEW
 
         actionRow.appendChild(secondaryButtons); // NEW
-        div.appendChild(actionRow); // NEW
+        footer.appendChild(actionRow); // CHANGE
 
         const buttonRow = document.createElement("div"); // NEW
         buttonRow.style.display = "flex"; // NEW
@@ -604,8 +709,9 @@ Draw.loadPlugin(function (ui) { // NEW
             } // NEW
             ui.hideDialog(); // NEW
         })); // NEW
-        div.appendChild(buttonRow); // NEW
-        ui.showDialog(div, 520, 650, true, true); // CHANGE
+        footer.appendChild(buttonRow); // CHANGE
+        div.appendChild(footer); // ADDED
+        ui.showDialog(div, 520, dialogHeight, true, true); // CHANGE
     } // NEW
 
     function isOverlayDisplayValue(key, value) { // NEW

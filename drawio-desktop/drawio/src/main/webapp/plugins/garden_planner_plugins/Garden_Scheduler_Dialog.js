@@ -2705,6 +2705,25 @@ Draw.loadPlugin(function (ui) {
         }; // ADDED
         return labels[stage] || String(stage || 'Milestone'); // ADDED
     } // ADDED
+    function lifecycleTimelineAbbreviation(stage) { // ADDED
+        const abbreviations = { // ADDED
+            SOW: 'S', // ADDED
+            TRANSPLANT: 'T', // ADDED
+            HARVEST_START: 'HS', // ADDED
+            HARVEST_END: 'HE' // ADDED
+        }; // ADDED
+        return abbreviations[stage] || ''; // ADDED
+    } // ADDED
+    function lifecycleTimelineTooltipText(milestone) { // ADDED
+        if (!milestone) return ''; // ADDED
+        const abbr = milestone.abbr || lifecycleTimelineAbbreviation(milestone.stage); // ADDED
+        const label = milestone.label || lifecycleTimelineLabel(milestone.stage); // ADDED
+        const iso = milestone.iso || ''; // ADDED
+        const base = `${abbr} - ${label}: ${iso}`; // ADDED
+        if (milestone.stage === 'SOW') return `${base}\nClick to focus sow date.`; // ADDED
+        if (milestone.hasTaskRule) return `${base}\nClick to edit the first task rule starting here.`; // ADDED
+        return base; // ADDED
+    } // ADDED
     function lifecycleTimelineDateLabel(isoValue, multiYear = false) { // ADDED
         const d = parseISODateUTCValue(isoValue); // ADDED
         if (!d) return ''; // ADDED
@@ -2745,32 +2764,97 @@ Draw.loadPlugin(function (ui) {
         } // ADDED
         return { months, years }; // ADDED
     } // ADDED
+    function layoutLifecycleTimelineMarkerOffsets(milestones, trackWidth, minCenterGapPx = 24) { // ADDED
+        const count = Array.isArray(milestones) ? milestones.length : 0; // ADDED
+        const width = Number(trackWidth); // ADDED
+        const gap = Math.max(1, Number(minCenterGapPx) || 24); // ADDED
+        if (!count || !Number.isFinite(width) || width <= 0) return Array.from({ length: count }, () => 0); // ADDED
+        const points = milestones.map((milestone, index) => ({ // ADDED
+            index, // ADDED
+            percent: Number(milestone?.percent), // ADDED
+            center: (Number(milestone?.percent) / 100) * width // ADDED
+        })).filter(point => Number.isFinite(point.percent) && Number.isFinite(point.center)); // ADDED
+        const offsets = Array.from({ length: count }, () => 0); // ADDED
+        points.sort((a, b) => a.center - b.center || a.index - b.index); // ADDED
+        let cluster = []; // ADDED
+        const flushCluster = () => { // ADDED
+            if (!cluster.length) return; // ADDED
+            const middle = (cluster.length - 1) / 2; // ADDED
+            cluster.forEach((point, clusterIndex) => { // ADDED
+                const rawOffset = (clusterIndex - middle) * gap; // ADDED
+                const minCenter = gap / 2; // ADDED
+                const maxCenter = width - (gap / 2); // ADDED
+                const adjustedCenter = Math.min(maxCenter, Math.max(minCenter, point.center + rawOffset)); // ADDED
+                offsets[point.index] = adjustedCenter - point.center; // ADDED
+            }); // ADDED
+            cluster = []; // ADDED
+        }; // ADDED
+        points.forEach(point => { // ADDED
+            const previous = cluster[cluster.length - 1]; // ADDED
+            if (previous && point.center - previous.center >= gap) flushCluster(); // ADDED
+            cluster.push(point); // ADDED
+        }); // ADDED
+        flushCluster(); // ADDED
+        return offsets; // ADDED
+    } // ADDED
+    function attachLifecycleTimelineMarkerTooltip(marker, trackWrap, text) { // ADDED
+        if (!marker || !trackWrap) return null; // ADDED
+        const doc = marker.ownerDocument || document; // ADDED
+        marker.removeAttribute('title'); // ADDED
+        marker.setAttribute('aria-label', String(text || '')); // ADDED
+        function getTooltip() { // ADDED
+            if (trackWrap.__uslLifecycleMarkerTooltip) return trackWrap.__uslLifecycleMarkerTooltip; // ADDED
+            const tooltip = doc.createElement('div'); // ADDED
+            tooltip.className = 'usl-lifecycle-marker-tooltip'; // ADDED
+            tooltip.setAttribute('role', 'tooltip'); // ADDED
+            tooltip.style.position = 'absolute'; // ADDED
+            tooltip.style.top = '0'; // ADDED
+            tooltip.style.zIndex = '5'; // ADDED
+            tooltip.style.display = 'none'; // ADDED
+            tooltip.style.maxWidth = '220px'; // ADDED
+            tooltip.style.padding = '4px 6px'; // ADDED
+            tooltip.style.borderRadius = '4px'; // ADDED
+            tooltip.style.background = '#111827'; // ADDED
+            tooltip.style.color = '#fff'; // ADDED
+            tooltip.style.fontSize = '11px'; // ADDED
+            tooltip.style.lineHeight = '1.25'; // ADDED
+            tooltip.style.whiteSpace = 'pre-line'; // ADDED
+            tooltip.style.pointerEvents = 'none'; // ADDED
+            trackWrap.__uslLifecycleMarkerTooltip = tooltip; // ADDED
+            trackWrap.appendChild(tooltip); // ADDED
+            return tooltip; // ADDED
+        } // ADDED
+        const hide = () => { // ADDED
+            const tooltip = trackWrap.__uslLifecycleMarkerTooltip; // ADDED
+            if (tooltip) tooltip.style.display = 'none'; // ADDED
+        }; // ADDED
+        const show = () => { // ADDED
+            const tooltip = getTooltip(); // ADDED
+            const percent = Number(marker.getAttribute('data-timeline-percent')); // ADDED
+            const offset = Number(marker.getAttribute('data-timeline-offset-px') || 0); // ADDED
+            tooltip.textContent = String(text || ''); // ADDED
+            tooltip.style.left = Number.isFinite(percent) ? `calc(${percent}% + ${Number.isFinite(offset) ? offset : 0}px)` : marker.style.left; // ADDED
+            tooltip.style.transform = Number.isFinite(percent) && percent <= 5 ? 'translateX(0)' : (Number.isFinite(percent) && percent >= 95 ? 'translateX(-100%)' : 'translateX(-50%)'); // ADDED
+            tooltip.style.display = 'block'; // ADDED
+        }; // ADDED
+        marker.addEventListener('mouseenter', show); // ADDED
+        marker.addEventListener('mouseleave', hide); // ADDED
+        marker.addEventListener('focus', show); // ADDED
+        marker.addEventListener('blur', hide); // ADDED
+        marker.addEventListener('keydown', event => { if (event.key === 'Escape') hide(); }); // ADDED
+        return { show, hide }; // ADDED
+    } // ADDED
     function buildLifecycleTimelineMilestone(stage, dateValue, options = {}) { // ADDED
         const date = dateValue instanceof Date ? dateValue : parseISODateUTCValue(dateValue); // ADDED
         if (!date) return null; // ADDED
         return { // ADDED
             stage, // ADDED
             iso: fmtISO(date), // ADDED
+            abbr: lifecycleTimelineAbbreviation(stage), // ADDED
             label: options.label || lifecycleTimelineLabel(stage), // ADDED
             visible: options.visible !== false, // ADDED
             taskStage: options.taskStage || null // ADDED
         }; // ADDED
-    } // ADDED
-    function assignLifecycleTimelineLabelRows(milestones, minGapPercent = 14, maxRows = 3) { // ADDED
-        const rows = Array.from({ length: Math.max(1, maxRows) }, () => []); // ADDED
-        const sorted = (Array.isArray(milestones) ? milestones : []) // ADDED
-            .filter(milestone => milestone && milestone.visible && Number.isFinite(Number(milestone.percent))) // ADDED
-            .slice() // ADDED
-            .sort((a, b) => a.percent - b.percent); // ADDED
-        sorted.forEach(milestone => { // ADDED
-            let target = rows[0]; // ADDED
-            for (const row of rows) { // ADDED
-                const last = row[row.length - 1]; // ADDED
-                if (!last || Math.abs(milestone.percent - last.percent) >= minGapPercent) { target = row; break; } // ADDED
-            } // ADDED
-            target.push(milestone); // ADDED
-        }); // ADDED
-        return rows.filter(row => row.length); // ADDED
     } // ADDED
     function buildLifecycleTimelineViewModel({ // ADDED
         plant = null, // ADDED
@@ -2827,13 +2911,14 @@ Draw.loadPlugin(function (ui) {
         }).map(milestone => { // ADDED
             const percent = timelinePercentForDate(parseISODateUTCValue(milestone.iso), bounds.start, totalDays); // ADDED
             const taskMatch = milestone.taskStage ? findFirstLifecycleTimelineTaskRule(taskRules, milestone.taskStage, generatedTasks) : null; // ADDED
-            return { // ADDED
+            const enriched = { // ADDED
                 ...milestone, // ADDED
                 percent, // ADDED
                 dateLabel: lifecycleTimelineDateLabel(milestone.iso, bounds.multiYear), // ADDED
                 hasTaskRule: !!taskMatch, // ADDED
                 taskRuleIndex: taskMatch ? taskMatch.originalIndex : null // ADDED
             }; // ADDED
+            return { ...enriched, tooltip: lifecycleTimelineTooltipText(enriched) }; // ADDED
         }).filter(milestone => Number.isFinite(Number(milestone.percent))); // ADDED
         const visibleMilestones = milestones.filter(milestone => milestone.visible); // ADDED
         const todayDate = parseISODateUTCValue(todayISO || fmtISO(new Date())); // ADDED
@@ -2848,8 +2933,6 @@ Draw.loadPlugin(function (ui) {
             axis: buildLifecycleTimelineAxisMarkers(bounds, totalDays), // ADDED
             milestones, // ADDED
             visibleMilestones, // ADDED
-            labelRows: assignLifecycleTimelineLabelRows(visibleMilestones), // ADDED
-            details: milestones.map(milestone => `${milestone.label}: ${milestone.iso}`), // ADDED
             todayISO: todayPercent == null ? null : fmtISO(todayDate), // ADDED
             todayPercent // ADDED
         }; // ADDED
@@ -6725,6 +6808,21 @@ Draw.loadPlugin(function (ui) {
             return el; // ADDED
         } // ADDED
 
+        function applyLifecycleTimelineMarkerOffsets(trackWrap) { // ADDED
+            const markers = Array.from(trackWrap.querySelectorAll('button[data-usl-lifecycle-marker="1"]')); // ADDED
+            const rect = trackWrap.getBoundingClientRect ? trackWrap.getBoundingClientRect() : null; // ADDED
+            const trackWidth = Number(rect?.width || trackWrap.clientWidth || 0); // ADDED
+            const offsets = layoutLifecycleTimelineMarkerOffsets(markers.map(marker => ({ // ADDED
+                percent: Number(marker.getAttribute('data-timeline-percent')) // ADDED
+            })), trackWidth, 24); // ADDED
+            markers.forEach((marker, index) => { // ADDED
+                const percent = Number(marker.getAttribute('data-timeline-percent')); // ADDED
+                const offset = Number(offsets[index] || 0); // ADDED
+                marker.setAttribute('data-timeline-offset-px', String(offset)); // ADDED
+                marker.style.left = Number.isFinite(percent) && offset ? `calc(${percent}% + ${offset}px)` : `${percent}%`; // ADDED
+            }); // ADDED
+        } // ADDED
+
         function renderLifecycleTimelineTrack(model, classification) { // ADDED
             const trackWrap = document.createElement('div'); // ADDED
             trackWrap.style.position = 'relative'; // ADDED
@@ -6771,19 +6869,30 @@ Draw.loadPlugin(function (ui) {
             model.visibleMilestones.forEach(milestone => { // ADDED
                 const marker = document.createElement('button'); // ADDED
                 marker.type = 'button'; // ADDED
+                marker.textContent = milestone.abbr; // ADDED
+                marker.setAttribute('aria-label', milestone.tooltip); // ADDED
+                marker.setAttribute('data-usl-lifecycle-marker', '1'); // ADDED
+                marker.setAttribute('data-timeline-percent', String(milestone.percent)); // ADDED
+                marker.setAttribute('data-timeline-offset-px', '0'); // ADDED
                 marker.style.position = 'absolute'; // ADDED
                 marker.style.left = `${milestone.percent}%`; // ADDED
                 marker.style.top = '16px'; // ADDED
-                marker.style.width = '22px'; // ADDED
-                marker.style.height = '22px'; // ADDED
+                marker.style.width = '24px'; // CHANGED
+                marker.style.height = '24px'; // CHANGED
                 marker.style.padding = '0'; // ADDED
                 marker.style.borderRadius = '50%'; // ADDED
                 marker.style.border = milestone.stage === 'SOW' ? '2px solid #111827' : '2px solid #2563eb'; // ADDED
                 marker.style.background = '#fff'; // ADDED
+                marker.style.boxSizing = 'border-box'; // ADDED
+                marker.style.color = '#111827'; // ADDED
+                marker.style.fontSize = '10px'; // ADDED
+                marker.style.fontWeight = '700'; // ADDED
+                marker.style.lineHeight = '20px'; // ADDED
+                marker.style.textAlign = 'center'; // ADDED
                 marker.style.transform = 'translateX(-50%)'; // ADDED
                 marker.style.cursor = 'pointer'; // ADDED
                 marker.style.zIndex = '2'; // ADDED
-                setTooltip(marker, `${milestone.label}: ${milestone.iso}${milestone.stage === 'SOW' ? '\nClick to focus sow date.' : (milestone.hasTaskRule ? '\nClick to edit the first task rule starting here.' : '')}`); // ADDED
+                attachLifecycleTimelineMarkerTooltip(marker, trackWrap, milestone.tooltip); // CHANGED
                 marker.addEventListener('click', () => { // ADDED
                     void runUiAsync('Timeline action error', async () => { // ADDED
                         await handleLifecycleMilestoneClick(milestone); // CHANGED
@@ -6868,37 +6977,6 @@ Draw.loadPlugin(function (ui) {
             return wrap; // ADDED
         } // ADDED
 
-        function renderLifecycleTimelineLabelRows(model) { // ADDED
-            const wrap = document.createElement('div'); // ADDED
-            wrap.style.display = 'flex'; // ADDED
-            wrap.style.flexDirection = 'column'; // ADDED
-            wrap.style.gap = '2px'; // ADDED
-            wrap.style.minHeight = '32px'; // ADDED
-            model.labelRows.slice(0, 3).forEach(row => { // ADDED
-                const rowEl = document.createElement('div'); // ADDED
-                rowEl.style.position = 'relative'; // ADDED
-                rowEl.style.height = '16px'; // ADDED
-                row.forEach(milestone => { // ADDED
-                    const label = document.createElement('div'); // ADDED
-                    label.textContent = `${milestone.label} ${milestone.dateLabel}`; // ADDED
-                    label.style.position = 'absolute'; // ADDED
-                    label.style.left = `${milestone.percent}%`; // ADDED
-                    label.style.transform = 'translateX(-50%)'; // ADDED
-                    label.style.maxWidth = '120px'; // ADDED
-                    label.style.fontSize = '10px'; // ADDED
-                    label.style.lineHeight = '1.15'; // ADDED
-                    label.style.color = '#374151'; // ADDED
-                    label.style.whiteSpace = 'nowrap'; // ADDED
-                    label.style.overflow = 'hidden'; // ADDED
-                    label.style.textOverflow = 'ellipsis'; // ADDED
-                    setTooltip(label, `${milestone.label}: ${milestone.iso}`); // ADDED
-                    rowEl.appendChild(label); // ADDED
-                }); // ADDED
-                wrap.appendChild(rowEl); // ADDED
-            }); // ADDED
-            return wrap; // ADDED
-        } // ADDED
-
         function renderLifecycleTimelineModel(model, classification) { // ADDED
             timelineWrap.innerHTML = ''; // ADDED
             if (!model || model.hidden) { // ADDED
@@ -6919,12 +6997,10 @@ Draw.loadPlugin(function (ui) {
             bounds.appendChild(startLabel); // ADDED
             bounds.appendChild(endLabel); // ADDED
             timelineWrap.appendChild(bounds); // ADDED
-            timelineWrap.appendChild(renderLifecycleTimelineTrack(model, classification)); // ADDED
+            const track = renderLifecycleTimelineTrack(model, classification); // ADDED
+            timelineWrap.appendChild(track); // CHANGED
+            applyLifecycleTimelineMarkerOffsets(track); // ADDED
             timelineWrap.appendChild(renderLifecycleTimelineAxis(model)); // ADDED
-            timelineWrap.appendChild(renderLifecycleTimelineLabelRows(model)); // ADDED
-            const details = makeTimelineSmallText(model.details.length ? model.details.join(' | ') : 'No lifecycle milestones are available for the current schedule.'); // ADDED
-            details.style.overflowWrap = 'anywhere'; // ADDED
-            timelineWrap.appendChild(details); // ADDED
             const status = makeTimelineSmallText(classification.label); // ADDED
             status.style.color = classification.status === 'feasible' ? '#166534' : '#b91c1c'; // ADDED
             timelineWrap.appendChild(status); // ADDED
@@ -7791,6 +7867,8 @@ Draw.loadPlugin(function (ui) {
                     schedule: result.schedule, // ADDED
                     timelines: result.timelines, // ADDED
                     taskTemplate: { version: 2, rules: taskRules }, // ADDED
+                    methodCategoryId: inputs.methodCategoryId, // ADDED
+                    methodId: inputs.methodId, // ADDED
                     varietyName: inputs.varietyName, // ADDED
                     includePreviewMetadata: true // ADDED
                 }); // ADDED
@@ -8922,6 +9000,8 @@ Draw.loadPlugin(function (ui) {
         schedule, // ADDED
         timelines, // ADDED
         taskTemplate, // ADDED
+        methodCategoryId = '', // ADDED
+        methodId = '', // ADDED
         varietyName = '', // ADDED
         includePreviewMetadata = false // ADDED
     }) { // ADDED
@@ -8982,6 +9062,7 @@ Draw.loadPlugin(function (ui) {
             const previewRuleKey = getTaskPreviewRuleKey(rule, ruleIndex); // ADDED
             occurrences.forEach((occurrence, occurrenceIndex) => { // ADDED
                 if (!occurrence.startISO && !occurrence.endISO) return; // ADDED
+                const schedulerTaskKey = `${previewRuleKey}::${occurrenceIndex}`; // ADDED
                 const task = { // ADDED
                     title, // ADDED
                     startISO: occurrence.startISO || occurrence.endISO, // ADDED
@@ -8990,6 +9071,12 @@ Draw.loadPlugin(function (ui) {
                     variety_name: String(varietyName || '').trim(), // ADDED
                     rule_id: rule.id || null, // ADDED
                     task_type_id: resolveTaskRuleTaskTypeId(rule), // NEW
+                    scheduler_rule_id: rule.id || null, // ADDED
+                    scheduler_anchor_stage: rule.startAnchorStage, // ADDED
+                    scheduler_method_category_id: normId(methodCategoryId), // ADDED
+                    scheduler_method_id: normId(methodId), // ADDED
+                    scheduler_task_key: schedulerTaskKey, // ADDED
+                    scheduler_occurrence_index: occurrenceIndex, // ADDED
                     startAnchorStage: rule.startAnchorStage, // ADDED
                     endMode: rule.endMode // ADDED
                 }; // ADDED
@@ -9728,8 +9815,8 @@ Draw.loadPlugin(function (ui) {
                 methodId
             });
 
-            const detail = {
-                mode: "replace", // FIX: make replacement semantics explicit
+        const detail = {
+                mode: options.taskDispatchMode || "replace", // CHANGED
                 tasks,
                 plantName: plant.plant_name,
                 varietyName: String(varietyName || ''), // ADDED
@@ -9805,6 +9892,150 @@ Draw.loadPlugin(function (ui) {
             restoreGraphPatch
         });
     }
+
+    function readGraphCellAttribute(cell, key) { // ADDED
+        if (cell && typeof cell.getAttribute === 'function') return cell.getAttribute(key); // ADDED
+        return cell?.value && typeof cell.value.getAttribute === 'function' ? cell.value.getAttribute(key) : null; // ADDED
+    } // ADDED
+
+    function normalizeLinkedCellIds(value) { // ADDED
+        return Array.from(new Set(String(value == null ? '' : value) // ADDED
+            .split(',') // ADDED
+            .map(id => id.trim()) // ADDED
+            .filter(Boolean))); // ADDED
+    } // ADDED
+
+    function resolveSingleLinkedScheduleCell(ui, taskCard) { // ADDED
+        const graph = ui?.editor?.graph; // ADDED
+        const model = graph && typeof graph.getModel === 'function' ? graph.getModel() : null; // ADDED
+        if (!model || typeof model.getCell !== 'function') throw new Error('Cannot resolve the linked schedule: graph model is unavailable.'); // ADDED
+        const linkedIds = normalizeLinkedCellIds(readGraphCellAttribute(taskCard, 'linkedTo')); // ADDED
+        if (linkedIds.length !== 1) throw new Error('Scheduler anchor edits require exactly one linked planting group.'); // ADDED
+        const linkedCell = model.getCell(linkedIds[0]); // ADDED
+        if (!linkedCell || !isTilerGroup(linkedCell)) throw new Error('The linked planting group could not be found.'); // ADDED
+        return linkedCell; // ADDED
+    } // ADDED
+
+    function resolveTaskAnchorMethod(taskCard, scheduleCell) { // ADDED
+        const taskMethodCategoryId = normId(readGraphCellAttribute(taskCard, 'scheduler_method_category_id')); // ADDED
+        const taskMethodId = normId(readGraphCellAttribute(taskCard, 'scheduler_method_id')); // ADDED
+        const cellMethodCategoryId = normId(readGraphCellAttribute(scheduleCell, 'method_category_id')); // ADDED
+        const cellMethodId = normId(readGraphCellAttribute(scheduleCell, 'method_id')); // ADDED
+        const methodCategoryId = cellMethodCategoryId || taskMethodCategoryId; // ADDED
+        const methodId = cellMethodId || taskMethodId; // ADDED
+        if (taskMethodCategoryId && cellMethodCategoryId && taskMethodCategoryId !== cellMethodCategoryId) throw new Error('The task method category no longer matches the linked schedule.'); // ADDED
+        if (taskMethodId && cellMethodId && taskMethodId !== cellMethodId) throw new Error('The task method no longer matches the linked schedule.'); // ADDED
+        return { methodCategoryId, methodId }; // ADDED
+    } // ADDED
+
+    function buildTaskAnchorScheduleFormState({ scheduleCell, taskCard, startISO, ui } = {}) { // ADDED
+        const startDate = parseISODateUTCValue(startISO); // ADDED
+        if (!startDate) throw new Error('Enter a valid start date.'); // ADDED
+        const graph = ui?.editor?.graph; // ADDED
+        const model = graph && typeof graph.getModel === 'function' ? graph.getModel() : null; // ADDED
+        const moduleCell = model ? findGardenModuleAncestor(model, scheduleCell) : null; // ADDED
+        const method = resolveTaskAnchorMethod(taskCard, scheduleCell); // ADDED
+        const plantId = finiteNumberOrNull(readGraphCellAttribute(scheduleCell, 'plant_id')); // ADDED
+        if (plantId == null) throw new Error('The linked planting group is missing plant_id.'); // ADDED
+        const varietyId = finiteNumberOrNull(readGraphCellAttribute(scheduleCell, 'variety_id')); // ADDED
+        const cityId = finiteNumberOrNull(readGraphCellAttribute(scheduleCell, 'city_id')) ?? finiteNumberOrNull(readGraphCellAttribute(moduleCell, 'city_id')); // ADDED
+        const cityName = String(readGraphCellAttribute(scheduleCell, 'city_name') || readGraphCellAttribute(moduleCell, 'city_name') || '').trim(); // ADDED
+        const storedSeasonYear = finiteNumberOrNull(readGraphCellAttribute(scheduleCell, 'season_start_year')); // ADDED
+        return { // ADDED
+            plantId, // ADDED
+            varietyId, // ADDED
+            cityId, // ADDED
+            cityName, // ADDED
+            methodCategoryId: method.methodCategoryId, // ADDED
+            methodId: method.methodId, // ADDED
+            startISO: fmtISO(startDate), // ADDED
+            seasonEndISO: '', // ADDED
+            latestHarvestEndISO: '', // ADDED
+            seasonStartYear: storedSeasonYear != null ? Math.trunc(storedSeasonYear) : startDate.getUTCFullYear(), // ADDED
+            harvestWindowDays: finiteNumberOrNull(readGraphCellAttribute(scheduleCell, 'harvest_window_days')), // ADDED
+            minYieldMultiplier: 0, // ADDED
+            climateModelModuleCell: moduleCell, // ADDED
+            climateModelDraftPatch: null, // ADDED
+            climateModelPolicy: DEFAULT_CLIMATE_MODEL_POLICY // ADDED
+        }; // ADDED
+    } // ADDED
+
+    function computeSowingSeasonsForScheduleInputs(inputs) { // ADDED
+        if (!inputs || isPerennialPlant(inputs.plant)) return Object.freeze({ feasible: true, seasons: [] }); // ADDED
+        const derived = inputs.derived(); // ADDED
+        const plant = inputs.plant; // ADDED
+        const env = plant.cropTempEnvelope(); // ADDED
+        return annualCore.computeAnnualSowingSeasons({ // ADDED
+            methodCategoryId: inputs.methodCategoryId, // ADDED
+            methodId: inputs.methodId, // ADDED
+            budget: plant.firstHarvestBudget(), // ADDED
+            HW_DAYS: resolveHarvestWindowDays(inputs.harvestWindowDays, plant), // ADDED
+            dailyRatesMap: derived.dailyRates, // ADDED
+            monthlyAvgTemp: derived.monthlyAvg, // ADDED
+            dailyClimate: derived.dailyClimate, // ADDED
+            Tbase: env.Tbase, // ADDED
+            cropTemp: env, // ADDED
+            scanStart: derived.scanStart, // ADDED
+            scanEndHard: derived.scanEndHard, // ADDED
+            soilGateThresholdC: finiteNumberOrNull(plant.soil_temp_min_plant_c), // ADDED
+            soilGateConsecutiveDays: inputs.policy?.soilGateConsecutiveDays ?? 3, // ADDED
+            startCoolingThresholdC: asCoolingThresholdC(plant.start_cooling_threshold_c), // ADDED
+            useSpringFrostGate: inputs.policy?.useSpringFrostGate !== false, // ADDED
+            lastSpringFrostDOY: pickFrostByRisk(inputs.city, inputs.policy?.springFrostRisk || 'p50'), // ADDED
+            daysTransplant: Number.isFinite(Number(plant.days_transplant)) ? Number(plant.days_transplant) : 0, // ADDED
+            overwinterAllowed: !!inputs.policy?.overwinterAllowed, // ADDED
+            plantMetadata: plant, // ADDED
+            cityLatitudeDeg: finiteNumberOrNull(inputs.city?.latitude ?? inputs.city?.lat), // ADDED
+            bedProfile: inputs.bedProfile, // ADDED
+            bedProfileSource: inputs.bedProfileSource // ADDED
+        }); // ADDED
+    } // ADDED
+
+    async function applyTaskAnchorDateEdit({ ui, taskCard, startISO } = {}) { // ADDED
+        const anchorStage = String(readGraphCellAttribute(taskCard, 'scheduler_anchor_stage') || '').trim().toUpperCase(); // ADDED
+        if (anchorStage !== 'SOW') return { handled: false }; // ADDED
+        const taskMethodCategoryId = normId(readGraphCellAttribute(taskCard, 'scheduler_method_category_id')); // ADDED
+        const taskMethodId = normId(readGraphCellAttribute(taskCard, 'scheduler_method_id')); // ADDED
+        if (taskMethodCategoryId && taskMethodId) { // ADDED
+            const taskBehavior = resolveMethodBehavior({ methodCategoryId: taskMethodCategoryId, methodId: taskMethodId }); // ADDED
+            if (taskBehavior.leadDaysMode !== 'days_transplant') return { handled: false }; // ADDED
+        } // ADDED
+        const scheduleCell = resolveSingleLinkedScheduleCell(ui, taskCard); // ADDED
+        const formState = buildTaskAnchorScheduleFormState({ scheduleCell, taskCard, startISO, ui }); // ADDED
+        const resolvedBehavior = resolveMethodBehavior({ methodCategoryId: formState.methodCategoryId, methodId: formState.methodId }); // ADDED
+        if (resolvedBehavior.leadDaysMode !== 'days_transplant') return { handled: false }; // ADDED
+        const bedContext = resolveScheduleBedContext(scheduleCell); // ADDED
+        formState.bedProfile = bedContext.profile; // ADDED
+        formState.bedProfileSource = bedContext.source; // ADDED
+        const context = await buildScheduleContextFromForm(formState, null, { // ADDED
+            climateModelModuleCell: formState.climateModelModuleCell, // ADDED
+            bedProfile: bedContext.profile, // ADDED
+            bedProfileSource: bedContext.source // ADDED
+        }); // ADDED
+        validateAutoWindowMethodInputs({ // ADDED
+            resolvedBehavior: context.resolvedBehavior, // ADDED
+            daysTransplant: Number(context.plant?.days_transplant) // ADDED
+        }); // ADDED
+        const sowingSeasonResult = computeSowingSeasonsForScheduleInputs(context.inputs); // ADDED
+        const sowingSeasons = normalizeSowingSeasons(sowingSeasonResult.seasons); // ADDED
+        const activeWindow = findSowingSeasonForDate(sowingSeasons, formState.startISO); // ADDED
+        if (!activeWindow) throw new Error('The selected sow date is outside the feasible sowing seasons for this method.'); // ADDED
+        const scheduleResult = computeScheduleResult(context.inputs); // ADDED
+        const taskTemplate = await resolveTaskTemplate({ // ADDED
+            cell: scheduleCell, // ADDED
+            plantId: context.plant?.plant_id, // ADDED
+            varietyId: context.inputs?.varietyId ?? null, // ADDED
+            methodId: context.methodId // ADDED
+        }); // ADDED
+        await applyScheduleToGraph(ui, scheduleCell, context.inputs, { // ADDED
+            result: scheduleResult, // ADDED
+            taskTemplate: taskTemplate?.template ?? null, // ADDED
+            taskDispatchMode: 'sync', // ADDED
+            sowingSeasonId: activeWindow.id || '', // ADDED
+            sowingSeasonLabel: activeWindow.label || '' // ADDED
+        }); // ADDED
+        return { handled: true, targetGroupId: scheduleCell.id || '', sowingSeasonId: activeWindow.id || '' }; // ADDED
+    } // ADDED
 
 
 
@@ -10138,6 +10369,7 @@ Draw.loadPlugin(function (ui) {
     window.USL.scheduler = Object.assign({}, window.USL.scheduler, {
         openScheduleDialog: (ui, cell) => openScheduleDialog(ui, cell),
         openSetPlantDialog: (ui, cell) => openSetPlantDialog(ui, cell), // CHANGE
+        applyTaskAnchorDateEdit: applyTaskAnchorDateEdit, // ADDED
         listPlantOptions: listPlantOptions // NEW
     });
     window.openUSLScheduleDialog = window.USL.scheduler.openScheduleDialog;
@@ -10231,6 +10463,10 @@ Draw.loadPlugin(function (ui) {
             computeStageDatesForPlanting: annualCore.computeStageDatesForPlanting, // CHANGED: expose canonical annual core behavior.
             buildLifecycleTimelineViewModel, // ADDED
             buildLifecycleTimelineAxisMarkers, // ADDED
+            lifecycleTimelineAbbreviation, // ADDED
+            lifecycleTimelineTooltipText, // ADDED
+            layoutLifecycleTimelineMarkerOffsets, // ADDED
+            attachLifecycleTimelineMarkerTooltip, // ADDED
             findFirstLifecycleTimelineTaskRule, // ADDED
             normId, // FIX
             resolveStartAfterWindow // FIX
@@ -10649,6 +10885,10 @@ Draw.loadPlugin(function (ui) {
             updateScheduleSummary, // ADDED
             buildLifecycleTimelineViewModel, // ADDED
             buildLifecycleTimelineAxisMarkers, // ADDED
+            lifecycleTimelineAbbreviation, // ADDED
+            lifecycleTimelineTooltipText, // ADDED
+            layoutLifecycleTimelineMarkerOffsets, // ADDED
+            attachLifecycleTimelineMarkerTooltip, // ADDED
             findFirstLifecycleTimelineTaskRule, // ADDED
             taskRuleLibraryForPlanningMode, // ADDED
             resolveTaskRuleTaskTypeId, // NEW
@@ -10670,6 +10910,12 @@ Draw.loadPlugin(function (ui) {
             applyCellAttributePatch,
             restoreCellAttributeSnapshot,
             runCompensatedSaveSteps,
+            readGraphCellAttribute, // ADDED
+            normalizeLinkedCellIds, // ADDED
+            resolveTaskAnchorMethod, // ADDED
+            buildTaskAnchorScheduleFormState, // ADDED
+            computeSowingSeasonsForScheduleInputs, // ADDED
+            applyTaskAnchorDateEdit, // ADDED
             sharedCore, // CHANGED
             annualCore, // CHANGED
             perennialCore // CHANGED

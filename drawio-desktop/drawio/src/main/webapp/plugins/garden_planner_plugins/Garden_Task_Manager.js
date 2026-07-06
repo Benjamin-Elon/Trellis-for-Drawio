@@ -120,8 +120,96 @@ function buildSchedulerTaskMetadataAttributes(task) { // NEW
     const attrs = {}; // NEW
     const taskTypeId = String(source.task_type_id || source.taskTypeId || '').trim(); // NEW
     if (taskTypeId) attrs.task_type_id = taskTypeId; // NEW
+    const schedulerRuleId = String(source.scheduler_rule_id || source.schedulerRuleId || source.rule_id || '').trim(); // ADDED
+    if (schedulerRuleId) attrs.scheduler_rule_id = schedulerRuleId; // ADDED
+    const schedulerAnchorStage = String(source.scheduler_anchor_stage || source.schedulerAnchorStage || source.startAnchorStage || '').trim(); // ADDED
+    if (schedulerAnchorStage) attrs.scheduler_anchor_stage = schedulerAnchorStage; // ADDED
+    const schedulerMethodCategoryId = String(source.scheduler_method_category_id || source.schedulerMethodCategoryId || source.methodCategoryId || '').trim(); // ADDED
+    if (schedulerMethodCategoryId) attrs.scheduler_method_category_id = schedulerMethodCategoryId; // ADDED
+    const schedulerMethodId = String(source.scheduler_method_id || source.schedulerMethodId || source.methodId || '').trim(); // ADDED
+    if (schedulerMethodId) attrs.scheduler_method_id = schedulerMethodId; // ADDED
+    const schedulerTaskKey = String(source.scheduler_task_key || source.schedulerTaskKey || '').trim(); // ADDED
+    if (schedulerTaskKey) attrs.scheduler_task_key = schedulerTaskKey; // ADDED
+    const schedulerOccurrenceIndex = source.scheduler_occurrence_index ?? source.schedulerOccurrenceIndex; // ADDED
+    if (schedulerOccurrenceIndex !== undefined && schedulerOccurrenceIndex !== null && schedulerOccurrenceIndex !== '') attrs.scheduler_occurrence_index = String(schedulerOccurrenceIndex); // ADDED
     return attrs; // NEW
 } // NEW
+
+function getSchedulerTaskKey(source) { // ADDED
+    return String(readAttributeValue(source, 'scheduler_task_key') || '').trim(); // ADDED
+} // ADDED
+
+function isSchedulerSowAnchorTask(source) { // ADDED
+    return String(readAttributeValue(source, 'scheduler_anchor_stage') || '').trim().toUpperCase() === 'SOW' && // ADDED
+        !!String(readAttributeValue(source, 'scheduler_method_id') || '').trim(); // ADDED
+} // ADDED
+
+function buildGeneratedTaskSyncAttributes(task) { // ADDED
+    const source = task && typeof task === 'object' ? task : {}; // ADDED
+    const attrs = { // ADDED
+        title: String(source.title || 'Task'), // ADDED
+        notes: source.notes ? String(source.notes) : null, // ADDED
+        method: source.method ? String(source.method) : null, // ADDED
+        plant_name: source.plant_name ? String(source.plant_name) : null, // ADDED
+        variety_name: source.variety_name ? String(source.variety_name) : null, // ADDED
+        date_override: null // ADDED
+    }; // ADDED
+    const dates = buildInitialCardDateAttributes(source.startISO, source.endISO); // ADDED
+    if (dates) Object.assign(attrs, dates); // ADDED
+    Object.assign(attrs, buildSchedulerTaskMetadataAttributes(source)); // ADDED
+    return attrs; // ADDED
+} // ADDED
+
+function generatedTaskAttributesDiffer(existingSource, task) { // ADDED
+    const attrs = buildGeneratedTaskSyncAttributes(task); // ADDED
+    return Object.keys(attrs).some(key => { // ADDED
+        const nextValue = attrs[key] == null ? null : String(attrs[key]); // ADDED
+        const current = readAttributeValue(existingSource, key); // ADDED
+        const currentValue = current == null ? null : String(current); // ADDED
+        return currentValue !== nextValue; // ADDED
+    }); // ADDED
+} // ADDED
+
+function hasDuplicateSchedulerKeys(items, readKey) { // ADDED
+    const seen = new Set(); // ADDED
+    for (const item of items || []) { // ADDED
+        const key = readKey(item); // ADDED
+        if (!key) continue; // ADDED
+        if (seen.has(key)) return true; // ADDED
+        seen.add(key); // ADDED
+    } // ADDED
+    return false; // ADDED
+} // ADDED
+
+function planDifferentialTaskSync(existingRecords, tasks) { // ADDED
+    const existing = Array.isArray(existingRecords) ? existingRecords : []; // ADDED
+    const incoming = Array.isArray(tasks) ? tasks : []; // ADDED
+    const taskKey = task => String(task?.scheduler_task_key || task?.schedulerTaskKey || '').trim(); // ADDED
+    const existingKey = record => String(record?.schedulerTaskKey || getSchedulerTaskKey(record?.source || record) || '').trim(); // ADDED
+    if (incoming.some(task => !taskKey(task))) return { legacyReplace: true, creates: [], updates: [], removes: [], unchanged: [] }; // ADDED
+    if (existing.some(record => !existingKey(record))) return { legacyReplace: true, creates: [], updates: [], removes: [], unchanged: [] }; // ADDED
+    if (hasDuplicateSchedulerKeys(incoming, taskKey) || hasDuplicateSchedulerKeys(existing, existingKey)) return { legacyReplace: true, creates: [], updates: [], removes: [], unchanged: [] }; // ADDED
+    const existingByKey = new Map(existing.map(record => [existingKey(record), record])); // ADDED
+    const incomingKeys = new Set(incoming.map(taskKey)); // ADDED
+    const creates = []; // ADDED
+    const updates = []; // ADDED
+    const unchanged = []; // ADDED
+    for (const task of incoming) { // ADDED
+        const key = taskKey(task); // ADDED
+        const record = existingByKey.get(key); // ADDED
+        if (!record) { // ADDED
+            creates.push({ key, task }); // ADDED
+            continue; // ADDED
+        } // ADDED
+        const source = record.source || record; // ADDED
+        if (generatedTaskAttributesDiffer(source, task)) updates.push({ key, record, task }); // ADDED
+        else unchanged.push({ key, record, task }); // ADDED
+    } // ADDED
+    const removes = existing // ADDED
+        .filter(record => !incomingKeys.has(existingKey(record))) // ADDED
+        .map(record => ({ key: existingKey(record), record })); // ADDED
+    return { legacyReplace: false, creates, updates, removes, unchanged }; // ADDED
+} // ADDED
 
 function buildCardDateOverridePatch(source, newStartISO) { // NEW: pure patch builder keeps mutation orchestration small
     const current = getTaskDateRange(source);
@@ -287,6 +375,10 @@ if (typeof globalThis !== 'undefined' && globalThis.__TRELLIS_TASK_MANAGER_TEST_
         getTaskDateRange, // NEW
         buildInitialCardDateAttributes, // NEW
         buildSchedulerTaskMetadataAttributes, // NEW
+        isSchedulerSowAnchorTask, // ADDED
+        getSchedulerTaskKey, // ADDED
+        buildGeneratedTaskSyncAttributes, // ADDED
+        planDifferentialTaskSync, // ADDED
         buildCardDateOverridePatch, // NEW
         buildCardDateResetPatch, // NEW
         isEditableCardDateLane, // NEW
@@ -716,6 +808,14 @@ Draw.loadPlugin(function (ui) {
     function clearCardNote(card) { // NEW
         return setCardNote(card, '');
     }
+
+    async function tryApplySchedulerAnchorDateEdit(card, newStartISO) { // ADDED
+        if (!isSchedulerSowAnchorTask(card && card.value)) return { handled: false }; // ADDED
+        const scheduler = typeof window !== 'undefined' && window.USL && window.USL.scheduler ? window.USL.scheduler : null; // ADDED
+        if (!scheduler || typeof scheduler.applyTaskAnchorDateEdit !== 'function') return { handled: false }; // ADDED
+        const result = await scheduler.applyTaskAnchorDateEdit({ ui, taskCard: card, startISO: newStartISO }); // ADDED
+        return result && result.handled === false ? { handled: false } : { handled: true, result }; // ADDED
+    } // ADDED
 
     function fmtSigned(n) {
         if (n == null) return '';
@@ -1295,6 +1395,86 @@ Draw.loadPlugin(function (ui) {
         });
         return out;
     }
+
+    function rememberBoardForTaskSync(affectedBoards, card) { // ADDED
+        const board = findBoardAncestor(card); // ADDED
+        if (board) affectedBoards.set(board.id, board); // ADDED
+    } // ADDED
+
+    function buildDifferentialTaskSyncRecords(targetGroupId) { // ADDED
+        const grp = targetGroupId ? model.getCell(targetGroupId) : null; // ADDED
+        if (!grp) return null; // ADDED
+        const records = getLinkedCellsOf(grp) // ADDED
+            .filter(cell => isKanbanCard(cell)) // ADDED
+            .filter(card => getLinkSet(card).has(targetGroupId)) // ADDED
+            .map(card => ({ card, source: card.value, schedulerTaskKey: getSchedulerTaskKey(card.value) })); // ADDED
+        return { group: grp, records }; // ADDED
+    } // ADDED
+
+    function applyGeneratedTaskAttributesToCard(card, task, lanes) { // ADDED
+        const attributes = buildGeneratedTaskSyncAttributes(task); // ADDED
+        model.setValue(card, cloneCardValueWithAttributes(card, attributes)); // ADDED
+        putInLane(card, lanes, decideUpcomingLaneKey(task.startISO), true); // ADDED
+        refreshCardLabel(card, true); // ADDED
+    } // ADDED
+
+    function removeOrUnlinkGeneratedTaskCard(targetGroupId, card, affectedBoards) { // ADDED
+        const grp = targetGroupId ? model.getCell(targetGroupId) : null; // ADDED
+        if (!grp) return; // ADDED
+        rememberBoardForTaskSync(affectedBoards, card); // ADDED
+        const cardLinks = getLinkSet(card); // ADDED
+        const groupLinks = getLinkSet(grp); // ADDED
+        groupLinks.delete(card.id); // ADDED
+        setLinkSet(grp, groupLinks); // ADDED
+        if (cardLinks.size <= 1) { // ADDED
+            model.remove(card); // ADDED
+            return; // ADDED
+        } // ADDED
+        cardLinks.delete(targetGroupId); // ADDED
+        setLinkSet(card, cardLinks); // ADDED
+    } // ADDED
+
+    function applyDifferentialTaskSync(opts) { // ADDED
+        opts = opts || {}; // ADDED
+        const targetGroupId = opts.targetGroupId; // ADDED
+        const tasks = normalizeTaskList(opts.tasks); // ADDED
+        const syncSource = buildDifferentialTaskSyncRecords(targetGroupId); // ADDED
+        if (!syncSource) return []; // ADDED
+        const plan = planDifferentialTaskSync(syncSource.records, tasks); // ADDED
+        if (plan.legacyReplace) { // ADDED
+            return applyImmediateTaskReplacement({ // ADDED
+                targetGroupId: targetGroupId, // ADDED
+                tasks: tasks, // ADDED
+                removeTasks: removeTasksLinkedOnlyTo, // ADDED
+                createTasks: createTasks // ADDED
+            }); // ADDED
+        } // ADDED
+        if (!plan.updates.length && !plan.removes.length) { // ADDED
+            if (plan.creates.length) createTasks(plan.creates.map(item => item.task), targetGroupId, { reflow: true }); // ADDED
+            return plan; // ADDED
+        } // ADDED
+
+        const affectedBoards = new Map(); // ADDED
+        const gardenModule = findGardenModuleAncestor(syncSource.group); // ADDED
+        model.beginUpdate(); // ADDED
+        try { // ADDED
+            const template = ensureBoardTemplateIn(gardenModule, { insideUpdate: true }); // ADDED
+            plan.updates.forEach(item => { // ADDED
+                rememberBoardForTaskSync(affectedBoards, item.record.card); // ADDED
+                applyGeneratedTaskAttributesToCard(item.record.card, item.task, template.lanes); // ADDED
+                rememberBoardForTaskSync(affectedBoards, item.record.card); // ADDED
+            }); // ADDED
+            plan.removes.forEach(item => { // ADDED
+                removeOrUnlinkGeneratedTaskCard(targetGroupId, item.record.card, affectedBoards); // ADDED
+            }); // ADDED
+        } finally { // ADDED
+            model.endUpdate(); // ADDED
+        } // ADDED
+
+        if (plan.creates.length) createTasks(plan.creates.map(item => item.task), targetGroupId, { reflow: true }); // ADDED
+        affectedBoards.forEach(board => scanAndReflowBoard(board, { skipPurge: true })); // ADDED
+        return plan; // ADDED
+    } // ADDED
 
 
     // -------------------- Reflow logic --------------------
@@ -2105,7 +2285,7 @@ Draw.loadPlugin(function (ui) {
         const cancelButton = mxUtils.button('Cancel', function () {
             ui.hideDialog();
         });
-        const saveButton = mxUtils.button('Save', function () {
+        const saveButton = mxUtils.button('Save', async function () { // CHANGED
             const attributes = {}; // NEW
             const notePatch = buildCardNotePatch(card.value, noteInput.value); // NEW
             if (notePatch && notePatch.changed) Object.assign(attributes, notePatch.attributes); // NEW
@@ -2122,6 +2302,17 @@ Draw.loadPlugin(function (ui) {
                     error.textContent = 'This card is no longer eligible for date editing.';
                     return;
                 }
+
+                try { // ADDED
+                    const schedulerEdit = await tryApplySchedulerAnchorDateEdit(card, startInput.value); // ADDED
+                    if (schedulerEdit.handled) { // ADDED
+                        ui.hideDialog(); // ADDED
+                        return; // ADDED
+                    } // ADDED
+                } catch (e) { // ADDED
+                    error.textContent = e && e.message ? e.message : String(e); // ADDED
+                    return; // ADDED
+                } // ADDED
 
                 const datePatch = buildCardDateOverridePatch(card.value, startInput.value); // NEW
                 if (!datePatch || datePatch.changed === false) {
@@ -2272,9 +2463,13 @@ Draw.loadPlugin(function (ui) {
         const tasks = replacement.tasks;
         const targetGroupId = replacement.targetGroupId;
 
-        if (replacement.mode !== 'replace' || !targetGroupId) return;
+        if ((replacement.mode !== 'replace' && replacement.mode !== 'sync') || !targetGroupId) return; // CHANGED
 
         setTimeout(function () {
+            if (replacement.mode === 'sync') { // ADDED
+                applyDifferentialTaskSync({ targetGroupId, tasks }); // ADDED
+                return; // ADDED
+            } // ADDED
             applyImmediateTaskReplacement({
                 targetGroupId,
                 tasks,
