@@ -22,20 +22,25 @@ class TestCell { // NEW
 } // NEW
 
 class TestModel { // NEW
-    constructor(root) { this.root = root; this.valuesWritten = 0; this.updateDepth = 0; this.removedCells = []; } // NEW
+    constructor(root) { this.root = root; this.valuesWritten = 0; this.geometryWritten = 0; this.updateDepth = 0; this.removedCells = []; this.completedEdits = []; this.pendingChanges = 0; this.listeners = new Map(); } // CHANGE
     getRoot() { return this.root; } // NEW
     getParent(cell) { return cell && cell.parent ? cell.parent : null; } // NEW
     getChildCount(cell) { return cell && cell.children ? cell.children.length : 0; } // NEW
     getChildAt(cell, index) { return cell.children[index]; } // NEW
     getGeometry(cell) { return cell && cell.geometry; } // NEW
-    setValue(cell, value) { cell.value = value; this.valuesWritten += 1; } // NEW
-    setGeometry(cell, value) { cell.geometry = value; } // NEW
+    setValue(cell, value) { cell.value = value; this.valuesWritten += 1; this.recordChange("value"); } // CHANGE
+    setGeometry(cell, value) { cell.geometry = value; this.geometryWritten += 1; this.recordChange("geometry"); } // CHANGE
     remove(cell) { // NEW
         this.removedCells.push(cell); // NEW
         if (cell && cell.parent && cell.parent.children) cell.parent.children = cell.parent.children.filter(child => child !== cell); // NEW
+        this.recordChange("remove"); // NEW
     } // NEW
     beginUpdate() { this.updateDepth += 1; } // NEW
-    endUpdate() { this.updateDepth -= 1; } // NEW
+    endUpdate() { this.updateDepth -= 1; if (this.updateDepth === 0 && this.pendingChanges > 0) { const edit = { changes: this.pendingChanges }; this.completedEdits.push(edit); this.pendingChanges = 0; this.fire("undo", edit); } } // CHANGE
+    recordChange(_kind) { if (this.updateDepth > 0) this.pendingChanges += 1; else this.completedEdits.push({ changes: 1 }); } // NEW
+    addListener(event, listener) { if (!this.listeners.has(event)) this.listeners.set(event, []); this.listeners.get(event).push(listener); } // NEW
+    removeListener(listener) { this.listeners.forEach(list => { const index = list.indexOf(listener); if (index >= 0) list.splice(index, 1); }); } // NEW
+    fire(event, edit) { (this.listeners.get(event) || []).forEach(listener => listener(this, { getProperty(key) { return key === "edit" ? edit : null; } })); } // NEW
 } // NEW
 
 function appendChild(parent, child) { // NEW
@@ -69,6 +74,7 @@ function loadPlugin(options = {}) { // NEW
     Object.defineProperty(container, "clientWidth", { value: options.clientWidth || 1000, configurable: true }); // NEW
     Object.defineProperty(container, "clientHeight", { value: options.clientHeight || 700, configurable: true }); // NEW
     const model = new TestModel(root); // NEW
+    const undoManager = options.undoManager || { undoCalls: 0, redoCalls: 0, undo() { this.undoCalls += 1; if (this.onUndo) this.onUndo(); }, redo() { this.redoCalls += 1; if (this.onRedo) this.onRedo(); } }; // NEW
     let nextId = 1; // NEW
     const actions = new Map(); // NEW
     const selectionListeners = []; // NEW
@@ -120,17 +126,22 @@ function loadPlugin(options = {}) { // NEW
             (graphListeners.get("cellsAdded") || []).forEach(listener => listener(this, { getProperty(key) { return key === "cells" ? cells : null; } })); // NEW
             (graphListeners.get("addCells") || []).forEach(listener => listener(this, { getProperty(key) { return key === "cells" ? cells : null; } })); // NEW
         }, // NEW
+        fireCellsRemoved(cells) { // NEW
+            (graphListeners.get("cellsRemoved") || []).forEach(listener => listener(this, { getProperty(key) { return key === "cells" ? cells : null; } })); // NEW
+            (graphListeners.get("removeCells") || []).forEach(listener => listener(this, { getProperty(key) { return key === "cells" ? cells : null; } })); // NEW
+        }, // NEW
         getCellAt() { return null; }, // NEW
-        insertVertex(parent, id, label, x, y, width, height, style) { return appendChild(parent, new TestCell(id || "v" + nextId++, label || "", { x, y, width, height }, style || "")); }, // NEW
+        insertVertex(parent, id, label, x, y, width, height, style) { const cell = appendChild(parent, new TestCell(id || "v" + nextId++, label || "", { x, y, width, height }, style || "")); model.recordChange("insertVertex"); return cell; }, // CHANGE
         insertEdge(parent, id, label, source, target, style) { // NEW
             const edge = appendChild(parent, new TestCell(id || "e" + nextId++, label || "", { points: [] }, style || "")); // NEW
             edge.source = source; // NEW
             edge.target = target; // NEW
+            model.recordChange("insertEdge"); // NEW
             return edge; // NEW
         } // NEW
     }; // NEW
     const ui = { // NEW
-        editor: { graph }, // NEW
+        editor: { graph, undoManager }, // CHANGE
         actions: { addAction(id, fn) { actions.set(id, { funct: fn }); } }, // NEW
         showDialog(node) { ui.lastDialog = node; ui.hidden = false; ui.showCount = (ui.showCount || 0) + 1; }, // NEW
         hideDialog() { ui.hidden = true; ui.hideCount = (ui.hideCount || 0) + 1; }, // NEW
@@ -145,7 +156,7 @@ function loadPlugin(options = {}) { // NEW
         clearTimeout, // NEW
         alert(message) { context.lastAlert = message; }, // NEW
         Draw: { loadPlugin(callback) { callback(ui); } }, // NEW
-        mxEvent: { CHANGE: "change", CLICK: "click", CELLS_ADDED: "cellsAdded", ADD_CELLS: "addCells", SCALE: "scale", TRANSLATE: "translate", SCALE_AND_TRANSLATE: "scaleAndTranslate", getClientX(evt) { return evt && evt.clientX || 0; }, getClientY(evt) { return evt && evt.clientY || 0; } }, // CHANGE
+        mxEvent: { CHANGE: "change", CLICK: "click", CELLS_ADDED: "cellsAdded", ADD_CELLS: "addCells", CELLS_REMOVED: "cellsRemoved", REMOVE_CELLS: "removeCells", UNDO: "undo", REDO: "redo", SCALE: "scale", TRANSLATE: "translate", SCALE_AND_TRANSLATE: "scaleAndTranslate", getClientX(evt) { return evt && evt.clientX || 0; }, getClientY(evt) { return evt && evt.clientY || 0; } }, // CHANGE
         mxUtils: { // NEW
             convertPoint(_container, x, y) { return { x, y }; }, // NEW
             createXmlDocument() { return document.implementation.createDocument("", "", null); }, // NEW
@@ -154,7 +165,7 @@ function loadPlugin(options = {}) { // NEW
         } // NEW
     }; // NEW
     vm.runInNewContext(fs.readFileSync(PLUGIN_PATH, "utf8"), context, { filename: PLUGIN_PATH }); // NEW
-    return { api: graph.__trellisIrrigationPlanner, graph, model, root, moduleCell, bed, bed2, document, ui, actions }; // NEW
+    return { api: graph.__trellisIrrigationPlanner, graph, model, root, moduleCell, bed, bed2, document, ui, actions, undoManager }; // CHANGE
 } // NEW
 
 function absoluteGeometry(cell) { // NEW
@@ -674,14 +685,16 @@ test("starter catalog upgrade merges new parts into existing catalogs without ov
     assert.equal(upgraded.items.some(item => item.id === "push_connect_tubing_3_4"), false); // NEW
 }); // NEW
 
-test("source commit creates a source assembly at the latest click point and HUD follows zoom events", () => { // NEW
-    const { api, graph, moduleCell, actions } = loadPlugin(); // NEW
+test("source commit creates one undoable edit at the latest click point and HUD follows zoom events", async () => { // CHANGE
+    const { api, graph, model, moduleCell, actions } = loadPlugin(); // CHANGE
     api.writeCatalog(moduleCell, sampleCatalog()); // NEW
     actions.get("trellisIrrigationPlanner").funct(); // NEW
     graph.fireMouseMove(310, 180); // NEW
     clickButton(graph.container, "Create Source"); // NEW
+    model.completedEdits = []; // NEW
     clickButton(graph.container, "Commit Source"); // NEW
     const sourceAssembly = assemblyCells(moduleCell, api)[0]; // NEW
+    assert.equal(model.completedEdits.length, 1); // NEW
     assert.equal(sourceAssembly.getAttribute(api.attrs.ASSEMBLY_TYPE), "source"); // NEW
     assert.equal(sourceAssembly.geometry.x, 310); // NEW
     assert.equal(sourceAssembly.geometry.y, 180); // NEW
@@ -692,10 +705,13 @@ test("source commit creates a source assembly at the latest click point and HUD 
     graph.view.scale = 1.4; // NEW
     graph.view.fire("scale"); // NEW
     assert.ok(graph.container.querySelector(".trellis-irrigation-mode-hud")); // NEW
+    const writesAfterCommit = model.valuesWritten; // NEW
+    await new Promise(resolve => setTimeout(resolve, 260)); // NEW
+    assert.equal(model.valuesWritten, writesAfterCommit); // NEW
 }); // NEW
 
-test("Add Part groups global options and creates an unconnected assembly without context", () => { // CHANGE
-    const { api, graph, moduleCell, actions } = loadPlugin(); // NEW
+test("Add Part groups global options and creates one undoable unconnected assembly without context", () => { // CHANGE
+    const { api, graph, model, moduleCell, actions } = loadPlugin(); // CHANGE
     api.writeCatalog(moduleCell, sampleCatalog()); // NEW
     actions.get("trellisIrrigationPlanner").funct(); // NEW
     assert.match(graph.container.textContent, /Add Part/); // NEW
@@ -708,8 +724,10 @@ test("Add Part groups global options and creates an unconnected assembly without
     assert.ok(groups.includes("In stock / Distribution")); // NEW
     assert.ok(groups.includes("Needs purchase / Water application")); // NEW
     select.value = "filter"; // NEW
+    model.completedEdits = []; // NEW
     clickButton(form, "Add Part"); // CHANGE
     const partAssembly = assemblyCells(moduleCell, api)[0]; // NEW
+    assert.equal(model.completedEdits.length, 1); // NEW
     assert.equal(partAssembly.getAttribute(api.attrs.ASSEMBLY_TYPE), "parts"); // NEW
     assert.equal(api.__test.firstAssemblyPart(partAssembly).getAttribute(api.attrs.CATALOG_PART_ID), "filter"); // NEW
     assert.equal(partAssembly.geometry.x, 360); // NEW
@@ -929,18 +947,55 @@ test("occupied branch dropdown disconnects incompatible old branch and creates a
     assert.equal(assemblyCells(moduleCell, api).filter(cell => cell.getAttribute(api.attrs.ASSEMBLY_TYPE) === "parts").length, assemblyCountBefore + 1); // CHANGE
 }); // NEW
 
-test("drag-created compatible edges normalize into Pipe Edges and ignore connector method", () => { // NEW
-    const { api, graph, moduleCell } = loadPlugin(); // NEW
+test("drag-created compatible edges normalize into one redoable edit", () => { // CHANGE
+    const { api, graph, model, moduleCell } = loadPlugin(); // CHANGE
     api.writeCatalog(moduleCell, sampleCatalog()); // NEW
     const source = api.__test.createSourceAssembly(moduleCell, "Spray Source", { connectorType: "barb", nominalSize: "3/4", method: "sprinkler", pipeConnection: true, usableFlowGpm: 5, staticPressurePsi: 45 }, { x: 30, y: 40 }); // CHANGE
     const filter = api.__test.createPartAssembly(moduleCell, api.readCatalog(moduleCell).items.find(item => item.id === "filter"), { x: 30, y: 180 }); // NEW
     api.openIrrigationMode(moduleCell, { preserveViewport: true }); // NEW
     const edge = graph.insertEdge(moduleCell, null, "", source.assembly, filter.assembly, ""); // NEW
+    model.completedEdits = []; // NEW
     graph.fireCellsAdded([edge]); // NEW
+    assert.equal(model.completedEdits.length, 1); // NEW
     assert.equal(edge.getAttribute(api.attrs.PIPE_EDGE), "1"); // NEW
     assert.equal(edge.getAttribute(api.attrs.PIPE_PART_ID), "pipe_cheap"); // NEW
     assert.equal(edge.source, api.__test.firstAssemblyPart(source.assembly)); // NEW
     assert.equal(edge.target, api.__test.firstAssemblyPart(filter.assembly)); // NEW
+    assert.ok(moduleCell.getAttribute(api.attrs.REPORT_JSON)); // NEW
+}); // NEW
+
+test("removed irrigation assemblies clean related edges in one redoable edit", () => { // NEW
+    const { api, graph, model, moduleCell } = loadPlugin(); // NEW
+    api.writeCatalog(moduleCell, sampleCatalog()); // NEW
+    const source = api.__test.createSourceAssembly(moduleCell, "Source", { connectorType: "barb", nominalSize: "3/4", pipeConnection: true, usableFlowGpm: 5, staticPressurePsi: 45 }, { x: 30, y: 40 }); // NEW
+    const filter = api.__test.createPartAssembly(moduleCell, api.readCatalog(moduleCell).items.find(item => item.id === "filter"), { x: 30, y: 180 }); // NEW
+    const result = api.__test.createAssemblyConnection(moduleCell, { cellId: api.__test.firstAssemblyPart(source.assembly).getId(), role: "output", index: 0 }, { cellId: api.__test.firstAssemblyPart(filter.assembly).getId(), role: "input", index: 0 }); // NEW
+    assert.equal(result.ok, true, result.reason); // NEW
+    const edge = api.__test.collectAssemblyEdges(moduleCell)[0]; // NEW
+    api.openIrrigationMode(moduleCell, { preserveViewport: true }); // NEW
+    model.completedEdits = []; // NEW
+    graph.fireCellsRemoved([filter.assembly]); // NEW
+    assert.equal(model.completedEdits.length, 1); // NEW
+    assert.equal(model.removedCells.includes(edge), true); // NEW
+    assert.ok(moduleCell.getAttribute(api.attrs.REPORT_JSON)); // NEW
+}); // NEW
+
+test("undo redo replay guard keeps add and remove listeners refresh-only", () => { // NEW
+    const { api, graph, model, moduleCell, undoManager } = loadPlugin(); // NEW
+    api.writeCatalog(moduleCell, sampleCatalog()); // NEW
+    const source = api.__test.createSourceAssembly(moduleCell, "Spray Source", { connectorType: "barb", nominalSize: "3/4", method: "sprinkler", pipeConnection: true, usableFlowGpm: 5, staticPressurePsi: 45 }, { x: 30, y: 40 }); // NEW
+    const filter = api.__test.createPartAssembly(moduleCell, api.readCatalog(moduleCell).items.find(item => item.id === "filter"), { x: 30, y: 180 }); // NEW
+    api.openIrrigationMode(moduleCell, { preserveViewport: true }); // NEW
+    const edge = graph.insertEdge(moduleCell, null, "", source.assembly, filter.assembly, ""); // NEW
+    const writesBeforeReplay = model.valuesWritten; // NEW
+    undoManager.onUndo = function () { graph.fireCellsAdded([edge]); }; // NEW
+    undoManager.undo(); // NEW
+    assert.equal(edge.getAttribute(api.attrs.PIPE_EDGE), null); // NEW
+    assert.equal(model.valuesWritten, writesBeforeReplay); // NEW
+    const removedBeforeReplay = model.removedCells.length; // NEW
+    undoManager.onRedo = function () { graph.fireCellsRemoved([api.__test.firstAssemblyPart(filter.assembly)]); }; // NEW
+    undoManager.redo(); // NEW
+    assert.equal(model.removedCells.length, removedBeforeReplay); // NEW
 }); // NEW
 
 test("1 inch barb connections auto-select 1 inch poly pipe edges", () => { // NEW
@@ -1158,14 +1213,18 @@ test("bed assemblies expand/contract, apply templates, and assembly reports igno
     assert.equal(model.removedCells.includes(legacyLayout), false); // NEW
     const contract = Array.from(graph.container.querySelectorAll("button")).find(button => button.title === "Contract bed assembly"); // NEW
     assert.ok(contract); // NEW
+    model.completedEdits = []; // NEW
     contract.click(); // NEW
+    assert.equal(model.completedEdits.length, 1); // NEW
     assert.equal(bedAssembly.assembly.geometry.width, 220); // NEW
     const contractedRows = descendants(bedAssembly.assembly, cell => cell.getAttribute && cell.getAttribute(api.attrs.BED_LAYOUT) === "1"); // NEW
     assert.equal(contractedRows.length, 3); // CHANGE
     assert.equal(contractedRows[0].geometry.width, 204); // NEW
     const expand = Array.from(graph.container.querySelectorAll("button")).find(button => button.title === "Expand to linked bed size"); // NEW
     assert.ok(expand); // NEW
+    model.completedEdits = []; // NEW
     expand.click(); // NEW
+    assert.equal(model.completedEdits.length, 1); // NEW
     assert.equal(bedAssembly.assembly.geometry.width, bed.geometry.width); // NEW
     assert.equal(descendants(bedAssembly.assembly, cell => cell.getAttribute && cell.getAttribute(api.attrs.BED_LAYOUT) === "1").length, 3); // CHANGE
     const paths = api.__test.syncHudGraphState(moduleCell); // NEW
@@ -1355,8 +1414,20 @@ test("irrigation mode rendering does not write derived zone or path state", () =
     assert.equal(moduleCell.getAttribute(api.attrs.ZONES_JSON), null); // CHANGE
 }); // CHANGE
 
-test("explicit report sync writes summaries but not the legacy path cache", () => { // CHANGE
-    const { api, moduleCell, bed } = loadPlugin(); // CHANGE
+test("opening zone manager is read-only", () => { // NEW
+    const { api, graph, model, moduleCell, ui } = loadPlugin(); // NEW
+    api.writeCatalog(moduleCell, sampleCatalog()); // NEW
+    api.openIrrigationMode(moduleCell, { preserveViewport: true }); // NEW
+    const writesBeforeOpen = model.valuesWritten; // NEW
+    model.completedEdits = []; // NEW
+    clickButton(graph.container, "Zones"); // NEW
+    assert.ok(ui.lastDialog); // NEW
+    assert.equal(model.valuesWritten, writesBeforeOpen); // NEW
+    assert.equal(model.completedEdits.length, 0); // NEW
+}); // NEW
+
+test("explicit report sync writes stable summaries but not the legacy path cache", () => { // CHANGE
+    const { api, model, moduleCell, bed } = loadPlugin(); // CHANGE
     api.writeCatalog(moduleCell, sampleCatalog()); // CHANGE
     const source = api.__test.createSourceAssembly(moduleCell, "Well", { connectorType: "barb", nominalSize: "1/2", pipeConnection: true, usableFlowGpm: 5, staticPressurePsi: 45 }, { x: 30, y: 40 }); // CHANGE
     const bedAssembly = api.__test.createBedAssembly(moduleCell, bed, { x: 30, y: 220 }); // CHANGE
@@ -1366,6 +1437,10 @@ test("explicit report sync writes summaries but not the legacy path cache", () =
     assert.equal(paths.length, 1); // CHANGE
     assert.ok(moduleCell.getAttribute(api.attrs.REPORT_JSON)); // CHANGE
     assert.ok(moduleCell.getAttribute(api.attrs.DASHBOARD_JSON)); // CHANGE
+    assert.equal(JSON.parse(moduleCell.getAttribute(api.attrs.REPORT_JSON)).summary.generatedAt, undefined); // NEW
+    const writesAfterFirstSync = model.valuesWritten; // NEW
+    api.__test.syncHudGraphState(moduleCell); // NEW
+    assert.equal(model.valuesWritten, writesAfterFirstSync); // NEW
     assert.equal(moduleCell.getAttribute(api.attrs.PATHS_JSON), null); // CHANGE
 }); // CHANGE
 
@@ -1503,8 +1578,8 @@ test("daisy-chained bed assemblies use cumulative downstream demand", () => { //
     assert.equal(pathTwo.hydraulic.flowGpm, 1.2); // NEW
 }); // NEW
 
-test("disconnected assemblies can be reversed, connected assemblies cannot", () => { // NEW
-    const { api, graph, moduleCell } = loadPlugin(); // NEW
+test("disconnected assemblies reverse in one redoable edit, connected assemblies cannot", () => { // CHANGE
+    const { api, graph, model, moduleCell } = loadPlugin(); // CHANGE
     api.writeCatalog(moduleCell, sampleCatalog()); // NEW
     const assembly = api.__test.createPartAssembly(moduleCell, api.readCatalog(moduleCell).items.find(item => item.id === "filter"), { x: 30, y: 40 }).assembly; // NEW
     const second = api.__test.createPartAssembly(moduleCell, api.readCatalog(moduleCell).items.find(item => item.id === "regulator"), { x: 30, y: 160 }).assembly; // NEW
@@ -1515,7 +1590,10 @@ test("disconnected assemblies can be reversed, connected assemblies cannot", () 
     api.openIrrigationMode(moduleCell, { preserveViewport: true }); // NEW
     graph.setSelectionCell(assembly); // NEW
     const before = api.__test.assemblyPartCells(assembly).map(cell => cell.getAttribute(api.attrs.CATALOG_PART_ID)); // NEW
+    model.completedEdits = []; // NEW
     clickButton(graph.container, "Reverse Assembly"); // NEW
+    assert.equal(model.completedEdits.length, 1); // NEW
+    assert.ok(moduleCell.getAttribute(api.attrs.REPORT_JSON)); // NEW
     const after = api.__test.assemblyPartCells(assembly).map(cell => cell.getAttribute(api.attrs.CATALOG_PART_ID)); // NEW
     assert.deepEqual(after, before.slice().reverse()); // NEW
     api.__test.createAssemblyConnection(moduleCell, { cellId: api.__test.lastAssemblyPart(assembly).getId(), role: "output", index: 0 }, { cellId: api.__test.firstAssemblyPart(second).getId(), role: "input", index: 0 }); // NEW
