@@ -1925,6 +1925,8 @@ Draw.loadPlugin(function (ui) {
         let gestureHidden = false; // CHANGE
         let refreshTimer = null; // CHANGE
         let gardenSettingsOverlaySuppressed = false; // NEW
+        let manuallyHiddenModuleCell = null; // NEW
+        let pendingSelectedModuleToggle = null; // NEW
 
         function getOverlayHost() { // CHANGE
             return graph.container; // CHANGE
@@ -2036,6 +2038,41 @@ Draw.loadPlugin(function (ui) {
         function hideToolbar() { // CHANGE
             if (toolbar) toolbar.style.display = "none"; // CHANGE
         } // CHANGE
+
+        function isPlainPrimaryMouseEvent(evt) { // NEW
+            if (!evt) return false; // NEW
+            if ((mxEvent.isPopupTrigger && mxEvent.isPopupTrigger(evt)) || evt.button === 2) return false; // NEW
+            return !mxEvent.isControlDown(evt) && !mxEvent.isMetaDown(evt) && !mxEvent.isShiftDown(evt) && Number(evt.detail || 1) <= 1; // NEW
+        } // NEW
+
+        function mouseEventCell(me, evt) { // NEW
+            const cell = me && me.getCell ? me.getCell() : null; // NEW
+            if (cell || !evt || !graph.getCellAt || !graph.getPointForEvent) return cell; // NEW
+            const pt = graph.getPointForEvent(evt, false); // NEW
+            return pt ? graph.getCellAt(pt.x, pt.y) : null; // NEW
+        } // NEW
+
+        function selectedGardenModulePlainClickTarget(me, evt) { // NEW
+            if (!isPlainPrimaryMouseEvent(evt)) return null; // NEW
+            const selectedModule = getSingleSelectedGardenModule(); // NEW
+            if (!selectedModule) return null; // NEW
+            if (activeOverlayMode !== "module" || activeModuleCell !== selectedModule) return null; // NEW
+            return mouseEventCell(me, evt) === selectedModule ? selectedModule : null; // NEW
+        } // NEW
+
+        function clearHiddenModuleIfTargetChanged(target) { // NEW
+            if (!manuallyHiddenModuleCell) return; // NEW
+            if (!target || target.mode !== "module" || target.moduleCell !== manuallyHiddenModuleCell) manuallyHiddenModuleCell = null; // NEW
+        } // NEW
+
+        function toggleHiddenModuleAfterSimpleClick(evt) { // NEW
+            const pending = pendingSelectedModuleToggle; // NEW
+            pendingSelectedModuleToggle = null; // NEW
+            if (!pending || !isSimpleAnchorClick(evt)) return false; // NEW
+            if (getSingleSelectedGardenModule() !== pending) return false; // NEW
+            manuallyHiddenModuleCell = manuallyHiddenModuleCell === pending ? null : pending; // NEW
+            return true; // NEW
+        } // NEW
 
         function promptSetModuleMarginForModule(moduleCell) { // NEW
             hideToolbar(); // NEW
@@ -2232,6 +2269,7 @@ Draw.loadPlugin(function (ui) {
                 return; // NEW
             } // NEW
             const target = getSingleSelectedOverlayTarget(); // CHANGE
+            clearHiddenModuleIfTargetChanged(target); // NEW
             if (!target || gestureHidden) { // CHANGE
                 activeModuleCell = target ? target.moduleCell : null; // CHANGE
                 activeBedCell = target ? target.bedCell : null; // CHANGE
@@ -2246,6 +2284,7 @@ Draw.loadPlugin(function (ui) {
             activeModuleCell = target.moduleCell; // CHANGE
             activeBedCell = target.bedCell || null; // CHANGE
             activeOverlayMode = target.mode; // CHANGE
+            if (target.mode === "module" && target.moduleCell === manuallyHiddenModuleCell) { hideToolbar(); return; } // NEW
             ensureToolbar(); // CHANGE
             syncToolbarState(); // CHANGE
             positionToolbar(); // CHANGE
@@ -2262,6 +2301,7 @@ Draw.loadPlugin(function (ui) {
             mouseDown: function (_sender, me) { // CHANGE
                 const evt = me && me.getEvent ? me.getEvent() : null; // CHANGE
                 if (evt && toolbar && toolbar.contains(mxEvent.getSource(evt))) return; // CHANGE
+                pendingSelectedModuleToggle = selectedGardenModulePlainClickTarget(me, evt); // NEW
                 if (evt) { // CHANGE
                     const modelPt = graph.getPointForEvent(evt, false); // CHANGE
                     lastMouseAnchor = { // CHANGE
@@ -2279,6 +2319,7 @@ Draw.loadPlugin(function (ui) {
                 const evt = me && me.getEvent ? me.getEvent() : null; // CHANGE
                 gestureHidden = false; // CHANGE
                 updateAnchorFromSimpleClick(evt); // CHANGE
+                toggleHiddenModuleAfterSimpleClick(evt); // NEW
                 scheduleRefresh(); // CHANGE
             } // CHANGE
         }); // CHANGE

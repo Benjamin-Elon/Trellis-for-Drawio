@@ -1,18 +1,13 @@
 /**
- * Draw.io Plugin: Garden Dashboard (Garden-Module Scoped)
+ * Draw.io Plugin: Garden Dashboard (Garden-Module Viewport Toolbar)
  *
  * Features:
- * - Right-click a garden module -> "Create Garden Dashboard" (only if none exists)
- * - Dashboard is a child cell inside the garden module
- * - In-canvas Prev/Next year buttons + current year label
+ * - Floating garden-relative toolbar appears when a garden module or descendant is selected
+ * - Dashboard table is an expandable viewport overlay section, collapsed by default
+ * - Prev/Next year buttons + current year label are stored on the garden module
  * - Metrics are computed from tiler groups under that module
  * - Only includes crops that begin in selected year (season_start_year == selected year)
-When a garden module is created we should also listen in this plugin and automatically add a dashboard to the garden module:
- 
-
-* UPDATE:
- * - Dashboard table is now a DOM overlay anchored to the dashboard cell (not an in-cell html table). 
- * - Dashboard cell label is a compact summary for portability. 
+ * Existing garden_dashboard cells are left in files as inert legacy remnants.
  */
 Draw.loadPlugin(function (ui) {
     const graph = ui.editor && ui.editor.graph;
@@ -935,12 +930,286 @@ Draw.loadPlugin(function (ui) {
         return rows.join("\r\n");
     }
 
+    // -------------------- Viewport toolbar (active dashboard UI) -------------------- // NEW
+    const toolbarExpandedByModuleId = new Map(); // NEW
+    let viewportToolbar = null; // NEW
+    let activeToolbarModule = null; // NEW
+    let toolbarRefreshTimer = null; // NEW
+
+    function cellId(cell) { // NEW
+        return cell && cell.getId ? cell.getId() : (cell && cell.id) || ""; // NEW
+    } // NEW
+
+    function getViewportToolbarHost() { // NEW
+        return graph && graph.container; // NEW
+    } // NEW
+
+    function ensureViewportToolbarHost() { // NEW
+        const host = getViewportToolbarHost(); // NEW
+        if (!host) return null; // NEW
+        const style = window.getComputedStyle ? window.getComputedStyle(host) : null; // NEW
+        if (style && style.position === "static") host.style.position = "relative"; // NEW
+        return host; // NEW
+    } // NEW
+
+    function viewportToolbarWidth(host) { // NEW
+        if (!host) return 0; // NEW
+        const rect = host.getBoundingClientRect ? host.getBoundingClientRect() : null; // NEW
+        if (rect && rect.width) return rect.width; // CHANGE
+        return host.clientWidth || 0; // CHANGE
+    } // NEW
+
+    function getToolbarYear(moduleCell) { // NEW
+        const moduleYear = getModuleCurrentYear(moduleCell); // NEW
+        return isValidYear(moduleYear) ? moduleYear : new Date().getFullYear(); // NEW
+    } // NEW
+
+    function setToolbarYear(moduleCell, year) { // NEW
+        const y = toInt(year, NaN); // NEW
+        if (!moduleCell || !isGardenModule(moduleCell) || !isValidYear(y)) return; // NEW
+        model.beginUpdate(); // NEW
+        try { // NEW
+            setModuleCurrentYear(moduleCell, y); // NEW
+        } finally { // NEW
+            model.endUpdate(); // NEW
+        } // NEW
+        applyYearVisibilityToModule(moduleCell, y); // NEW
+    } // NEW
+
+    function selectedGardenModuleForToolbar() { // NEW
+        const selected = graph.getSelectionCells ? (graph.getSelectionCells() || []) : [graph.getSelectionCell && graph.getSelectionCell()].filter(Boolean); // NEW
+        for (const cell of selected) { // NEW
+            const moduleCell = isGardenModule(cell) ? cell : findGardenModuleAncestor(graph, cell); // NEW
+            if (moduleCell) return moduleCell; // NEW
+        } // NEW
+        return null; // NEW
+    } // NEW
+
+    function createToolbarButton(label, title) { // NEW
+        const btn = document.createElement("button"); // NEW
+        btn.type = "button"; // NEW
+        btn.textContent = label; // NEW
+        btn.title = title || label; // NEW
+        btn.style.height = BTN_SIZE + "px"; // NEW
+        btn.style.border = "1px solid #777"; // NEW
+        btn.style.borderRadius = "6px"; // NEW
+        btn.style.background = "#fff"; // NEW
+        btn.style.cursor = "pointer"; // NEW
+        btn.style.padding = "0 8px"; // NEW
+        btn.style.fontFamily = "Arial"; // NEW
+        btn.style.fontSize = "12px"; // NEW
+        btn.style.whiteSpace = "nowrap"; // NEW
+        btn.style.boxSizing = "border-box"; // NEW
+        return btn; // NEW
+    } // NEW
+
+    function createYearButton(label, title) { // NEW
+        const btn = createToolbarButton(label, title); // NEW
+        btn.style.width = BTN_SIZE + "px"; // NEW
+        btn.style.padding = "0"; // NEW
+        return btn; // NEW
+    } // NEW
+
+    function openIrrigationPlannerForModule(moduleCell) { // NEW
+        if (!moduleCell) return; // NEW
+        const plannerApi = graph && graph.__trellisIrrigationPlanner; // NEW
+        if (!plannerApi || typeof plannerApi.openIrrigationMode !== "function") return; // NEW
+        plannerApi.openIrrigationMode(moduleCell, { preserveViewport: true }); // NEW
+    } // NEW
+
+    function ensureViewportToolbar() { // NEW
+        if (viewportToolbar) return viewportToolbar; // NEW
+        const host = ensureViewportToolbarHost(); // NEW
+        if (!host) return null; // NEW
+
+        const wrap = document.createElement("div"); // NEW
+        wrap.className = "trellis-garden-dashboard-toolbar"; // NEW
+        wrap.style.position = "fixed"; // CHANGE
+        wrap.style.zIndex = "10005"; // NEW
+        wrap.style.display = "none"; // NEW
+        wrap.style.boxSizing = "border-box"; // NEW
+        wrap.style.padding = "8px 12px"; // NEW
+        wrap.style.pointerEvents = "none"; // NEW
+
+        const panel = document.createElement("div"); // NEW
+        panel.className = "trellis-garden-dashboard-toolbar-panel"; // NEW
+        panel.style.display = "flex"; // NEW
+        panel.style.flexDirection = "column"; // NEW
+        panel.style.gap = "8px"; // NEW
+        panel.style.maxWidth = "100%"; // NEW
+        panel.style.boxSizing = "border-box"; // NEW
+        panel.style.padding = "8px"; // NEW
+        panel.style.background = "rgba(255,255,255,0.96)"; // NEW
+        panel.style.border = "1px solid #c7c7cc"; // NEW
+        panel.style.borderRadius = "6px"; // NEW
+        panel.style.boxShadow = "0 2px 10px rgba(0,0,0,0.14)"; // NEW
+        panel.style.pointerEvents = "auto"; // NEW
+
+        const controls = document.createElement("div"); // NEW
+        controls.className = "trellis-garden-dashboard-toolbar-controls"; // NEW
+        controls.style.display = "flex"; // NEW
+        controls.style.alignItems = "center"; // NEW
+        controls.style.gap = BTN_GAP + "px"; // NEW
+        controls.style.flexWrap = "wrap"; // NEW
+        controls.style.boxSizing = "border-box"; // NEW
+
+        const prev = createYearButton("<", "Previous year"); // NEW
+        const next = createYearButton(">", "Next year"); // NEW
+        const yearLabel = document.createElement("div"); // NEW
+        yearLabel.className = "trellis-garden-dashboard-year"; // NEW
+        yearLabel.style.minWidth = "60px"; // NEW
+        yearLabel.style.height = BTN_SIZE + "px"; // NEW
+        yearLabel.style.display = "flex"; // NEW
+        yearLabel.style.alignItems = "center"; // NEW
+        yearLabel.style.justifyContent = "center"; // NEW
+        yearLabel.style.fontFamily = "Arial"; // NEW
+        yearLabel.style.fontSize = "12px"; // NEW
+        yearLabel.style.fontWeight = "700"; // NEW
+        yearLabel.style.padding = "0 6px"; // NEW
+        yearLabel.style.border = "1px solid #777"; // NEW
+        yearLabel.style.borderRadius = "6px"; // NEW
+        yearLabel.style.background = "#fff"; // NEW
+        yearLabel.style.boxSizing = "border-box"; // NEW
+
+        const planBtn = createToolbarButton("Plan", "Open the year planner"); // NEW
+        const equipmentBtn = createToolbarButton("Equipment", "Open garden equipment"); // NEW
+        const irrigationBtn = createToolbarButton("Irrigation", "Open irrigation planner"); // NEW
+        const allocateBtn = createToolbarButton("Allocate", "Allocate the current plan"); // NEW
+        const exportBtn = createToolbarButton("Export", "Export dashboard CSV"); // NEW
+        const tableBtn = createToolbarButton("Table", "Show dashboard table"); // NEW
+
+        const table = document.createElement("div"); // NEW
+        table.className = "trellis-garden-dashboard-table"; // NEW
+        table.style.display = "none"; // NEW
+        table.style.overflow = "auto"; // NEW
+        table.style.maxHeight = "45vh"; // NEW
+        table.style.borderTop = "1px solid #ddd"; // NEW
+        table.style.paddingTop = "8px"; // NEW
+        table.style.boxSizing = "border-box"; // NEW
+
+        controls.appendChild(prev); // NEW
+        controls.appendChild(yearLabel); // NEW
+        controls.appendChild(next); // NEW
+        controls.appendChild(planBtn); // NEW
+        controls.appendChild(equipmentBtn); // NEW
+        controls.appendChild(irrigationBtn); // NEW
+        controls.appendChild(allocateBtn); // NEW
+        controls.appendChild(exportBtn); // NEW
+        controls.appendChild(tableBtn); // NEW
+        panel.appendChild(controls); // NEW
+        panel.appendChild(table); // NEW
+        wrap.appendChild(panel); // NEW
+        host.appendChild(wrap); // NEW
+
+        viewportToolbar = { wrap, panel, controls, prev, next, yearLabel, planBtn, equipmentBtn, irrigationBtn, allocateBtn, exportBtn, tableBtn, table }; // NEW
+
+        mxEvent.addListener(wrap, "mousedown", function (evt) { mxEvent.consume(evt); }); // NEW
+        mxEvent.addListener(wrap, "click", function (evt) { evt.stopPropagation(); }); // NEW
+
+        prev.addEventListener("click", function () { // NEW
+            if (!activeToolbarModule) return; // NEW
+            setToolbarYear(activeToolbarModule, getToolbarYear(activeToolbarModule) - 1); // NEW
+            renderViewportToolbar(activeToolbarModule); // NEW
+        }); // NEW
+        next.addEventListener("click", function () { // NEW
+            if (!activeToolbarModule) return; // NEW
+            setToolbarYear(activeToolbarModule, getToolbarYear(activeToolbarModule) + 1); // NEW
+            renderViewportToolbar(activeToolbarModule); // NEW
+        }); // NEW
+        planBtn.addEventListener("click", function () { // NEW
+            if (!activeToolbarModule) return; // NEW
+            const year = getToolbarYear(activeToolbarModule); // NEW
+            setToolbarYear(activeToolbarModule, year); // NEW
+            try { window.dispatchEvent(new CustomEvent(PLAN_YEAR_EVENT, { detail: { moduleCellId: cellId(activeToolbarModule), year } })); } catch (_) { } // NEW
+        }); // NEW
+        equipmentBtn.addEventListener("click", function () { // NEW
+            if (!activeToolbarModule) return; // NEW
+            const equipmentApi = graph && graph.__trellisEquipment; // NEW
+            if (equipmentApi && typeof equipmentApi.openDialog === "function") equipmentApi.openDialog(activeToolbarModule); // NEW
+        }); // NEW
+        irrigationBtn.addEventListener("click", function () { openIrrigationPlannerForModule(activeToolbarModule); }); // NEW
+        allocateBtn.addEventListener("click", function () { // NEW
+            if (!activeToolbarModule) return; // NEW
+            const year = getToolbarYear(activeToolbarModule); // NEW
+            setToolbarYear(activeToolbarModule, year); // NEW
+            try { window.dispatchEvent(new CustomEvent(ALLOCATE_PLAN_EVENT, { detail: { moduleCellId: cellId(activeToolbarModule), year } })); } catch (_) { } // NEW
+        }); // NEW
+        exportBtn.addEventListener("click", function () { // NEW
+            if (!activeToolbarModule) return; // NEW
+            const year = getToolbarYear(activeToolbarModule); // NEW
+            const metrics = computeModuleMetrics(activeToolbarModule, year); // NEW
+            const safeName = String(metrics.moduleName || "garden").replace(/[^\w\-]+/g, "_").slice(0, 60); // NEW
+            downloadCsv(`${safeName}_${year}_dashboard.csv`, buildDashboardCsvSingleTable(metrics, year)); // NEW
+        }); // NEW
+        tableBtn.addEventListener("click", function () { // NEW
+            if (!activeToolbarModule) return; // NEW
+            const key = cellId(activeToolbarModule); // NEW
+            toolbarExpandedByModuleId.set(key, toolbarExpandedByModuleId.get(key) !== true); // NEW
+            renderViewportToolbar(activeToolbarModule); // NEW
+        }); // NEW
+
+        return viewportToolbar; // NEW
+    } // NEW
+
+    function positionViewportToolbar(entry) { // NEW
+        const host = ensureViewportToolbarHost(); // NEW
+        if (!entry || !host) return; // NEW
+        const rect = host.getBoundingClientRect ? host.getBoundingClientRect() : { left: 0, top: 0 }; // CHANGE
+        entry.wrap.style.left = Math.round(rect.left || 0) + "px"; // CHANGE
+        entry.wrap.style.top = Math.round(rect.top || 0) + "px"; // CHANGE
+        entry.wrap.style.width = Math.max(0, Math.round(viewportToolbarWidth(host))) + "px"; // NEW
+    } // NEW
+
+    function renderViewportToolbar(moduleCell) { // NEW
+        const entry = ensureViewportToolbar(); // NEW
+        if (!entry || !moduleCell) return; // NEW
+        const year = getToolbarYear(moduleCell); // NEW
+        const expanded = toolbarExpandedByModuleId.get(cellId(moduleCell)) === true; // NEW
+        entry.yearLabel.textContent = String(year); // NEW
+        entry.tableBtn.textContent = expanded ? "Hide Table" : "Table"; // NEW
+        entry.tableBtn.title = expanded ? "Hide dashboard table" : "Show dashboard table"; // NEW
+        entry.table.style.display = expanded ? "block" : "none"; // NEW
+        if (expanded) { // NEW
+            entry.table.innerHTML = formatOverlayTableHtml(computeModuleMetrics(moduleCell, year), year); // NEW
+            const irrigationSummary = entry.table.querySelector(".trellis-irrigation-dashboard-summary"); // NEW
+            if (irrigationSummary) { // NEW
+                irrigationSummary.addEventListener("click", function (ev) { // NEW
+                    ev.preventDefault(); // NEW
+                    ev.stopPropagation(); // NEW
+                    openIrrigationPlannerForModule(moduleCell); // NEW
+                }); // NEW
+            } // NEW
+        } else { // NEW
+            entry.table.innerHTML = ""; // NEW
+        } // NEW
+        entry.wrap.style.display = "block"; // NEW
+        positionViewportToolbar(entry); // NEW
+    } // NEW
+
+    function hideViewportToolbar() { // NEW
+        if (viewportToolbar) viewportToolbar.wrap.style.display = "none"; // NEW
+        activeToolbarModule = null; // NEW
+    } // NEW
+
+    function refreshViewportToolbarForSelection() { // NEW
+        toolbarRefreshTimer = null; // NEW
+        const moduleCell = selectedGardenModuleForToolbar(); // NEW
+        if (!moduleCell) { hideViewportToolbar(); return; } // NEW
+        activeToolbarModule = moduleCell; // NEW
+        renderViewportToolbar(moduleCell); // NEW
+    } // NEW
+
+    function scheduleViewportToolbarRefresh() { // NEW
+        if (toolbarRefreshTimer) return; // NEW
+        toolbarRefreshTimer = setTimeout(refreshViewportToolbarForSelection, 0); // NEW
+    } // NEW
+
     function openIrrigationPlannerForDashboard(dashCell) { // NEW
         const moduleCell = findModuleAncestor(graph, dashCell); // NEW
         if (!moduleCell) return; // NEW
         const plannerApi = graph && graph.__trellisIrrigationPlanner; // NEW
         if (!plannerApi || typeof plannerApi.openIrrigationMode !== "function") return; // CHANGE
-        plannerApi.openIrrigationMode(moduleCell); // CHANGE
+        plannerApi.openIrrigationMode(moduleCell, { preserveViewport: true }); // CHANGE
     } // NEW
 
     // -------------------- DOM overlay (controls + table) --------------------
@@ -1436,6 +1705,7 @@ Draw.loadPlugin(function (ui) {
 
     // -------------------- Dashboard update orchestration --------------------
     function recomputeAndRenderDashboard(dashCell, opts) { // CHANGE
+        return; // CHANGE
         if (!dashCell) return;
         const moduleCell = findModuleAncestor(graph, dashCell);
         if (!moduleCell) return;
@@ -1455,6 +1725,7 @@ Draw.loadPlugin(function (ui) {
 
     // -------------------- Create dashboard cell --------------------
     function createDashboardCell(moduleCell) {
+        return null; // CHANGE
         const parent = moduleCell;
 
         const x = 20;
@@ -1492,6 +1763,7 @@ Draw.loadPlugin(function (ui) {
         graph.__gardenDashboardAutoCreateInstalled = true;
 
         graph.addListener("usl:gardenModuleNeedsSettings", function (sender, evt) {
+            return; // CHANGE
             const mod = evt.getProperty("cell");
             if (!mod || !isGardenModule(mod)) return;
 
@@ -1526,6 +1798,8 @@ Draw.loadPlugin(function (ui) {
     let attachExistingDashboardsOnceDone = false; // CHANGE
 
     function scheduleOverlayReposition() {
+        scheduleViewportToolbarRefresh(); // CHANGE
+        return; // CHANGE
         if (rafPending) return;
         rafPending = true;
         requestAnimationFrame(function () {
@@ -1551,6 +1825,7 @@ Draw.loadPlugin(function (ui) {
     });
 
     function collectTouchedDashboards(cells) { // CHANGE
+        return []; // CHANGE
         const out = []; // CHANGE
         const seen = new Set(); // CHANGE
         for (const cell of (cells || [])) { // CHANGE
@@ -1599,20 +1874,8 @@ Draw.loadPlugin(function (ui) {
     });
 
     // Recompute when selecting a dashboard (or something inside it)
-    graph.getSelectionModel().addListener(mxEvent.CHANGE, function () {
-        const sel = graph.getSelectionCell();
-        if (!sel) return;
-
-        const dash = (sel.getAttribute && sel.getAttribute(DASH_ATTR) === "1")
-            ? sel
-            : findDashboardAncestor(sel);
-
-        if (!dash) return;
-
-        setTimeout(function () {
-            ensureOverlayForDashboard(dash);
-            recomputeAndRenderDashboard(dash);
-        }, 0);
+    graph.getSelectionModel().addListener(mxEvent.CHANGE, function () { // CHANGE
+        return; // CHANGE
     });
 
     // -------------------- Context menu: Create Garden Dashboard --------------------
@@ -1634,6 +1897,7 @@ Draw.loadPlugin(function (ui) {
         id: "gardenDashboard", // NEW
         priority: 200, // NEW
         addItems: function (menu, cell, evt) { // CHANGE
+            return; // CHANGE
 
             if (!cell) return;
 
@@ -1662,6 +1926,7 @@ Draw.loadPlugin(function (ui) {
 
     // -------------------- If dashboards already exist in file, attach overlays --------------------
     function attachExistingDashboards() {
+        return; // CHANGE
         const root = model.getRoot();
         const all = getDescendants(root);
 
@@ -1683,10 +1948,24 @@ Draw.loadPlugin(function (ui) {
     }
 
     function scheduleAttachExistingDashboards() {
+        return; // CHANGE
         setTimeout(function () {
             attachExistingDashboards();
         }, 10000);
     }
+
+    if (graph.getSelectionModel && graph.getSelectionModel().addListener) { // NEW
+        graph.getSelectionModel().addListener(mxEvent.CHANGE, scheduleViewportToolbarRefresh); // NEW
+    } // NEW
+    if (model.addListener) { // NEW
+        model.addListener(mxEvent.CHANGE, scheduleViewportToolbarRefresh); // NEW
+    } // NEW
+    window.addEventListener("resize", scheduleViewportToolbarRefresh); // NEW
+    const viewportToolbarHost = ensureViewportToolbarHost(); // NEW
+    if (viewportToolbarHost && viewportToolbarHost.addEventListener) { // NEW
+        viewportToolbarHost.addEventListener("scroll", scheduleViewportToolbarRefresh); // NEW
+    } // NEW
+    scheduleViewportToolbarRefresh(); // NEW
 
     scheduleAttachExistingDashboards();
 

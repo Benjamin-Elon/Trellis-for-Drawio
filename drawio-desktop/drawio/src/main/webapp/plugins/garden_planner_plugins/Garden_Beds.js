@@ -192,19 +192,6 @@ Draw.loadPlugin(function (ui) { // NEW
         return raw; // NEW
     } // NEW
 
-    function normalizeTags(tags) { // NEW
-        const values = Array.isArray(tags) ? tags : String(tags || "").split(","); // NEW
-        const seen = Object.create(null); // NEW
-        const out = []; // NEW
-        values.forEach(function (tag) { // NEW
-            const clean = String(tag || "").trim(); // NEW
-            if (!clean || seen[clean]) return; // NEW
-            seen[clean] = true; // NEW
-            out.push(clean); // NEW
-        }); // NEW
-        return out; // NEW
-    } // NEW
-
     function finiteNumberOrNull(value) { // ADDED
         if (value === null || value === undefined || value === "") return null; // ADDED
         const n = Number(value); // ADDED
@@ -311,7 +298,6 @@ Draw.loadPlugin(function (ui) { // NEW
         const presetKey = String(source.presetKey || "").trim(); // NEW
         if (options && options.allowPreset && isValidPresetKey(presetKey)) out.presetKey = presetKey; // CHANGE
         out.notes = String(source.notes || "").trim(); // NEW
-        out.tags = normalizeTags(source.tags); // NEW
         out.seasonExtensionAirOffsetC = normalizeOptionalNumber(source.seasonExtensionAirOffsetC ?? source.season_extension_air_offset_c); // ADDED
         out.seasonExtensionSoilOffsetC = normalizeOptionalNumber(source.seasonExtensionSoilOffsetC ?? source.season_extension_soil_offset_c); // ADDED
         out.seasonExtensionFrostShiftDays = normalizeOptionalNumber(source.seasonExtensionFrostShiftDays ?? source.season_extension_frost_shift_days); // ADDED
@@ -378,7 +364,6 @@ Draw.loadPlugin(function (ui) { // NEW
             if (isMeaningfulOverride(field.key, value)) out[field.key] = value; // NEW
         }); // NEW
         if (bedRecord.profile.notes) out.notes = bedRecord.profile.notes; // NEW
-        if (bedRecord.profile.tags && bedRecord.profile.tags.length) out.tags = bedRecord.profile.tags.slice(); // NEW
         if (isValidPresetKey(bedRecord.profile.presetKey)) out.presetKey = bedRecord.profile.presetKey; // CHANGE
         out.lastUpdated = bedRecord.profile.lastUpdated || ""; // NEW
         return out; // NEW
@@ -607,13 +592,13 @@ Draw.loadPlugin(function (ui) { // NEW
 
         const controls = Object.create(null); // NEW
         const growing = appendSection(body, "Growing Conditions"); // CHANGE
-        ["sunExposure", "soilMoisture", "drainage", "soilTexture", "fertility"].forEach(function (key) { // NEW
+        ["sunExposure", "windExposure", "frostRisk", "soilMoisture", "drainage", "soilTexture", "fertility"].forEach(function (key) { // CHANGE
             controls[key] = makeSelect(FIELD_BY_KEY[key], current[key]); // NEW
             appendField(growing, FIELD_BY_KEY[key], controls[key]); // NEW
         }); // NEW
 
         const infra = appendSection(body, "Infrastructure"); // CHANGE
-        ["irrigation", "trellis", "seasonExtension", "cropProtection", "windExposure", "frostRisk"].forEach(function (key) { // CHANGE
+        ["irrigation", "trellis", "seasonExtension", "cropProtection"].forEach(function (key) { // CHANGE
             controls[key] = makeSelect(FIELD_BY_KEY[key], current[key]); // NEW
             appendField(infra, FIELD_BY_KEY[key], controls[key]); // NEW
         }); // NEW
@@ -622,12 +607,6 @@ Draw.loadPlugin(function (ui) { // NEW
         const use = appendSection(body, "Use"); // CHANGE
         controls.bedUse = makeSelect(FIELD_BY_KEY.bedUse, current.bedUse); // NEW
         appendField(use, FIELD_BY_KEY.bedUse, controls.bedUse); // NEW
-
-        const tagsInput = document.createElement("input"); // NEW
-        tagsInput.type = "text"; // NEW
-        tagsInput.value = (current.tags || []).join(", "); // NEW
-        tagsInput.style.width = "100%"; // NEW
-        appendField(use, { label: "Tags" }, tagsInput); // NEW
 
         const notesInput = document.createElement("textarea"); // NEW
         notesInput.value = current.notes || ""; // NEW
@@ -654,7 +633,6 @@ Draw.loadPlugin(function (ui) { // NEW
                 ? displayTempToC(controls.seasonExtensionMinAirTempC.value, advancedSeasonExtension.units) // ADDED
                 : null; // ADDED
             next.presetKey = presetSelect.value; // NEW
-            next.tags = tagsInput.value; // NEW
             next.notes = notesInput.value; // NEW
             return next; // NEW
         } // NEW
@@ -757,6 +735,7 @@ Draw.loadPlugin(function (ui) { // NEW
         } // NEW
         if (presetKey && additional.length) addHeadingRow(rows, "Additional"); // NEW
         Array.prototype.push.apply(rows, additional); // NEW
+        if (profile && profile.notes) rows.push({ type: "notes", label: "Notes", value: profile.notes }); // ADDED
         return rows; // NEW
     } // NEW
 
@@ -811,6 +790,25 @@ Draw.loadPlugin(function (ui) { // NEW
                 entry.div.appendChild(heading); // NEW
                 return; // NEW
             } // NEW
+            if (row.type === "notes") { // ADDED
+                const notes = document.createElement("div"); // ADDED
+                notes.style.marginTop = "8px"; // ADDED
+                notes.style.paddingTop = "6px"; // ADDED
+                notes.style.borderTop = "1px solid rgba(209, 213, 219, 0.8)"; // ADDED
+                const notesLabel = document.createElement("div"); // ADDED
+                notesLabel.textContent = row.label; // ADDED
+                notesLabel.style.color = "#374151"; // ADDED
+                notesLabel.style.fontWeight = "700"; // ADDED
+                const notesValue = document.createElement("div"); // ADDED
+                notesValue.textContent = row.value; // ADDED
+                notesValue.style.marginTop = "3px"; // ADDED
+                notesValue.style.whiteSpace = "pre-wrap"; // ADDED
+                notesValue.style.wordBreak = "break-word"; // ADDED
+                notes.appendChild(notesLabel); // ADDED
+                notes.appendChild(notesValue); // ADDED
+                entry.div.appendChild(notes); // ADDED
+                return; // ADDED
+            } // ADDED
             const line = document.createElement("div"); // NEW
             line.style.display = "grid"; // NEW
             line.style.gridTemplateColumns = "72px 1fr"; // NEW
