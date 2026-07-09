@@ -159,6 +159,7 @@ function createHarness() {
     ["View", "Separator", "Zoom", "Undo", "Delete", "Insert"].forEach(label => {
         const node = document.createElement("button");
         node.textContent = label;
+        if (label === "Zoom") node.className = "geZoomInput"; // CHANGE
         mainToolbar.appendChild(node);
     });
 
@@ -278,7 +279,8 @@ test("startup collapses header row, sidebars, and prunes toolbar controls", () =
         ["shapes", false],
         ["formatPanel", false]
     ]);
-    assert.deepEqual(Array.from(mainToolbar.children).map(node => node.textContent), ["View"]);
+    assert.deepEqual(Array.from(mainToolbar.children).map(node => node.textContent), ["View", "Zoom"]); // CHANGE
+    assert.ok(mainToolbar.children[1].classList.contains("geZoomInput")); // CHANGE
     assert.deepEqual(Array.from(toolbarEnd.children).map(node => node.textContent), ["Format", "Compact"]);
 });
 

@@ -318,6 +318,10 @@ Draw.loadPlugin(function (ui) {
         }
     }
 
+    function shouldPreserveMainToolbarChild(child, index) { // CHANGE
+        return index === 0 || !!(child && child.classList && child.classList.contains('geZoomInput')); // CHANGE
+    } // CHANGE
+
     function pruneMainToolbar() {
         const container = ui.toolbar && ui.toolbar.container;
         if (!container || !container.children) {
@@ -325,7 +329,7 @@ Draw.loadPlugin(function (ui) {
         }
 
         Array.prototype.slice.call(container.children).forEach(function (child, index) {
-            if (index > 0) {
+            if (!shouldPreserveMainToolbarChild(child, index)) { // CHANGE
                 removeChild(child);
             }
         });

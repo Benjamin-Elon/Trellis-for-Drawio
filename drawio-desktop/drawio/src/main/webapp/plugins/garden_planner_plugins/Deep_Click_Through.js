@@ -9,6 +9,16 @@ Draw.loadPlugin(function (ui) { // CHANGE
     const graph = ui.editor && ui.editor.graph; // CHANGE
     if (!graph || graph.__deepClickThroughInstalled) return; // CHANGE
     graph.__deepClickThroughInstalled = true; // CHANGE
+    const WORKSPACE_HANDLE_SIZE = 18; // NEW
+    const WORKSPACE_HANDLE_GAP = 2; // NEW
+    const WORKSPACE_HOVER_GRACE_PX = 30; // NEW
+    const WORKSPACE_CALLOUT_MS = 5000; // NEW
+    const workspaceCalloutSeenByType = { module: false, lane: false }; // NEW
+    let workspaceHoveredCell = null; // NEW
+    let workspaceDraggingHandleCell = null; // NEW
+    let workspaceHandleRefreshThread = null; // NEW
+    let workspaceCalloutDiv = null; // NEW
+    const workspaceHandleEntries = new Map(); // NEW
 
     graph.selectParentAfterCollapse = false; // CHANGE
     graph.cellsSelectable = true; // CHANGE
@@ -47,6 +57,72 @@ Draw.loadPlugin(function (ui) { // CHANGE
         return getDragInitialCellForEvent(this.graph, me, me.getCell(), this); // CHANGE
     }; // CHANGE
 
+    const oldGraphHandlerMouseDown = mxGraphHandler.prototype.mouseDown; // NEW
+    mxGraphHandler.prototype.mouseDown = function (sender, me) { // NEW
+        const context = getWorkspaceSurfaceDragContext(this.graph, me); // NEW
+        if (context) { // NEW
+            this.graph.__trellisWorkspaceDragContext = context; // NEW
+            scheduleWorkspaceHandleRefresh(); // NEW
+            return; // NEW
+        } // NEW
+        return oldGraphHandlerMouseDown.apply(this, arguments); // NEW
+    }; // NEW
+
+    if (typeof mxRubberband !== 'undefined' && mxRubberband.prototype) { // NEW
+        const oldRubberbandMouseDown = mxRubberband.prototype.mouseDown; // NEW
+        mxRubberband.prototype.mouseDown = function (sender, me) { // NEW
+            const context = this.graph && (this.graph.__trellisWorkspaceDragContext || getWorkspaceSurfaceDragContext(this.graph, me)); // NEW
+            if (context && !me.isConsumed() && this.isEnabled() && this.graph.isEnabled() && !mxEvent.isMultiTouchEvent(me.getEvent())) { // NEW
+                this.graph.__trellisWorkspaceDragContext = context; // NEW
+                this.graph.__trellisWorkspaceMarqueeContainer = context.cell; // NEW
+                const offset = mxUtils.getOffset(this.graph.container); // NEW
+                const origin = mxUtils.getScrollOrigin(this.graph.container); // NEW
+                origin.x -= offset.x; // NEW
+                origin.y -= offset.y; // NEW
+                this.start(me.getX() + origin.x, me.getY() + origin.y); // NEW
+                me.consume(false); // NEW
+                return; // NEW
+            } // NEW
+            return oldRubberbandMouseDown.apply(this, arguments); // NEW
+        }; // NEW
+
+        const oldRubberbandMouseMove = mxRubberband.prototype.mouseMove; // NEW
+        mxRubberband.prototype.mouseMove = function (sender, me) { // NEW
+            const context = this.graph && this.graph.__trellisWorkspaceDragContext; // NEW
+            if (context && shouldShowWorkspaceCallout(this.graph, context, this, me)) showWorkspaceMoveCallout(context.cell, context.type, me); // NEW
+            return oldRubberbandMouseMove.apply(this, arguments); // NEW
+        }; // NEW
+
+        const oldRubberbandMouseUp = mxRubberband.prototype.mouseUp; // NEW
+        mxRubberband.prototype.mouseUp = function (sender, me) { // NEW
+            try { // NEW
+                return oldRubberbandMouseUp.apply(this, arguments); // NEW
+            } finally { // NEW
+                if (this.graph) { // NEW
+                    this.graph.__trellisWorkspaceDragContext = null; // NEW
+                    this.graph.__trellisWorkspaceMarqueeContainer = null; // NEW
+                } // NEW
+            } // NEW
+        }; // NEW
+    } // NEW
+
+    const baseSelectRegion = graph.selectRegion; // NEW
+    graph.selectRegion = function (rect, evt) { // NEW
+        const container = this.__trellisWorkspaceMarqueeContainer; // NEW
+        if (!container) return baseSelectRegion.apply(this, arguments); // NEW
+        const isect = (mxEvent.isAltDown && mxEvent.isAltDown(evt)) ? rect : null; // NEW
+        let cells = this.getCells(rect.x, rect.y, rect.width, rect.height, null, null, isect, null, true) || []; // NEW
+        cells = filterWorkspaceDescendantSelection(this, container, cells); // NEW
+        if (this.isToggleEvent && this.isToggleEvent(evt)) { // NEW
+            for (let i = 0; i < cells.length; i++) this.selectCellForEvent(cells[i], evt); // NEW
+        } else if (this.selectCellsForEvent) { // NEW
+            this.selectCellsForEvent(cells, evt); // NEW
+        } else if (this.setSelectionCells) { // NEW
+            this.setSelectionCells(cells); // NEW
+        } // NEW
+        return cells; // NEW
+    }; // NEW
+
     function getDeepestCellForNativeEvent(graph, evt, fallback) { // CHANGE
         if (!graph || !evt) return fallback || null; // CHANGE
         const pt = mxUtils.convertPoint( // CHANGE
@@ -84,6 +160,20 @@ Draw.loadPlugin(function (ui) { // CHANGE
 
     function isGardenModule(cell) { // NEW
         return !!cell && cell.getAttribute && (cell.getAttribute('garden_module') === '1' || cell.getAttribute('trellis_garden_module') === '1'); // NEW
+    } // NEW
+
+    function isKanbanLane(cell) { // NEW
+        return !!cell && cell.getAttribute && !!cell.getAttribute('lane_key'); // NEW
+    } // NEW
+
+    function getWorkspaceContainerType(cell) { // NEW
+        if (isGardenModule(cell)) return 'module'; // NEW
+        if (isKanbanLane(cell)) return 'lane'; // NEW
+        return null; // NEW
+    } // NEW
+
+    function isWorkspaceContainer(cell) { // NEW
+        return !!getWorkspaceContainerType(cell); // NEW
     } // NEW
 
     function isLodSummary(cell) { // CHANGE
@@ -221,6 +311,17 @@ Draw.loadPlugin(function (ui) { // CHANGE
         return false; // CHANGE
     } // CHANGE
 
+    function filterWorkspaceDescendantSelection(graph, container, cells) { // NEW
+        const model = graph && graph.getModel ? graph.getModel() : null; // NEW
+        if (!model || !container) return []; // NEW
+        const out = []; // NEW
+        for (let i = 0; i < (cells || []).length; i++) { // NEW
+            const cell = cells[i]; // NEW
+            if (cell && cell !== container && isStrictAncestorOf(model, container, cell)) out.push(cell); // NEW
+        } // NEW
+        return out; // NEW
+    } // NEW
+
     function hasSelectedAncestor(graph, cell) { // CHANGE
         if (!graph || !cell) return false; // CHANGE
         const model = graph.getModel(); // CHANGE
@@ -262,6 +363,37 @@ Draw.loadPlugin(function (ui) { // CHANGE
         const pt = mxUtils.convertPoint(graph.container, me.getX(), me.getY()); // CHANGE
         return graph.getCellAt(pt.x, pt.y) || fallback || null; // CHANGE
     } // CHANGE
+
+    function isPrimaryPointerEvent(evt) { // NEW
+        if (!evt) return true; // NEW
+        if ((mxEvent.isPopupTrigger && mxEvent.isPopupTrigger(evt)) || evt.button === 2) return false; // NEW
+        return evt.button == null || evt.button === 0; // NEW
+    } // NEW
+
+    function isWorkspaceHandleEvent(evt) { // NEW
+        let node = evt && (evt.target || evt.srcElement); // NEW
+        while (node) { // NEW
+            if (node.getAttribute && node.getAttribute('data-trellis-workspace-drag-handle') === '1') return true; // NEW
+            node = node.parentNode; // NEW
+        } // NEW
+        return false; // NEW
+    } // NEW
+
+    function isCellControlEvent(me) { // NEW
+        if (!me || !me.getState || !me.isSource) return false; // NEW
+        const state = me.getState(); // NEW
+        return !!(state && state.control && me.isSource(state.control)); // NEW
+    } // NEW
+
+    function getWorkspaceSurfaceDragContext(graph, me) { // NEW
+        if (!graph || !me || me.isConsumed && me.isConsumed()) return null; // NEW
+        const evt = me.getEvent ? me.getEvent() : null; // NEW
+        if (!isPrimaryPointerEvent(evt) || isWorkspaceHandleEvent(evt) || isCellControlEvent(me)) return null; // NEW
+        const cell = getDeepestCellForMouseEvent(graph, me, me.getCell ? me.getCell() : null); // NEW
+        const type = getWorkspaceContainerType(cell); // NEW
+        if (!type || !graph.getModel || !graph.getModel().isVertex(cell)) return null; // NEW
+        return { cell: cell, type: type }; // NEW
+    } // NEW
 
     function findMovableDragAncestorForLockedCell(graph, cell) { // CHANGE
         if (!graph || !cell) return null; // CHANGE
@@ -358,6 +490,256 @@ Draw.loadPlugin(function (ui) { // CHANGE
 
         this.setSelectionCell(cell); // CHANGE
     }; // CHANGE
+
+    function getCellId(cell) { // NEW
+        return cell && (cell.id || (cell.getId && cell.getId())) || null; // NEW
+    } // NEW
+
+    function ensureWorkspaceOverlayHost() { // NEW
+        const host = graph.container; // NEW
+        if (!host) return null; // NEW
+        const style = window.getComputedStyle ? window.getComputedStyle(host) : null; // NEW
+        if (style && style.position === 'static') host.style.position = 'relative'; // NEW
+        return host; // NEW
+    } // NEW
+
+    function isWorkspaceHandleVisibleForCell(cell) { // NEW
+        return isWorkspaceContainer(cell) && graph.isCellVisible(cell) && graph.isCellMovable(cell) && graph.view && graph.view.getState(cell); // NEW
+    } // NEW
+
+    function getWorkspaceHandleCells() { // NEW
+        const cells = []; // NEW
+        const seen = {}; // NEW
+        const selected = graph.getSelectionCells ? (graph.getSelectionCells() || []) : []; // NEW
+        function add(cell) { // NEW
+            const id = getCellId(cell); // NEW
+            if (!id || seen[id] || !isWorkspaceHandleVisibleForCell(cell)) return; // NEW
+            seen[id] = true; // NEW
+            cells.push(cell); // NEW
+        } // NEW
+        for (let i = 0; i < selected.length; i++) add(selected[i]); // NEW
+        add(workspaceHoveredCell); // NEW
+        add(workspaceDraggingHandleCell); // NEW
+        return cells; // NEW
+    } // NEW
+
+    function styleWorkspaceHandle(handle) { // NEW
+        handle.type = 'button'; // NEW
+        handle.setAttribute('data-trellis-workspace-drag-handle', '1'); // NEW
+        handle.style.position = 'absolute'; // NEW
+        handle.style.zIndex = '10020'; // NEW
+        handle.style.width = WORKSPACE_HANDLE_SIZE + 'px'; // NEW
+        handle.style.height = WORKSPACE_HANDLE_SIZE + 'px'; // NEW
+        handle.style.padding = '0'; // NEW
+        handle.style.border = '1px solid rgba(60, 64, 67, 0.35)'; // NEW
+        handle.style.borderRadius = '4px'; // NEW
+        handle.style.background = 'rgba(255, 255, 255, 0.96)'; // NEW
+        handle.style.boxShadow = '0 1px 4px rgba(0, 0, 0, 0.20)'; // NEW
+        handle.style.cursor = 'move'; // NEW
+        handle.style.color = '#3c4043'; // NEW
+        handle.style.font = '13px Arial, sans-serif'; // NEW
+        handle.style.lineHeight = WORKSPACE_HANDLE_SIZE + 'px'; // NEW
+        handle.style.textAlign = 'center'; // NEW
+        handle.style.pointerEvents = 'auto'; // NEW
+        handle.textContent = '::'; // NEW
+    } // NEW
+
+    function createWorkspaceHandle(cell) { // NEW
+        const handle = document.createElement('button'); // NEW
+        styleWorkspaceHandle(handle); // NEW
+        handle.setAttribute('aria-label', workspaceHandleTitle(cell)); // NEW
+        handle.setAttribute('title', workspaceHandleTitle(cell)); // NEW
+        mxEvent.addListener(handle, 'mousedown', function (evt) { // NEW
+            beginWorkspaceHandleDrag(cell, evt); // NEW
+        }); // NEW
+        mxEvent.addListener(handle, 'mousemove', function () { // NEW
+            workspaceHoveredCell = cell; // NEW
+            scheduleWorkspaceHandleRefresh(); // NEW
+        }); // NEW
+        return handle; // NEW
+    } // NEW
+
+    function workspaceHandleTitle(cell) { // NEW
+        return getWorkspaceContainerType(cell) === 'lane' ? 'Move lane' : 'Move module'; // NEW
+    } // NEW
+
+    function positionWorkspaceHandle(handle, cell) { // NEW
+        const state = graph.view && graph.view.getState(cell); // NEW
+        if (!state) return false; // NEW
+        handle.style.left = Math.round(state.x - WORKSPACE_HANDLE_SIZE - WORKSPACE_HANDLE_GAP) + 'px'; // NEW
+        handle.style.top = Math.round(state.y - WORKSPACE_HANDLE_SIZE - WORKSPACE_HANDLE_GAP) + 'px'; // NEW
+        handle.setAttribute('aria-label', workspaceHandleTitle(cell)); // NEW
+        handle.setAttribute('title', workspaceHandleTitle(cell)); // NEW
+        return true; // NEW
+    } // NEW
+
+    function refreshWorkspaceHandles() { // NEW
+        workspaceHandleRefreshThread = null; // NEW
+        const host = ensureWorkspaceOverlayHost(); // NEW
+        if (!host) return; // NEW
+        const cells = getWorkspaceHandleCells(); // NEW
+        const keep = {}; // NEW
+        for (let i = 0; i < cells.length; i++) { // NEW
+            const cell = cells[i]; // NEW
+            const id = getCellId(cell); // NEW
+            let entry = workspaceHandleEntries.get(id); // NEW
+            if (!entry) { // NEW
+                entry = { cell: cell, handle: createWorkspaceHandle(cell) }; // NEW
+                workspaceHandleEntries.set(id, entry); // NEW
+            } // NEW
+            if (entry.handle.parentNode !== host) host.appendChild(entry.handle); // NEW
+            if (positionWorkspaceHandle(entry.handle, cell)) keep[id] = true; // NEW
+        } // NEW
+        workspaceHandleEntries.forEach(function (entry, id) { // NEW
+            if (!keep[id]) { // NEW
+                if (entry.handle.parentNode) entry.handle.parentNode.removeChild(entry.handle); // NEW
+                workspaceHandleEntries.delete(id); // NEW
+            } // NEW
+        }); // NEW
+    } // NEW
+
+    function scheduleWorkspaceHandleRefresh() { // NEW
+        if (workspaceHandleRefreshThread) return; // NEW
+        workspaceHandleRefreshThread = window.setTimeout(refreshWorkspaceHandles, 0); // NEW
+    } // NEW
+
+    function eventPointInGraphContainer(evt) { // NEW
+        if (!evt || !graph.container) return null; // NEW
+        return mxUtils.convertPoint(graph.container, mxEvent.getClientX(evt), mxEvent.getClientY(evt)); // NEW
+    } // NEW
+
+    function pointInWorkspaceGrace(cell, pt) { // NEW
+        const state = cell && graph.view && graph.view.getState(cell); // NEW
+        if (!state || !pt) return false; // NEW
+        return pt.x >= state.x - WORKSPACE_HOVER_GRACE_PX && pt.x <= state.x + state.width + WORKSPACE_HOVER_GRACE_PX && pt.y >= state.y - WORKSPACE_HOVER_GRACE_PX && pt.y <= state.y + state.height + WORKSPACE_HOVER_GRACE_PX; // NEW
+    } // NEW
+
+    function updateWorkspaceHoverFromMouseEvent(me) { // NEW
+        if (workspaceDraggingHandleCell) return; // NEW
+        const evt = me && me.getEvent ? me.getEvent() : null; // NEW
+        const hit = getDeepestCellForMouseEvent(graph, me, null); // NEW
+        const pt = eventPointInGraphContainer(evt); // NEW
+        if (isWorkspaceHandleVisibleForCell(hit)) { // NEW
+            workspaceHoveredCell = hit; // NEW
+        } else if (!pointInWorkspaceGrace(workspaceHoveredCell, pt)) { // NEW
+            workspaceHoveredCell = null; // NEW
+        } // NEW
+        scheduleWorkspaceHandleRefresh(); // NEW
+    } // NEW
+
+    function beginWorkspaceHandleDrag(cell, evt) { // NEW
+        if (!cell || !graph.isCellMovable(cell)) return; // NEW
+        if (!graph.isCellSelected || !graph.isCellSelected(cell)) graph.setSelectionCell(cell); // NEW
+        workspaceDraggingHandleCell = cell; // NEW
+        workspaceHoveredCell = cell; // NEW
+        const handler = graph.graphHandler; // NEW
+        if (handler) { // NEW
+            const oldMouseDown = graph.isMouseDown; // NEW
+            graph.isMouseDown = true; // NEW
+            handler.mouseDownX = mxEvent.getClientX(evt); // NEW
+            handler.mouseDownY = mxEvent.getClientY(evt); // NEW
+            handler.delayedSelection = true; // NEW
+            handler.cell = cell; // NEW
+            const move = function (moveEvt) { // NEW
+                handler.mouseMove(graph, createWorkspaceMouseEvent(moveEvt, cell)); // NEW
+            }; // NEW
+            const up = function (upEvt) { // NEW
+                try { // NEW
+                    handler.mouseUp(graph, createWorkspaceMouseEvent(upEvt, cell)); // NEW
+                } finally { // NEW
+                    graph.isMouseDown = oldMouseDown; // NEW
+                    workspaceDraggingHandleCell = null; // NEW
+                    mxEvent.removeGestureListeners(document, null, move, up); // NEW
+                    scheduleWorkspaceHandleRefresh(); // NEW
+                } // NEW
+            }; // NEW
+            mxEvent.addGestureListeners(document, null, move, up); // NEW
+        } // NEW
+        scheduleWorkspaceHandleRefresh(); // NEW
+        mxEvent.consume(evt); // NEW
+    } // NEW
+
+    function createWorkspaceMouseEvent(evt, fallbackCell) { // NEW
+        if (typeof mxMouseEvent !== 'function') return { getEvent: function () { return evt; }, getX: function () { return mxEvent.getClientX(evt); }, getY: function () { return mxEvent.getClientY(evt); }, getCell: function () { return fallbackCell; }, isConsumed: function () { return false; }, consume: function () { } }; // NEW
+        const pt = eventPointInGraphContainer(evt); // NEW
+        const cell = pt && graph.getCellAt ? graph.getCellAt(pt.x, pt.y) : fallbackCell; // NEW
+        const state = cell && graph.view ? graph.view.getState(cell) : graph.view && graph.view.getState(fallbackCell); // NEW
+        return new mxMouseEvent(evt, state); // NEW
+    } // NEW
+
+    function shouldShowWorkspaceCallout(graph, context, rubberband, me) { // NEW
+        if (!context || workspaceCalloutSeenByType[context.type]) return false; // NEW
+        if (rubberband && rubberband.div) return true; // NEW
+        if (!rubberband || !rubberband.first || !me) return false; // NEW
+        const dx = Math.abs((rubberband.first.x || 0) - me.getX()); // NEW
+        const dy = Math.abs((rubberband.first.y || 0) - me.getY()); // NEW
+        return dx > (graph.tolerance || 4) || dy > (graph.tolerance || 4); // NEW
+    } // NEW
+
+    function showWorkspaceMoveCallout(cell, type, me) { // NEW
+        workspaceCalloutSeenByType[type] = true; // NEW
+        if (workspaceCalloutDiv && workspaceCalloutDiv.parentNode) workspaceCalloutDiv.parentNode.removeChild(workspaceCalloutDiv); // NEW
+        const host = ensureWorkspaceOverlayHost(); // NEW
+        if (!host) return; // NEW
+        const div = document.createElement('div'); // NEW
+        div.textContent = type === 'lane' ? 'To move this lane, drag the handle in the top-left corner.' : 'To move this module, drag the handle in the top-left corner.'; // NEW
+        div.style.position = 'absolute'; // NEW
+        div.style.zIndex = '10021'; // NEW
+        div.style.maxWidth = '260px'; // NEW
+        div.style.padding = '8px 10px'; // NEW
+        div.style.border = '1px solid rgba(60, 64, 67, 0.28)'; // NEW
+        div.style.borderRadius = '6px'; // NEW
+        div.style.background = 'rgba(32, 33, 36, 0.94)'; // NEW
+        div.style.color = '#fff'; // NEW
+        div.style.boxShadow = '0 2px 8px rgba(0, 0, 0, 0.24)'; // NEW
+        div.style.font = '12px Arial, sans-serif'; // NEW
+        div.style.lineHeight = '16px'; // NEW
+        div.style.pointerEvents = 'none'; // NEW
+        const state = graph.view && graph.view.getState(cell); // NEW
+        const pt = me && eventPointInGraphContainer(me.getEvent ? me.getEvent() : null); // NEW
+        div.style.left = Math.round((state ? state.x : pt && pt.x || 0) + 8) + 'px'; // NEW
+        div.style.top = Math.round((state ? state.y : pt && pt.y || 0) + 8) + 'px'; // NEW
+        host.appendChild(div); // NEW
+        workspaceCalloutDiv = div; // NEW
+        window.setTimeout(function () { // NEW
+            if (div.parentNode) div.parentNode.removeChild(div); // NEW
+            if (workspaceCalloutDiv === div) workspaceCalloutDiv = null; // NEW
+        }, WORKSPACE_CALLOUT_MS); // NEW
+    } // NEW
+
+    if (graph.addMouseListener) { // NEW
+        graph.addMouseListener({ // NEW
+            mouseDown() { }, // NEW
+            mouseMove(sender, me) { updateWorkspaceHoverFromMouseEvent(me); }, // NEW
+            mouseUp() { graph.__trellisWorkspaceDragContext = null; graph.__trellisWorkspaceMarqueeContainer = null; } // NEW
+        }); // NEW
+    } // NEW
+
+    function addRefreshListener(source, eventName) { // NEW
+        if (source && source.addListener && eventName) source.addListener(eventName, scheduleWorkspaceHandleRefresh); // NEW
+    } // NEW
+
+    const selectionModel = graph.getSelectionModel && graph.getSelectionModel(); // NEW
+    addRefreshListener(selectionModel, mxEvent.CHANGE || 'change'); // NEW
+    addRefreshListener(graph, mxEvent.CELLS_MOVED || 'cellsMoved'); // NEW
+    addRefreshListener(graph, mxEvent.CELLS_RESIZED || 'cellsResized'); // NEW
+    addRefreshListener(graph, mxEvent.CELLS_TOGGLED || 'cellsToggled'); // NEW
+    addRefreshListener(graph.view, mxEvent.SCALE || 'scale'); // NEW
+    addRefreshListener(graph.view, mxEvent.TRANSLATE || 'translate'); // NEW
+    addRefreshListener(graph.view, mxEvent.SCALE_AND_TRANSLATE || 'scaleAndTranslate'); // NEW
+    addRefreshListener(graph.view, mxEvent.REPAINT || 'repaint'); // NEW
+    addRefreshListener(graph.getModel && graph.getModel(), mxEvent.CHANGE || 'change'); // NEW
+    if (typeof window !== 'undefined' && mxEvent.addListener) mxEvent.addListener(window, 'resize', scheduleWorkspaceHandleRefresh); // NEW
+    scheduleWorkspaceHandleRefresh(); // NEW
+
+    graph.__trellisWorkspaceDragPolicy = { // NEW
+        isWorkspaceContainer: isWorkspaceContainer, // NEW
+        getWorkspaceContainerType: getWorkspaceContainerType, // NEW
+        filterWorkspaceDescendantSelection: function (container, cells) { return filterWorkspaceDescendantSelection(graph, container, cells); }, // NEW
+        getHandleCells: getWorkspaceHandleCells, // NEW
+        setHoveredCellForTests: function (cell) { workspaceHoveredCell = cell; scheduleWorkspaceHandleRefresh(); }, // NEW
+        refreshHandles: refreshWorkspaceHandles // NEW
+    }; // NEW
 
     console.log('[DeepClickThrough] Deep child selection enabled.'); // CHANGE
 }); // CHANGE
