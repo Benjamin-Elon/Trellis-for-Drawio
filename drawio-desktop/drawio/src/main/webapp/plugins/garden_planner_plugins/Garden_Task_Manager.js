@@ -201,11 +201,6 @@ function getSchedulerTaskKey(source) { // ADDED
     return String(readAttributeValue(source, 'scheduler_task_key') || '').trim(); // ADDED
 } // ADDED
 
-function isSchedulerSowAnchorTask(source) { // ADDED
-    return String(readAttributeValue(source, 'scheduler_anchor_stage') || '').trim().toUpperCase() === 'SOW' && // ADDED
-        !!String(readAttributeValue(source, 'scheduler_method_id') || '').trim(); // ADDED
-} // ADDED
-
 function buildGeneratedTaskSyncAttributes(task) { // ADDED
     const source = task && typeof task === 'object' ? task : {}; // ADDED
     const attrs = { // ADDED
@@ -437,7 +432,6 @@ if (typeof globalThis !== 'undefined' && globalThis.__TRELLIS_TASK_MANAGER_TEST_
         getTaskDateRange, // NEW
         buildInitialCardDateAttributes, // NEW
         buildSchedulerTaskMetadataAttributes, // NEW
-        isSchedulerSowAnchorTask, // ADDED
         getSchedulerTaskKey, // ADDED
         buildGeneratedTaskSyncAttributes, // ADDED
         planDifferentialTaskSync, // ADDED
@@ -859,14 +853,6 @@ Draw.loadPlugin(function (ui) {
     function clearCardNote(card) { // NEW
         return setCardNote(card, '');
     }
-
-    async function tryApplySchedulerAnchorDateEdit(card, newStartISO) { // ADDED
-        if (!isSchedulerSowAnchorTask(card && card.value)) return { handled: false }; // ADDED
-        const scheduler = typeof window !== 'undefined' && window.USL && window.USL.scheduler ? window.USL.scheduler : null; // ADDED
-        if (!scheduler || typeof scheduler.applyTaskAnchorDateEdit !== 'function') return { handled: false }; // ADDED
-        const result = await scheduler.applyTaskAnchorDateEdit({ ui, taskCard: card, startISO: newStartISO }); // ADDED
-        return result && result.handled === false ? { handled: false } : { handled: true, result }; // ADDED
-    } // ADDED
 
     function fmtSigned(n) {
         if (n == null) return '';
@@ -2472,17 +2458,6 @@ Draw.loadPlugin(function (ui) {
                     error.textContent = 'This card is no longer eligible for date editing.';
                     return;
                 }
-
-                try { // ADDED
-                    const schedulerEdit = await tryApplySchedulerAnchorDateEdit(card, startInput.value); // ADDED
-                    if (schedulerEdit.handled) { // ADDED
-                        ui.hideDialog(); // ADDED
-                        return; // ADDED
-                    } // ADDED
-                } catch (e) { // ADDED
-                    error.textContent = e && e.message ? e.message : String(e); // ADDED
-                    return; // ADDED
-                } // ADDED
 
                 const datePatch = buildCardDateOverridePatch(card.value, startInput.value); // NEW
                 if (!datePatch || datePatch.changed === false) {

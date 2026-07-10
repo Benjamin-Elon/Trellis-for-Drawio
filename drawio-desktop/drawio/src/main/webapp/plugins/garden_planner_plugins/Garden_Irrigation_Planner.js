@@ -3757,7 +3757,7 @@ Draw.loadPlugin(function (ui) {
         const assemblySelection = selectedAssemblyContextCells(); // NEW
         const hud = document.createElement("div"); // NEW
         hud.className = "trellis-irrigation-mode-hud"; // NEW
-        hud.style.cssText = "position:absolute;z-index:1000;width:max-content;max-width:min(460px,calc(100vw - 32px));min-width:0;box-sizing:border-box;overflow:hidden;background:#fff;border:1px solid #777;border-radius:6px;box-shadow:0 3px 12px rgba(0,0,0,.22);padding:8px;font:12px Arial,sans-serif;color:#222;display:flex;flex-direction:column;gap:6px;pointer-events:auto;"; // CHANGE
+        hud.style.cssText = "position:absolute;z-index:1005;width:max-content;max-width:min(460px,calc(100vw - 32px));min-width:0;box-sizing:border-box;overflow:hidden;background:#fff;border:1px solid #777;border-radius:6px;box-shadow:0 3px 12px rgba(0,0,0,.22);padding:8px;font:12px Arial,sans-serif;color:#222;display:flex;flex-direction:column;gap:6px;pointer-events:auto;"; // CHANGE
         shieldHudEvents(hud); // NEW
         if (assemblySelection.length) renderLocalIrrigationHud(session, hud, assemblySelection); // CHANGE
         else if (isGardenBed(selected)) renderGardenBedHud(session, hud, selected); // NEW
@@ -5199,7 +5199,7 @@ Draw.loadPlugin(function (ui) {
             nav.className = "trellis-irrigation-nav-" + spec[0]; // NEW
             nav.textContent = spec[4]; // NEW
             nav.title = spec[0]; // NEW
-            nav.style.cssText = "position:absolute;z-index:1001;width:22px;height:22px;padding:0;border:1px solid #777;border-radius:4px;background:#fff;cursor:pointer;font:12px Arial,sans-serif;"; // NEW
+            nav.style.cssText = "position:absolute;z-index:1004;width:22px;height:22px;padding:0;border:1px solid #777;border-radius:4px;background:#fff;cursor:pointer;font:12px Arial,sans-serif;"; // NEW
             positionNavigatorButton(nav, activeCell, spec[2], spec[3]); // NEW
             nav.addEventListener("click", function () { selectCell(spec[1], true); renderIrrigationMode(session); }); // NEW
             appendOverlayNode(nav); // NEW

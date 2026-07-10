@@ -22,6 +22,8 @@ Draw.loadPlugin(function (ui) {
     // -------------------- Config --------------------
     const PX_PER_CM = 5;
     const DRAW_SCALE = 0.18;
+    const GRAPH_OVERLAY_Z = Object.freeze({ ANNOTATION: 10000, CONNECTION: 10010, CONTROL: 10020, CONTROL_TOP: 10030 }); // CHANGE
+    const GRAPH_OVERLAY_LAYER_CLASS = Object.freeze({ control: "trellis-graph-control-layer trellis-body-control-layer" }); // CHANGE
 
     const DASH_ATTR = "garden_dashboard";
     const DASH_YEAR_ATTR = "dashboard_year";
@@ -940,17 +942,34 @@ Draw.loadPlugin(function (ui) {
         return cell && cell.getId ? cell.getId() : (cell && cell.id) || ""; // NEW
     } // NEW
 
-    function getViewportToolbarHost() { // NEW
+    function getViewportToolbarContainer() { // NEW
         return graph && graph.container; // NEW
+    } // NEW
+
+    function getViewportToolbarHost() { // CHANGE
+        return ensureGraphBodyControlLayer(); // CHANGE
     } // NEW
 
     function ensureViewportToolbarHost() { // NEW
         const host = getViewportToolbarHost(); // NEW
-        if (!host) return null; // NEW
-        const style = window.getComputedStyle ? window.getComputedStyle(host) : null; // NEW
-        if (style && style.position === "static") host.style.position = "relative"; // NEW
         return host; // NEW
     } // NEW
+
+    function ensureGraphBodyControlLayer() { // CHANGE
+        const container = getViewportToolbarContainer(); // NEW
+        if (!container || !document.body) return null; // CHANGE
+        try { // NEW
+            if (window.getComputedStyle && window.getComputedStyle(container).position === "static") container.style.position = "relative"; // NEW
+        } catch (_) { } // NEW
+        let layer = document.body.querySelector(".trellis-body-control-layer"); // CHANGE
+        if (!layer) { // NEW
+            layer = document.createElement("div"); // NEW
+            layer.className = GRAPH_OVERLAY_LAYER_CLASS.control; // CHANGE
+            layer.style.cssText = "position:fixed;left:0;top:0;width:0;height:0;overflow:visible;pointer-events:none;z-index:" + GRAPH_OVERLAY_Z.CONTROL + ";"; // CHANGE
+            document.body.appendChild(layer); // CHANGE
+        } // NEW
+        return layer; // NEW
+    } // CHANGE
 
     function viewportToolbarWidth(host) { // NEW
         if (!host) return 0; // NEW
@@ -1025,7 +1044,7 @@ Draw.loadPlugin(function (ui) {
         const wrap = document.createElement("div"); // NEW
         wrap.className = "trellis-garden-dashboard-toolbar"; // NEW
         wrap.style.position = "fixed"; // CHANGE
-        wrap.style.zIndex = "10005"; // NEW
+        wrap.style.zIndex = String(GRAPH_OVERLAY_Z.CONTROL); // CHANGE
         wrap.style.display = "none"; // NEW
         wrap.style.boxSizing = "border-box"; // NEW
         wrap.style.padding = "8px 12px"; // NEW
@@ -1152,7 +1171,7 @@ Draw.loadPlugin(function (ui) {
     } // NEW
 
     function positionViewportToolbar(entry) { // NEW
-        const host = ensureViewportToolbarHost(); // NEW
+        const host = getViewportToolbarContainer(); // CHANGE
         if (!entry || !host) return; // NEW
         const rect = host.getBoundingClientRect ? host.getBoundingClientRect() : { left: 0, top: 0 }; // CHANGE
         entry.wrap.style.left = Math.round(rect.left || 0) + "px"; // CHANGE
@@ -1961,7 +1980,7 @@ Draw.loadPlugin(function (ui) {
         model.addListener(mxEvent.CHANGE, scheduleViewportToolbarRefresh); // NEW
     } // NEW
     window.addEventListener("resize", scheduleViewportToolbarRefresh); // NEW
-    const viewportToolbarHost = ensureViewportToolbarHost(); // NEW
+    const viewportToolbarHost = getViewportToolbarContainer(); // CHANGE
     if (viewportToolbarHost && viewportToolbarHost.addEventListener) { // NEW
         viewportToolbarHost.addEventListener("scroll", scheduleViewportToolbarRefresh); // NEW
     } // NEW

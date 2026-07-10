@@ -26,7 +26,8 @@ Draw.loadPlugin(function (ui) {
     const MAX_OVERLAYS = 6; // cap to avoid clutter
     const OVERLAY_PADDING = "3px 7px"; // CHANGE
     const OVERLAY_FONT = "12px";
-    const OVERLAY_Z = 999;
+    const GRAPH_OVERLAY_Z = Object.freeze({ ANNOTATION: 10000, CONNECTION: 10010, CONTROL: 10020, CONTROL_TOP: 10030 }); // CHANGE
+    const OVERLAY_Z = GRAPH_OVERLAY_Z.ANNOTATION; // CHANGE
     const CHIP_Y_OFFSET = 8; // px below rotated bounds, matching draw.io hint intent. // NEW
 
     const GROUP_LABEL_FONT_PX = 12;

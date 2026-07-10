@@ -20,6 +20,7 @@ Draw.loadPlugin(function (ui) {
     const PLAN_UNIT_DEFAULTS_ATTR = "plan_unit_defaults";   // (diagram-scoped, per plantId)
     const PLAN_METADATA_CELL_ATTR = "usl_year_planner_metadata"; // NEW
     const EPS = 0.0001; // NEW
+    const TRELLIS_DIALOG_Z = 2000000000; // NEW
     const __YP_GLOBAL = window.__uslYearPlannerGlobal || (window.__uslYearPlannerGlobal = {});
 
     // -------------------- SessionController -------------------- // CHANGE
@@ -2680,7 +2681,7 @@ Draw.loadPlugin(function (ui) {
             const visibleChartSeriesIds = new Set(PLAN_CHART_SERIES.map(series => series.id)); // NEW
 
             const wrap = document.createElement("div"); // NEW
-            wrap.style.cssText = "position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;"; // NEW
+            wrap.style.cssText = "position:fixed;inset:0;z-index:" + TRELLIS_DIALOG_Z + ";background:rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;"; // CHANGE
             const card = document.createElement("div"); // NEW
             card.className = "yp-modal-card"; // CHANGE
             card.style.cssText = "width:1180px;max-width:97vw;height:92vh;background:#fff;border:1px solid #777;border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.25);display:flex;flex-direction:column;overflow:hidden;font:12px Arial,sans-serif;"; // NEW

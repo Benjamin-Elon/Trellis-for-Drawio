@@ -21,10 +21,14 @@ function viewportToolbarSource() { // NEW
 
 test("garden dashboard toolbar is mounted to the graph viewport and sized from the viewport", () => { // NEW
     const text = viewportToolbarSource(); // NEW
+    const fullSource = source(); // NEW
     assert.match(text, /wrap\.className = "trellis-garden-dashboard-toolbar"/); // NEW
+    assert.match(fullSource, /trellis-graph-control-layer/); // CHANGE
+    assert.match(text, /function getViewportToolbarContainer\(\)/); // CHANGE
     assert.match(text, /return graph && graph\.container;/); // NEW
     assert.match(text, /host\.appendChild\(wrap\);/); // NEW
     assert.match(text, /wrap\.style\.position = "fixed";/); // NEW
+    assert.match(text, /const host = getViewportToolbarContainer\(\); \/\/ CHANGE/); // NEW
     assert.match(text, /function viewportToolbarWidth\(host\)/); // NEW
     assert.match(text, /host\.getBoundingClientRect/); // NEW
     assert.match(text, /if \(rect && rect\.width\) return rect\.width;/); // NEW

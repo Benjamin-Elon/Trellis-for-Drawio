@@ -13,6 +13,7 @@ Draw.loadPlugin(function (ui) { // CHANGE
     const WORKSPACE_HANDLE_GAP = 2; // NEW
     const WORKSPACE_HOVER_GRACE_PX = 30; // NEW
     const WORKSPACE_CALLOUT_MS = 5000; // NEW
+    const GRAPH_OVERLAY_Z = Object.freeze({ ANNOTATION: 10000, CONNECTION: 10010, CONTROL: 10020, CONTROL_TOP: 10030 }); // CHANGE
     const workspaceCalloutSeenByType = { module: false, lane: false }; // NEW
     let workspaceHoveredCell = null; // NEW
     let workspaceDraggingHandleCell = null; // NEW
@@ -574,7 +575,7 @@ Draw.loadPlugin(function (ui) { // CHANGE
         handle.type = 'button'; // NEW
         handle.setAttribute('data-trellis-workspace-drag-handle', '1'); // NEW
         handle.style.position = 'absolute'; // NEW
-        handle.style.zIndex = '10020'; // NEW
+        handle.style.zIndex = String(GRAPH_OVERLAY_Z.CONTROL_TOP); // CHANGE
         handle.style.width = WORKSPACE_HANDLE_SIZE + 'px'; // NEW
         handle.style.height = WORKSPACE_HANDLE_SIZE + 'px'; // NEW
         handle.style.padding = '0'; // NEW
@@ -795,7 +796,7 @@ Draw.loadPlugin(function (ui) { // CHANGE
         const div = document.createElement('div'); // NEW
         div.textContent = type === 'lane' ? 'To move this lane, drag the handle in the top-left corner.' : 'To move this module, drag the handle in the top-left corner.'; // NEW
         div.style.position = 'absolute'; // NEW
-        div.style.zIndex = '10021'; // NEW
+        div.style.zIndex = String(GRAPH_OVERLAY_Z.CONTROL_TOP); // CHANGE
         div.style.maxWidth = '260px'; // NEW
         div.style.padding = '8px 10px'; // NEW
         div.style.border = '1px solid rgba(60, 64, 67, 0.28)'; // NEW

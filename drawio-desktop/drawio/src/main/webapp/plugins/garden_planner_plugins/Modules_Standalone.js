@@ -1,6 +1,7 @@
 Draw.loadPlugin(function (ui) {
     const graph = ui.editor.graph;
     const model = graph.getModel();
+    const GRAPH_OVERLAY_Z = Object.freeze({ ANNOTATION: 10000, CONNECTION: 10010, CONTROL: 10020, CONTROL_TOP: 10030 }); // CHANGE
 
     // Override resizeChildCells so modules do not resize children
     const originalResizeChildCells = graph.resizeChildCells;
@@ -1027,7 +1028,7 @@ Draw.loadPlugin(function (ui) {
             overlay = document.createElement("div"); // NEW
             overlay.className = "trellis-root-module-overlay"; // NEW
             overlay.style.position = "absolute"; // NEW
-            overlay.style.zIndex = "10007"; // NEW
+            overlay.style.zIndex = String(GRAPH_OVERLAY_Z.CONTROL); // CHANGE
             overlay.style.display = "none"; // NEW
             overlay.style.flexDirection = "column"; // NEW
             overlay.style.gap = "4px"; // NEW
@@ -1332,7 +1333,7 @@ Draw.loadPlugin(function (ui) {
             overlay = document.createElement("div"); // NEW
             overlay.className = "trellis-team-role-overlay"; // NEW
             overlay.style.position = "absolute"; // NEW
-            overlay.style.zIndex = "10008"; // NEW
+            overlay.style.zIndex = String(GRAPH_OVERLAY_Z.CONTROL); // CHANGE
             overlay.style.display = "none"; // NEW
             overlay.style.flexDirection = "column"; // NEW
             overlay.style.gap = "4px"; // NEW
@@ -1494,7 +1495,7 @@ Draw.loadPlugin(function (ui) {
             overlay = document.createElement("div"); // NEW
             overlay.className = "trellis-role-image-overlay"; // NEW
             overlay.style.position = "absolute"; // NEW
-            overlay.style.zIndex = "10009"; // NEW
+            overlay.style.zIndex = String(GRAPH_OVERLAY_Z.CONTROL); // CHANGE
             overlay.style.display = "none"; // NEW
             overlay.style.padding = "4px"; // NEW
             overlay.style.background = "rgba(255,255,255,0.96)"; // NEW

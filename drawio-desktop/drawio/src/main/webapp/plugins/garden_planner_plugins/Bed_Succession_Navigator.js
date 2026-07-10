@@ -55,6 +55,7 @@ Draw.loadPlugin(function (ui) {
         '<circle cx="11" cy="11" r="10" fill="white" stroke="black" stroke-width="1"/>' +
         '<polygon points="9,6 13,11 9,16" fill="black"/></svg>'
     );
+    const GRAPH_OVERLAY_Z = Object.freeze({ ANNOTATION: 10000, CONNECTION: 10010, CONTROL: 10020, CONTROL_TOP: 10030 }); // CHANGE
 
     const ICON_SELECT = 'data:image/svg+xml;utf8,' + encodeURIComponent(
         '<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">' +
@@ -1019,7 +1020,7 @@ Draw.loadPlugin(function (ui) {
         el.style.position = 'absolute';
         el.style.width = OVERLAP_BADGE_W + 'px';
         el.style.height = OVERLAP_BADGE_H + 'px';
-        el.style.zIndex = '10000';
+        el.style.zIndex = String(GRAPH_OVERLAY_Z.ANNOTATION); // CHANGE
         el.style.pointerEvents = 'none';
         el.style.border = '1px solid #000';
         el.style.borderRadius = '10px';
@@ -1099,7 +1100,7 @@ Draw.loadPlugin(function (ui) {
         el.style.position = 'absolute';
         el.style.width = BTN_SIZE + 'px';
         el.style.height = BTN_SIZE + 'px';
-        el.style.zIndex = '10000';
+        el.style.zIndex = String(GRAPH_OVERLAY_Z.CONTROL); // CHANGE
         el.style.cursor = 'pointer';
         el.style.pointerEvents = 'auto';
     }
@@ -1108,7 +1109,7 @@ Draw.loadPlugin(function (ui) {
         el.style.position = 'absolute';
         el.style.width = BTN_SIZE + 'px';
         el.style.height = BTN_SIZE + 'px';
-        el.style.zIndex = '10000';
+        el.style.zIndex = String(GRAPH_OVERLAY_Z.CONTROL); // CHANGE
         el.style.cursor = 'pointer';
         el.style.pointerEvents = 'auto';
         el.style.userSelect = 'none';
@@ -1393,7 +1394,7 @@ Draw.loadPlugin(function (ui) {
         if (!st.badge) {
             const b = document.createElement('div');
             b.style.position = 'absolute';
-            b.style.zIndex = '10000';
+            b.style.zIndex = String(GRAPH_OVERLAY_Z.ANNOTATION); // CHANGE
             b.style.padding = '2px 6px';
             b.style.font = '12px/16px sans-serif';
             b.style.background = 'rgba(255,255,255,0.9)';

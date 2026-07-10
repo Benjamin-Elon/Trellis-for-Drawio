@@ -17,6 +17,7 @@ Draw.loadPlugin(function (ui) {
     const ROTATION_RETILE_DEBOUNCE_MS = 150; // CHANGE
     const DEBUG_PLANT_TILER = false; // CHANGE
     const DEBUG_BED_FIT = false; // CHANGE
+    const GRAPH_OVERLAY_Z = Object.freeze({ ANNOTATION: 10000, CONNECTION: 10010, CONTROL: 10020, CONTROL_TOP: 10030 }); // CHANGE
 
     const GROUP_LABEL_FONT_PX = 12;
     const GROUP_LABEL_LINE_HEIGHT = 1.25;
@@ -1960,7 +1961,7 @@ Draw.loadPlugin(function (ui) {
             if (toolbar) return toolbar; // CHANGE
             toolbar = document.createElement("div"); // CHANGE
             toolbar.style.position = "absolute"; // CHANGE
-            toolbar.style.zIndex = "10006"; // CHANGE
+            toolbar.style.zIndex = String(GRAPH_OVERLAY_Z.CONTROL); // CHANGE
             toolbar.style.display = "none"; // CHANGE
             toolbar.style.flexDirection = "column"; // CHANGE
             toolbar.style.gap = "4px"; // CHANGE

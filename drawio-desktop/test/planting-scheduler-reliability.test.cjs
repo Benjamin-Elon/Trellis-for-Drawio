@@ -2488,36 +2488,6 @@ test('task dispatch failure restores snapshotted graph attributes', async () => 
     assert.equal(cell.value.hasAttribute('lifespan_start'), false);
 });
 
-test('task anchor form state is built from stable scheduler metadata', () => { // ADDED
-    const scheduleCell = makeAttributeCell({ // ADDED
-        plant_id: '7', // ADDED
-        variety_id: '11', // ADDED
-        city_id: '3', // ADDED
-        city_name: 'Test City', // ADDED
-        method_category_id: 'transplant', // ADDED
-        method_id: 'transplant.indoor', // ADDED
-        season_start_year: '2026' // ADDED
-    }); // ADDED
-    const taskCard = makeAttributeCell({ // ADDED
-        scheduler_anchor_stage: 'SOW', // ADDED
-        scheduler_method_category_id: 'transplant', // ADDED
-        scheduler_method_id: 'transplant.indoor' // ADDED
-    }); // ADDED
-    const state = hooks.buildTaskAnchorScheduleFormState({ scheduleCell, taskCard, startISO: '2026-03-20' }); // ADDED
-    assert.equal(state.plantId, 7); // ADDED
-    assert.equal(state.varietyId, 11); // ADDED
-    assert.equal(state.methodId, 'transplant.indoor'); // ADDED
-    assert.equal(state.startISO, '2026-03-20'); // ADDED
-    assert.equal(state.seasonStartYear, 2026); // ADDED
-}); // ADDED
-
-test('task anchor form state rejects invalid dates and stale method metadata', () => { // ADDED
-    const scheduleCell = makeAttributeCell({ plant_id: '7', method_category_id: 'transplant', method_id: 'transplant.outdoor' }); // ADDED
-    const taskCard = makeAttributeCell({ scheduler_method_category_id: 'transplant', scheduler_method_id: 'transplant.indoor' }); // ADDED
-    assert.throws(() => hooks.buildTaskAnchorScheduleFormState({ scheduleCell, taskCard, startISO: 'bad-date' }), /valid start date/); // ADDED
-    assert.throws(() => hooks.resolveTaskAnchorMethod(taskCard, scheduleCell), /task method no longer matches/); // ADDED
-}); // ADDED
-
 test('async UI boundary reports labeled rejection', async () => {
     let reported = '';
     const value = await hooks.runUiAsyncOperation(
@@ -2785,25 +2755,16 @@ test('new task cards copy scheduler task type metadata', () => { // NEW
     assert.deepEqual({ ...taskHooks.buildSchedulerTaskMetadataAttributes({}) }, {}); // CHANGE
 }); // NEW
 
-test('task editor delegates scheduler sow anchor edits before local date overrides', () => { // ADDED
-    const source = fs.readFileSync(taskManagerPath, 'utf8'); // ADDED
-    const schedulerCall = source.indexOf('tryApplySchedulerAnchorDateEdit(card, startInput.value)'); // ADDED
-    const localOverride = source.indexOf('const datePatch = buildCardDateOverridePatch(card.value, startInput.value)'); // ADDED
-    assert.ok(schedulerCall >= 0, 'expected scheduler anchor edit delegation'); // ADDED
-    assert.ok(localOverride > schedulerCall, 'scheduler anchor edit should run before local override patching'); // ADDED
-    assert.equal(taskHooks.isSchedulerSowAnchorTask({ scheduler_anchor_stage: 'SOW', scheduler_method_id: 'transplant.indoor' }), true); // ADDED
-    assert.equal(taskHooks.isSchedulerSowAnchorTask({ scheduler_anchor_stage: 'TRANSPLANT', scheduler_method_id: 'transplant.indoor' }), false); // ADDED
-}); // ADDED
-
-test('scheduler anchor edits dispatch differential task sync events', () => { // ADDED
+test('task replacement event bridge retains differential sync without scheduler task-edit callback', () => { // CHANGED
     const schedulerSource = fs.readFileSync(schedulerPath, 'utf8'); // ADDED
     const taskManagerSource = fs.readFileSync(taskManagerPath, 'utf8'); // ADDED
-    assert.match(schedulerSource, /taskDispatchMode:\s*'sync'/); // ADDED
     assert.match(schedulerSource, /mode:\s*options\.taskDispatchMode \|\| "replace"/); // ADDED
     assert.match(taskManagerSource, /replacement\.mode !== 'replace' && replacement\.mode !== 'sync'/); // ADDED
     assert.match(taskManagerSource, /if \(replacement\.mode === 'sync'\)/); // ADDED
     assert.match(taskManagerSource, /applyDifferentialTaskSync\(\{\s*targetGroupId,\s*tasks\s*\}\)/); // ADDED
-}); // ADDED
+    assert.doesNotMatch(schedulerSource, /applyTaskAnchorDateEdit/); // CHANGED
+    assert.doesNotMatch(taskManagerSource, /tryApplySchedulerAnchorDateEdit/); // CHANGED
+}); // CHANGED
 
 test('manual card date shifts preserve calendar duration across edge cases', () => {
     const cases = [
@@ -3013,7 +2974,7 @@ test('unified card editor exposes notes on all cards and dates only when eligibl
 test('combined card saves use one value replacement and reflow only for date changes', () => {
     const source = fs.readFileSync(taskManagerPath, 'utf8');
     const commitStart = source.indexOf('function commitCardPatch(card, attributes, opts)'); // CHANGED
-    const commitEnd = source.indexOf('function tryApplySchedulerAnchorDateEdit', commitStart); // CHANGED
+    const commitEnd = source.indexOf('function fmtSigned', commitStart); // CHANGED
     const commitSource = source.slice(commitStart, commitEnd); // CHANGED
     const valueWrites = commitSource.match(/model\.setValue\(card,\s*cloneCardValueWithAttributes\(card,\s*attributes\)\)/g) || []; // CHANGED
     assert.equal(valueWrites.length, 1);

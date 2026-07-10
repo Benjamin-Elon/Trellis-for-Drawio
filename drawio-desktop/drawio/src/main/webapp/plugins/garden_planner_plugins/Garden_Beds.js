@@ -11,6 +11,7 @@ Draw.loadPlugin(function (ui) { // NEW
 
     const model = graph.getModel && graph.getModel(); // NEW
     if (!model) return; // NEW
+    const GRAPH_OVERLAY_Z = Object.freeze({ ANNOTATION: 10000, CONNECTION: 10010, CONTROL: 10020, CONTROL_TOP: 10030 }); // CHANGE
 
     const ATTRS = { // NEW
         BED_JSON: "bed_conditions_json", // CHANGE
@@ -744,7 +745,7 @@ Draw.loadPlugin(function (ui) { // NEW
         div.className = "trellis-bed-conditions-overlay"; // NEW
         div.style.position = "absolute"; // NEW
         div.style.pointerEvents = "auto"; // NEW
-        div.style.zIndex = "998"; // NEW
+        div.style.zIndex = String(GRAPH_OVERLAY_Z.CONTROL); // CHANGE
         div.style.boxSizing = "border-box"; // NEW
         div.style.width = "190px"; // NEW
         div.style.padding = "8px"; // NEW

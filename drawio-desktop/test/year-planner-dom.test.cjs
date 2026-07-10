@@ -128,6 +128,7 @@ test("modal renders four ordered strips with the expected defaults and crop tabs
 
     await harness.openModal(2026);
 
+    assert.equal(Number(harness.document.body.firstElementChild.style.zIndex), 2000000000); // NEW
     assert.match(planHero(harness.document).textContent, /2026 Year Plan/); // CHANGE
     const tabLabels = Array.from(harness.document.querySelectorAll("button"))
         .map(button => button.textContent.trim())
@@ -1111,6 +1112,7 @@ test("public plan request event opens one modal and replaces the active session"
     await harness.settle();
     assert.match(harness.document.body.textContent, /Plan Year 2026/); // CHANGE
     assert.equal(harness.document.body.children.length, 1);
+    assert.equal(Number(harness.document.body.firstElementChild.style.zIndex), 2000000000); // NEW
 
     harness.window.dispatchEvent(new harness.window.CustomEvent("usl:planYearRequested", {
         detail: { moduleCellId: harness.moduleCell.id, year: 2027 }

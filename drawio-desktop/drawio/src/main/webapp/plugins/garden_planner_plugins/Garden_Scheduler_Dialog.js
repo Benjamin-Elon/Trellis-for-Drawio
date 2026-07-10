@@ -105,8 +105,17 @@ Draw.loadPlugin(function (ui) {
 
     console.log("[Scheduler] file instance:", "Garden_Scheduler_Dialog.js", "STAMP=2026-06-24-split"); // CHANGED
 
+    const TRELLIS_DIALOG_Z = 2000000000; // NEW
+
     // -------------------- Logging ---------------------------------------------------------
     function log() { try { mxLog.debug.apply(mxLog, ["[USL-Schedule]"].concat([].slice.call(arguments))); } catch (_) {/*noop*/ } }
+
+    function elevateTrellisDialog(dialogUi) { // NEW
+        const dlg = dialogUi && dialogUi.dialog; // NEW
+        if (!dlg) return; // NEW
+        if (dlg.bg && dlg.bg.style) dlg.bg.style.zIndex = String(TRELLIS_DIALOG_Z - 1); // NEW
+        if (dlg.container && dlg.container.style) dlg.container.style.zIndex = String(TRELLIS_DIALOG_Z); // NEW
+    } // NEW
 
     // -------------------- Small utils (dates, math) --------------------------------------
     function daysInMonth(year, month) { return new Date(Date.UTC(year, month, 0)).getUTCDate(); }
@@ -3681,6 +3690,7 @@ Draw.loadPlugin(function (ui) {
         div.appendChild(body); // ADDED
 
         ui.showDialog(div, 960, 640, true, true); // CHANGED
+        elevateTrellisDialog(ui); // NEW
     }
 
     function showCommitDialog(ui, {
@@ -3724,7 +3734,8 @@ Draw.loadPlugin(function (ui) {
                 ui.hideDialog();
             };
 
-            ui.showDialog(container, width, height, modal, closable);
+            ui.showDialog(container, width, height, modal, closable); // CHANGE
+            elevateTrellisDialog(ui); // NEW
         });
     }
 
@@ -3792,7 +3803,8 @@ Draw.loadPlugin(function (ui) {
         btns.appendChild(closeBtn);
         div.appendChild(btns);
 
-        ui.showDialog(div, 860, 480, true, true);
+        ui.showDialog(div, 860, 480, true, true); // CHANGE
+        elevateTrellisDialog(ui); // NEW
     }
 
     function renderPerennialPreview(ui, result) { // FIX: preview perennials without annual stage columns
@@ -3817,7 +3829,8 @@ Draw.loadPlugin(function (ui) {
         btns.style.textAlign = 'right';
         btns.appendChild(mxUtils.button('Close', () => ui.hideDialog()));
         div.appendChild(btns);
-        ui.showDialog(div, 440, 240, true, true);
+        ui.showDialog(div, 440, 240, true, true); // CHANGE
+        elevateTrellisDialog(ui); // NEW
 
         function makeDisplayValue(value) {
             const span = document.createElement('span');
@@ -8421,6 +8434,7 @@ Draw.loadPlugin(function (ui) {
         setActiveTabButton(scheduleTabBtn); // NEW
 
         ui.showDialog(tabsContainer, 1120, 720, true, true); // CHANGED
+        elevateTrellisDialog(ui); // NEW
 
     }
 
@@ -9905,191 +9919,6 @@ Draw.loadPlugin(function (ui) {
             .filter(Boolean))); // ADDED
     } // ADDED
 
-    function resolveSingleLinkedScheduleCell(ui, taskCard) { // ADDED
-        const graph = ui?.editor?.graph; // ADDED
-        const model = graph && typeof graph.getModel === 'function' ? graph.getModel() : null; // ADDED
-        if (!model || typeof model.getCell !== 'function') throw new Error('Cannot resolve the linked schedule: graph model is unavailable.'); // ADDED
-        const linkedIds = normalizeLinkedCellIds(readGraphCellAttribute(taskCard, 'linkedTo')); // ADDED
-        if (linkedIds.length !== 1) throw new Error('Scheduler anchor edits require exactly one linked planting group.'); // ADDED
-        const linkedCell = model.getCell(linkedIds[0]); // ADDED
-        if (!linkedCell || !isTilerGroup(linkedCell)) throw new Error('The linked planting group could not be found.'); // ADDED
-        return linkedCell; // ADDED
-    } // ADDED
-
-    function resolveTaskAnchorMethod(taskCard, scheduleCell) { // ADDED
-        const taskMethodCategoryId = normId(readGraphCellAttribute(taskCard, 'scheduler_method_category_id')); // ADDED
-        const taskMethodId = normId(readGraphCellAttribute(taskCard, 'scheduler_method_id')); // ADDED
-        const cellMethodCategoryId = normId(readGraphCellAttribute(scheduleCell, 'method_category_id')); // ADDED
-        const cellMethodId = normId(readGraphCellAttribute(scheduleCell, 'method_id')); // ADDED
-        const methodCategoryId = cellMethodCategoryId || taskMethodCategoryId; // ADDED
-        const methodId = cellMethodId || taskMethodId; // ADDED
-        if (taskMethodCategoryId && cellMethodCategoryId && taskMethodCategoryId !== cellMethodCategoryId) throw new Error('The task method category no longer matches the linked schedule.'); // ADDED
-        if (taskMethodId && cellMethodId && taskMethodId !== cellMethodId) throw new Error('The task method no longer matches the linked schedule.'); // ADDED
-        return { methodCategoryId, methodId }; // ADDED
-    } // ADDED
-
-    function buildTaskAnchorScheduleFormState({ scheduleCell, taskCard, startISO, ui } = {}) { // ADDED
-        const startDate = parseISODateUTCValue(startISO); // ADDED
-        if (!startDate) throw new Error('Enter a valid start date.'); // ADDED
-        const graph = ui?.editor?.graph; // ADDED
-        const model = graph && typeof graph.getModel === 'function' ? graph.getModel() : null; // ADDED
-        const moduleCell = model ? findGardenModuleAncestor(model, scheduleCell) : null; // ADDED
-        const method = resolveTaskAnchorMethod(taskCard, scheduleCell); // ADDED
-        const plantId = finiteNumberOrNull(readGraphCellAttribute(scheduleCell, 'plant_id')); // ADDED
-        if (plantId == null) throw new Error('The linked planting group is missing plant_id.'); // ADDED
-        const varietyId = finiteNumberOrNull(readGraphCellAttribute(scheduleCell, 'variety_id')); // ADDED
-        const cityId = finiteNumberOrNull(readGraphCellAttribute(scheduleCell, 'city_id')) ?? finiteNumberOrNull(readGraphCellAttribute(moduleCell, 'city_id')); // ADDED
-        const cityName = String(readGraphCellAttribute(scheduleCell, 'city_name') || readGraphCellAttribute(moduleCell, 'city_name') || '').trim(); // ADDED
-        const storedSeasonYear = finiteNumberOrNull(readGraphCellAttribute(scheduleCell, 'season_start_year')); // ADDED
-        return { // ADDED
-            plantId, // ADDED
-            varietyId, // ADDED
-            cityId, // ADDED
-            cityName, // ADDED
-            methodCategoryId: method.methodCategoryId, // ADDED
-            methodId: method.methodId, // ADDED
-            startISO: fmtISO(startDate), // ADDED
-            seasonEndISO: '', // ADDED
-            latestHarvestEndISO: '', // ADDED
-            seasonStartYear: storedSeasonYear != null ? Math.trunc(storedSeasonYear) : startDate.getUTCFullYear(), // ADDED
-            harvestWindowDays: finiteNumberOrNull(readGraphCellAttribute(scheduleCell, 'harvest_window_days')), // ADDED
-            minYieldMultiplier: 0, // ADDED
-            climateModelModuleCell: moduleCell, // ADDED
-            climateModelDraftPatch: null, // ADDED
-            climateModelPolicy: DEFAULT_CLIMATE_MODEL_POLICY // ADDED
-        }; // ADDED
-    } // ADDED
-
-    function computeSowingSeasonsForScheduleInputs(inputs) { // ADDED
-        if (!inputs || isPerennialPlant(inputs.plant)) return Object.freeze({ feasible: true, seasons: [] }); // ADDED
-        const derived = inputs.derived(); // ADDED
-        const plant = inputs.plant; // ADDED
-        const env = plant.cropTempEnvelope(); // ADDED
-        return annualCore.computeAnnualSowingSeasons({ // ADDED
-            methodCategoryId: inputs.methodCategoryId, // ADDED
-            methodId: inputs.methodId, // ADDED
-            budget: plant.firstHarvestBudget(), // ADDED
-            HW_DAYS: resolveHarvestWindowDays(inputs.harvestWindowDays, plant), // ADDED
-            dailyRatesMap: derived.dailyRates, // ADDED
-            monthlyAvgTemp: derived.monthlyAvg, // ADDED
-            dailyClimate: derived.dailyClimate, // ADDED
-            Tbase: env.Tbase, // ADDED
-            cropTemp: env, // ADDED
-            scanStart: derived.scanStart, // ADDED
-            scanEndHard: derived.scanEndHard, // ADDED
-            soilGateThresholdC: finiteNumberOrNull(plant.soil_temp_min_plant_c), // ADDED
-            soilGateConsecutiveDays: inputs.policy?.soilGateConsecutiveDays ?? 3, // ADDED
-            startCoolingThresholdC: asCoolingThresholdC(plant.start_cooling_threshold_c), // ADDED
-            useSpringFrostGate: inputs.policy?.useSpringFrostGate !== false, // ADDED
-            lastSpringFrostDOY: pickFrostByRisk(inputs.city, inputs.policy?.springFrostRisk || 'p50'), // ADDED
-            daysTransplant: Number.isFinite(Number(plant.days_transplant)) ? Number(plant.days_transplant) : 0, // ADDED
-            overwinterAllowed: !!inputs.policy?.overwinterAllowed, // ADDED
-            plantMetadata: plant, // ADDED
-            cityLatitudeDeg: finiteNumberOrNull(inputs.city?.latitude ?? inputs.city?.lat), // ADDED
-            bedProfile: inputs.bedProfile, // ADDED
-            bedProfileSource: inputs.bedProfileSource // ADDED
-        }); // ADDED
-    } // ADDED
-
-    async function applyTaskAnchorDateEdit({ ui, taskCard, startISO } = {}) { // ADDED
-        const anchorStage = String(readGraphCellAttribute(taskCard, 'scheduler_anchor_stage') || '').trim().toUpperCase(); // ADDED
-        if (anchorStage !== 'SOW') return { handled: false }; // ADDED
-        const taskMethodCategoryId = normId(readGraphCellAttribute(taskCard, 'scheduler_method_category_id')); // ADDED
-        const taskMethodId = normId(readGraphCellAttribute(taskCard, 'scheduler_method_id')); // ADDED
-        if (taskMethodCategoryId && taskMethodId) { // ADDED
-            const taskBehavior = resolveMethodBehavior({ methodCategoryId: taskMethodCategoryId, methodId: taskMethodId }); // ADDED
-            if (taskBehavior.leadDaysMode !== 'days_transplant') return { handled: false }; // ADDED
-        } // ADDED
-        const scheduleCell = resolveSingleLinkedScheduleCell(ui, taskCard); // ADDED
-        const formState = buildTaskAnchorScheduleFormState({ scheduleCell, taskCard, startISO, ui }); // ADDED
-        const resolvedBehavior = resolveMethodBehavior({ methodCategoryId: formState.methodCategoryId, methodId: formState.methodId }); // ADDED
-        if (resolvedBehavior.leadDaysMode !== 'days_transplant') return { handled: false }; // ADDED
-        const bedContext = resolveScheduleBedContext(scheduleCell); // ADDED
-        formState.bedProfile = bedContext.profile; // ADDED
-        formState.bedProfileSource = bedContext.source; // ADDED
-        const context = await buildScheduleContextFromForm(formState, null, { // ADDED
-            climateModelModuleCell: formState.climateModelModuleCell, // ADDED
-            bedProfile: bedContext.profile, // ADDED
-            bedProfileSource: bedContext.source // ADDED
-        }); // ADDED
-        validateAutoWindowMethodInputs({ // ADDED
-            resolvedBehavior: context.resolvedBehavior, // ADDED
-            daysTransplant: Number(context.plant?.days_transplant) // ADDED
-        }); // ADDED
-        const sowingSeasonResult = computeSowingSeasonsForScheduleInputs(context.inputs); // ADDED
-        const sowingSeasons = normalizeSowingSeasons(sowingSeasonResult.seasons); // ADDED
-        const activeWindow = findSowingSeasonForDate(sowingSeasons, formState.startISO); // ADDED
-        if (!activeWindow) throw new Error('The selected sow date is outside the feasible sowing seasons for this method.'); // ADDED
-        const scheduleResult = computeScheduleResult(context.inputs); // ADDED
-        const taskTemplate = await resolveTaskTemplate({ // ADDED
-            cell: scheduleCell, // ADDED
-            plantId: context.plant?.plant_id, // ADDED
-            varietyId: context.inputs?.varietyId ?? null, // ADDED
-            methodId: context.methodId // ADDED
-        }); // ADDED
-        await applyScheduleToGraph(ui, scheduleCell, context.inputs, { // ADDED
-            result: scheduleResult, // ADDED
-            taskTemplate: taskTemplate?.template ?? null, // ADDED
-            taskDispatchMode: 'sync', // ADDED
-            sowingSeasonId: activeWindow.id || '', // ADDED
-            sowingSeasonLabel: activeWindow.label || '' // ADDED
-        }); // ADDED
-        return { handled: true, targetGroupId: scheduleCell.id || '', sowingSeasonId: activeWindow.id || '' }; // ADDED
-    } // ADDED
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -10369,7 +10198,6 @@ Draw.loadPlugin(function (ui) {
     window.USL.scheduler = Object.assign({}, window.USL.scheduler, {
         openScheduleDialog: (ui, cell) => openScheduleDialog(ui, cell),
         openSetPlantDialog: (ui, cell) => openSetPlantDialog(ui, cell), // CHANGE
-        applyTaskAnchorDateEdit: applyTaskAnchorDateEdit, // ADDED
         listPlantOptions: listPlantOptions // NEW
     });
     window.openUSLScheduleDialog = window.USL.scheduler.openScheduleDialog;
@@ -10444,6 +10272,7 @@ Draw.loadPlugin(function (ui) {
         btns.appendChild(cancel); // ADDED
         div.appendChild(btns); // ADDED
         ui.showDialog(div, 440, 220, true, true); // ADDED
+        elevateTrellisDialog(ui); // NEW
     } // ADDED
 
     if (window.USL_SCHEDULER_TESTING) {
@@ -10912,10 +10741,6 @@ Draw.loadPlugin(function (ui) {
             runCompensatedSaveSteps,
             readGraphCellAttribute, // ADDED
             normalizeLinkedCellIds, // ADDED
-            resolveTaskAnchorMethod, // ADDED
-            buildTaskAnchorScheduleFormState, // ADDED
-            computeSowingSeasonsForScheduleInputs, // ADDED
-            applyTaskAnchorDateEdit, // ADDED
             sharedCore, // CHANGED
             annualCore, // CHANGED
             perennialCore // CHANGED

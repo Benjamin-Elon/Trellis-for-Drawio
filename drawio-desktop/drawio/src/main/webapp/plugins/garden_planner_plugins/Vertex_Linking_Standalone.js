@@ -14,6 +14,9 @@ Draw.loadPlugin(function (ui) {
     const HL_OLD_COLOR = 'manualLinkOldColor';
     const HL_OLD_WIDTH = 'manualLinkOldWidth';
     const DEBUG_VERTEX_LINKING_CONSOLE = false; // CHANGE
+    const GRAPH_OVERLAY_Z = Object.freeze({ ANNOTATION: 10000, CONNECTION: 10010, CONTROL: 10020, CONTROL_TOP: 10030 }); // CHANGE
+    const GRAPH_OVERLAY_LAYER_CLASS = Object.freeze({ annotation: 'trellis-graph-annotation-layer', connection: 'trellis-graph-connection-layer', control: 'trellis-graph-control-layer', controlTop: 'trellis-graph-control-top-layer' }); // NEW
+    const GRAPH_OVERLAY_LAYER_Z = Object.freeze({ annotation: GRAPH_OVERLAY_Z.ANNOTATION, connection: GRAPH_OVERLAY_Z.CONNECTION, control: GRAPH_OVERLAY_Z.CONTROL, controlTop: GRAPH_OVERLAY_Z.CONTROL_TOP }); // NEW
     graph.__ctrlToggleHandled = false;
 
     // -------------------- Helpers --------------------
@@ -22,6 +25,45 @@ Draw.loadPlugin(function (ui) {
         if (!DEBUG_VERTEX_LINKING_CONSOLE) return; // CHANGE
         try { console.log.apply(console, arguments); } catch (_) { } // CHANGE
     } // CHANGE
+
+    function ensureGraphOverlayContainer() { // NEW
+        const host = graph.container; // NEW
+        if (!host) return null; // NEW
+        try { // NEW
+            if (window.getComputedStyle && window.getComputedStyle(host).position === 'static') host.style.position = 'relative'; // NEW
+        } catch (_) { } // NEW
+        return host; // NEW
+    } // NEW
+
+    function ensureGraphOverlayHtmlLayer(layerKey) { // NEW
+        const host = ensureGraphOverlayContainer(); // NEW
+        const key = GRAPH_OVERLAY_LAYER_CLASS[layerKey] ? layerKey : 'control'; // NEW
+        const className = GRAPH_OVERLAY_LAYER_CLASS[key]; // NEW
+        if (!host || !className) return null; // NEW
+        let layer = host.querySelector('.' + className); // NEW
+        if (!layer) { // NEW
+            layer = document.createElement('div'); // NEW
+            layer.className = className; // NEW
+            layer.style.cssText = 'position:absolute;left:0;top:0;width:0;height:0;overflow:visible;pointer-events:none;z-index:' + GRAPH_OVERLAY_LAYER_Z[key] + ';'; // NEW
+            host.appendChild(layer); // NEW
+        } // NEW
+        return layer; // NEW
+    } // NEW
+
+    function ensureGraphOverlaySvgLayer(layerKey) { // NEW
+        const layer = ensureGraphOverlayHtmlLayer(layerKey || 'connection'); // NEW
+        if (!layer) return null; // NEW
+        layer.style.width = '100%'; // NEW
+        layer.style.height = '100%'; // NEW
+        let svg = layer.querySelector('svg.trellis-graph-connection-svg'); // NEW
+        if (!svg) { // NEW
+            svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); // NEW
+            svg.setAttribute('class', 'trellis-graph-connection-svg'); // NEW
+            svg.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;overflow:visible;pointer-events:auto;'; // NEW
+            layer.appendChild(svg); // NEW
+        } // NEW
+        return svg; // NEW
+    } // NEW
 
     function asVertexArray(cells) {
         if (!cells) return [];
@@ -1008,8 +1050,10 @@ Draw.loadPlugin(function (ui) {
         }
 
         function getOverlayPane() {
-            const view = graph.getView && graph.getView();
-            return view && view.getOverlayPane ? view.getOverlayPane() : null;
+            const layeredPane = ensureGraphOverlaySvgLayer('connection'); // CHANGE
+            if (layeredPane) return layeredPane; // CHANGE
+            const view = graph.getView && graph.getView(); // CHANGE
+            return view && view.getOverlayPane ? view.getOverlayPane() : null; // CHANGE
         }
 
         function formatLinkOverlayBadgeLabel(label) { // CHANGE
@@ -1308,6 +1352,8 @@ Draw.loadPlugin(function (ui) {
         let activeMode = MODE_CARDS; // CHANGE
 
         function getOverlayPane() { // CHANGE
+            const layeredPane = ensureGraphOverlaySvgLayer('connection'); // CHANGE
+            if (layeredPane) return layeredPane; // CHANGE
             const view = graph.getView && graph.getView(); // CHANGE
             return view && view.getOverlayPane ? view.getOverlayPane() : null; // CHANGE
         } // CHANGE
@@ -1322,6 +1368,10 @@ Draw.loadPlugin(function (ui) {
             } catch (_) { } // CHANGE
             return host; // CHANGE
         } // CHANGE
+
+        function getPanelLayer() { // NEW
+            return ensureGraphOverlayHtmlLayer('control') || getPanelHost(); // NEW
+        } // NEW
 
         function removeNode(node) { // CHANGE
             if (node && node.parentNode) node.parentNode.removeChild(node); // CHANGE
@@ -1434,7 +1484,7 @@ Draw.loadPlugin(function (ui) {
 
         function applyPanelStyle(panel) { // CHANGE
             panel.style.position = 'absolute'; // CHANGE
-            panel.style.zIndex = '100'; // CHANGE
+            panel.style.zIndex = String(GRAPH_OVERLAY_Z.CONTROL); // CHANGE
             panel.style.width = PANEL_WIDTH + 'px'; // CHANGE
             panel.style.boxSizing = 'border-box'; // CHANGE
             panel.style.padding = '8px'; // CHANGE
@@ -2297,8 +2347,9 @@ Draw.loadPlugin(function (ui) {
 
         function renderEntry(entry) { // CHANGE
             const host = getPanelHost(); // CHANGE
+            const panelHost = getPanelLayer(); // NEW
             const source = model.getCell(entry.sourceId); // CHANGE
-            if (!host || !source || !model.isVertex(source)) { // CHANGE
+            if (!host || !panelHost || !source || !model.isVertex(source)) { // CHANGE
                 removeEntry(entry); // CHANGE
                 return; // CHANGE
             } // CHANGE
@@ -2325,7 +2376,9 @@ Draw.loadPlugin(function (ui) {
                     entry.panel = document.createElement('div'); // ADDED
                     entry.panel.className = 'manual-link-task-schedule-overlay manual-link-task-schedule-only'; // ADDED
                     applyPanelStyle(entry.panel); // ADDED
-                    host.appendChild(entry.panel); // ADDED
+                    panelHost.appendChild(entry.panel); // CHANGE
+                } else if (entry.panel.parentNode !== panelHost) { // NEW
+                    panelHost.appendChild(entry.panel); // NEW
                 } // ADDED
                 while (entry.panel.firstChild) entry.panel.removeChild(entry.panel.firstChild); // ADDED
                 entry.visibleItems = []; // ADDED
@@ -2352,7 +2405,9 @@ Draw.loadPlugin(function (ui) {
                 entry.panel = document.createElement('div'); // CHANGE
                 entry.panel.className = 'manual-link-task-schedule-overlay'; // CHANGE
                 applyPanelStyle(entry.panel); // CHANGE
-                host.appendChild(entry.panel); // CHANGE
+                panelHost.appendChild(entry.panel); // CHANGE
+            } else if (entry.panel.parentNode !== panelHost) { // NEW
+                panelHost.appendChild(entry.panel); // NEW
             } // CHANGE
 
             while (entry.panel.firstChild) entry.panel.removeChild(entry.panel.firstChild); // CHANGE
