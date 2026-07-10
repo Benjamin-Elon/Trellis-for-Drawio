@@ -1340,6 +1340,7 @@ Draw.loadPlugin(function (ui) {
     const taskScheduleOverlay = (function () { // CHANGE
         const MODE_CARDS = 'cards'; // CHANGE
         const MODE_SCHEDULE = 'schedule'; // CHANGE
+        const MODE_OCCUPANCY = 'occupancy'; // NEW
         const PANEL_WIDTH = 380; // CHANGE
         const PANEL_GAP = 12; // CHANGE
         const PANEL_SIDE_OFFSET = 60; // CHANGE
@@ -1456,6 +1457,38 @@ Draw.loadPlugin(function (ui) {
             const start = getAttr(cell, 'sow_date'); // ADDED
             return start != null && String(start).trim() !== ''; // ADDED
         } // ADDED
+
+        function getOccupancyNavigatorApi() { // NEW
+            return graph && graph.__trellisBedSuccessionNavigator && typeof graph.__trellisBedSuccessionNavigator.getSelectedClusterOccupancy === 'function' // NEW
+                ? graph.__trellisBedSuccessionNavigator // NEW
+                : null; // NEW
+        } // NEW
+
+        function getPlantingOccupancyRange(cell) { // NEW
+            const start = parseTaskOverlayDate(getAttr(cell, 'transplant_date')) || parseTaskOverlayDate(getAttr(cell, 'sow_date')); // NEW
+            const end = parseTaskOverlayDate(getAttr(cell, 'harvest_end')); // NEW
+            if (!start || !end || end.dayNumber < start.dayNumber) return { startISO: null, endISO: null }; // NEW
+            return { startISO: start.iso, endISO: end.iso }; // NEW
+        } // NEW
+
+        function fallbackOccupancyForSource(source) { // NEW
+            if (!isTilerGroup(source)) return { selectedId: null, items: [] }; // NEW
+            const range = getPlantingOccupancyRange(source); // NEW
+            return { // NEW
+                selectedId: source.id, // NEW
+                items: [{ cellId: source.id, label: getSourceCropTitle(source) || source.id || 'Planting', startISO: range.startISO, endISO: range.endISO }] // NEW
+            }; // NEW
+        } // NEW
+
+        function getOccupancyModelForEntry(entry) { // NEW
+            const source = entry && entry.sourceId ? model.getCell(entry.sourceId) : null; // NEW
+            const api = getOccupancyNavigatorApi(); // NEW
+            if (api) { // NEW
+                const result = api.getSelectedClusterOccupancy(source); // NEW
+                if (result && Array.isArray(result.items) && result.items.length) return result; // NEW
+            } // NEW
+            return fallbackOccupancyForSource(source); // NEW
+        } // NEW
 
         function getScheduleDialogOpener() { // ADDED
             return window.USL && window.USL.scheduler && typeof window.USL.scheduler.openScheduleDialog === 'function' // ADDED
@@ -1757,7 +1790,7 @@ Draw.loadPlugin(function (ui) {
             title.style.textOverflow = 'ellipsis'; // CHANGE
             title.style.whiteSpace = 'nowrap'; // CHANGE
             const subtitle = document.createElement('div'); // CHANGE
-            subtitle.textContent = count + (count === 1 ? ' linked task' : ' linked tasks'); // CHANGE
+            subtitle.textContent = activeMode === MODE_OCCUPANCY ? (count + (count === 1 ? ' planting group' : ' planting groups')) : (count + (count === 1 ? ' linked task' : ' linked tasks')); // CHANGE
             subtitle.style.color = '#5f6368'; // CHANGE
             subtitle.style.fontSize = '10px'; // CHANGE
             titleWrap.appendChild(title); // CHANGE
@@ -1778,6 +1811,7 @@ Draw.loadPlugin(function (ui) {
             toggle.style.overflow = 'hidden'; // CHANGE
             toggle.appendChild(createModeButton(entry, 'Cards', MODE_CARDS)); // CHANGE
             toggle.appendChild(createModeButton(entry, 'Schedule', MODE_SCHEDULE)); // CHANGE
+            toggle.appendChild(createModeButton(entry, 'Occupancy', MODE_OCCUPANCY)); // NEW
             actions.appendChild(toggle); // CHANGED
             const scheduleButton = createScheduleActionButton(entry); // ADDED
             if (scheduleButton) actions.appendChild(scheduleButton); // ADDED
@@ -1805,6 +1839,17 @@ Draw.loadPlugin(function (ui) {
             title.style.whiteSpace = 'nowrap'; // ADDED
             header.appendChild(title); // ADDED
 
+            const toggle = document.createElement('div'); // NEW
+            toggle.style.display = 'inline-flex'; // NEW
+            toggle.style.alignSelf = 'flex-start'; // NEW
+            toggle.style.border = '1px solid rgba(60, 64, 67, 0.28)'; // NEW
+            toggle.style.borderRadius = '5px'; // NEW
+            toggle.style.overflow = 'hidden'; // NEW
+            const effectiveMode = activeMode === MODE_OCCUPANCY ? MODE_OCCUPANCY : MODE_SCHEDULE; // NEW
+            toggle.appendChild(createModeButton(entry, 'Schedule', MODE_SCHEDULE, effectiveMode)); // NEW
+            toggle.appendChild(createModeButton(entry, 'Occupancy', MODE_OCCUPANCY, effectiveMode)); // NEW
+            header.appendChild(toggle); // NEW
+
             const scheduleButton = createScheduleActionButton(entry); // ADDED
             if (scheduleButton) { // ADDED
                 scheduleButton.style.alignSelf = 'flex-start'; // ADDED
@@ -1818,7 +1863,7 @@ Draw.loadPlugin(function (ui) {
             return header; // ADDED
         } // ADDED
 
-        function createModeButton(entry, label, mode) { // CHANGE
+        function createModeButton(entry, label, mode, activeOverride) { // CHANGE
             const button = document.createElement('button'); // CHANGE
             button.type = 'button'; // CHANGE
             button.textContent = label; // CHANGE
@@ -1826,8 +1871,9 @@ Draw.loadPlugin(function (ui) {
             button.style.padding = '4px 7px'; // CHANGE
             button.style.fontSize = '10px'; // CHANGE
             button.style.cursor = 'pointer'; // CHANGE
-            button.style.background = activeMode === mode ? '#202124' : '#ffffff'; // CHANGE
-            button.style.color = activeMode === mode ? '#ffffff' : '#202124'; // CHANGE
+            const active = (activeOverride || activeMode) === mode; // NEW
+            button.style.background = active ? '#202124' : '#ffffff'; // CHANGE
+            button.style.color = active ? '#ffffff' : '#202124'; // CHANGE
             mxEvent.addListener(button, 'mousedown', function (evt) { // CHANGE
                 setMode(mode); // CHANGE
                 mxEvent.consume(evt); // CHANGE
@@ -1861,6 +1907,11 @@ Draw.loadPlugin(function (ui) {
         function countScheduleRows(cards) { // CHANGE
             return buildScheduleRowsForCards(cards).length; // CHANGE
         } // CHANGE
+
+        function countOccupancyRows(entry) { // NEW
+            const occupancy = getOccupancyModelForEntry(entry); // NEW
+            return occupancy && Array.isArray(occupancy.items) ? occupancy.items.length : 0; // NEW
+        } // NEW
 
         function todayOverlayDayNumber() { // CHANGE
             const now = new Date(); // CHANGE
@@ -2024,7 +2075,7 @@ Draw.loadPlugin(function (ui) {
             return formatTaskOverlayDate({ date }); // CHANGE
         } // CHANGE
 
-        function renderScheduleAxis(grid, minDay, maxDay, todayPct) { // CHANGE
+        function renderScheduleAxis(grid, minDay, maxDay, todayPct, leftHeaderText = 'Task') { // CHANGE
             const axis = document.createElement('div'); // CHANGE
             axis.style.display = 'grid'; // CHANGE
             axis.style.gridTemplateColumns = '112px 1fr'; // CHANGE
@@ -2033,7 +2084,7 @@ Draw.loadPlugin(function (ui) {
             axis.style.marginBottom = '4px'; // CHANGE
 
             const taskHead = document.createElement('div'); // CHANGE
-            taskHead.textContent = 'Task'; // CHANGE
+            taskHead.textContent = leftHeaderText; // CHANGE
             taskHead.style.color = '#5f6368'; // CHANGE
             taskHead.style.fontSize = '10px'; // CHANGE
             axis.appendChild(taskHead); // CHANGE
@@ -2079,6 +2130,82 @@ Draw.loadPlugin(function (ui) {
             bar.style.background = getTaskLaneColor(card); // CHANGE
             track.appendChild(bar); // CHANGE
         } // CHANGE
+
+        function occupancyRangeForItem(item) { // NEW
+            const start = parseTaskOverlayDate(item && item.startISO); // NEW
+            const end = parseTaskOverlayDate(item && item.endISO); // NEW
+            if (!start || !end || end.dayNumber < start.dayNumber) return null; // NEW
+            return { start, end, startDay: start.dayNumber, endDay: end.dayNumber, durationDays: end.dayNumber - start.dayNumber + 1 }; // NEW
+        } // NEW
+
+        function renderOccupancyBar(track, range, selected, minDay, totalDays) { // NEW
+            const bar = document.createElement('div'); // NEW
+            const leftPct = Math.max(0, Math.min(98, ((range.startDay - minDay) / totalDays) * 100)); // NEW
+            const rawWidthPct = range.startDay === range.endDay ? 2 : ((range.endDay - range.startDay + 1) / totalDays) * 100; // NEW
+            const widthPct = Math.max(range.startDay === range.endDay ? 2 : 3, rawWidthPct); // NEW
+            bar.style.position = 'absolute'; // NEW
+            bar.style.left = leftPct + '%'; // NEW
+            bar.style.top = '5px'; // NEW
+            bar.style.width = Math.min(100 - leftPct, widthPct) + '%'; // NEW
+            bar.style.height = range.startDay === range.endDay ? '8px' : '9px'; // NEW
+            bar.style.borderRadius = range.startDay === range.endDay ? '999px' : '4px'; // NEW
+            bar.style.background = selected ? '#137333' : '#188038'; // NEW
+            bar.style.opacity = selected ? '1' : '0.72'; // NEW
+            track.appendChild(bar); // NEW
+        } // NEW
+
+        function makeOccupancyRow(entry, item) { // NEW
+            const row = document.createElement('div'); // NEW
+            row.className = 'manual-link-task-occupancy-row'; // NEW
+            row.setAttribute('title', 'Click to select planting group'); // NEW
+            mxEvent.addListener(row, 'mousedown', function (evt) { // NEW
+                if (evt.button != null && evt.button !== 0) return; // NEW
+                const cell = item && item.cellId ? model.getCell(item.cellId) : null; // NEW
+                if (cell && model.isVertex(cell)) selectAndReveal(cell); // NEW
+                mxEvent.consume(evt); // NEW
+                if (evt.stopPropagation) evt.stopPropagation(); // NEW
+                if (evt.preventDefault) evt.preventDefault(); // NEW
+            }); // NEW
+            return row; // NEW
+        } // NEW
+
+        function renderOccupancyRow(entry, grid, item, range, minDay, totalDays, todayPct) { // NEW
+            const selected = item && item.cellId === entry.sourceId; // NEW
+            const row = makeOccupancyRow(entry, item); // NEW
+            row.style.display = 'grid'; // NEW
+            row.style.gridTemplateColumns = '112px 1fr'; // NEW
+            row.style.columnGap = '8px'; // NEW
+            row.style.alignItems = 'center'; // NEW
+            row.style.minHeight = '24px'; // NEW
+            row.style.cursor = 'pointer'; // NEW
+            row.style.fontWeight = selected ? 'bold' : 'normal'; // NEW
+
+            const labelCell = document.createElement('div'); // NEW
+            labelCell.style.minWidth = '0'; // NEW
+            const label = makeTextSpan(item.label || item.cellId || 'Planting', null); // NEW
+            label.style.fontSize = '10px'; // NEW
+            labelCell.appendChild(label); // NEW
+            row.appendChild(labelCell); // NEW
+
+            const track = document.createElement('div'); // NEW
+            track.style.position = 'relative'; // NEW
+            track.style.height = '18px'; // NEW
+            track.style.borderBottom = '1px solid #e8eaed'; // NEW
+            if (todayPct != null) { // NEW
+                const todayLine = document.createElement('div'); // NEW
+                todayLine.style.position = 'absolute'; // NEW
+                todayLine.style.left = todayPct + '%'; // NEW
+                todayLine.style.top = '0'; // NEW
+                todayLine.style.bottom = '0'; // NEW
+                todayLine.style.width = '1px'; // NEW
+                todayLine.style.background = '#b91c1c'; // NEW
+                todayLine.style.opacity = '0.75'; // NEW
+                track.appendChild(todayLine); // NEW
+            } // NEW
+            renderOccupancyBar(track, range, selected, minDay, totalDays); // NEW
+            row.appendChild(track); // NEW
+            grid.appendChild(row); // NEW
+        } // NEW
 
         function renderScheduleRow(entry, grid, scheduleRow, minDay, totalDays, todayPct) { // CHANGE
             const card = scheduleRow.card; // CHANGE
@@ -2233,6 +2360,75 @@ Draw.loadPlugin(function (ui) {
             renderUnscheduledSection(entry, body, unscheduled); // CHANGE
         } // CHANGE
 
+        function renderOccupancyUnscheduledSection(entry, body, items) { // NEW
+            if (!items.length) return; // NEW
+            const section = document.createElement('div'); // NEW
+            section.style.marginTop = '8px'; // NEW
+            const title = document.createElement('div'); // NEW
+            title.textContent = 'Unscheduled'; // NEW
+            title.style.fontWeight = 'bold'; // NEW
+            title.style.fontSize = '10px'; // NEW
+            title.style.color = '#5f6368'; // NEW
+            title.style.marginBottom = '3px'; // NEW
+            section.appendChild(title); // NEW
+            for (const item of items) { // NEW
+                const row = makeOccupancyRow(entry, item); // NEW
+                row.style.display = 'grid'; // NEW
+                row.style.gridTemplateColumns = '6px 1fr'; // NEW
+                row.style.columnGap = '6px'; // NEW
+                row.style.alignItems = 'center'; // NEW
+                row.style.minHeight = '22px'; // NEW
+                row.style.padding = '2px 0'; // NEW
+                row.style.cursor = 'pointer'; // NEW
+                const stripe = document.createElement('span'); // NEW
+                stripe.style.height = '14px'; // NEW
+                stripe.style.borderRadius = '4px'; // NEW
+                stripe.style.background = '#9aa0a6'; // NEW
+                row.appendChild(stripe); // NEW
+                const labelWrap = document.createElement('div'); // NEW
+                labelWrap.style.minWidth = '0'; // NEW
+                labelWrap.appendChild(makeTextSpan(item.label || item.cellId || 'Planting', '#5f6368')); // NEW
+                row.appendChild(labelWrap); // NEW
+                section.appendChild(row); // NEW
+            } // NEW
+            body.appendChild(section); // NEW
+        } // NEW
+
+        function renderOccupancyView(entry, body) { // NEW
+            const occupancy = getOccupancyModelForEntry(entry); // NEW
+            const rows = (occupancy.items || []).map(item => ({ item, range: occupancyRangeForItem(item) })); // NEW
+            const scheduledRows = rows.filter(row => !!row.range); // NEW
+            const unscheduledItems = rows.filter(row => !row.range).map(row => row.item); // NEW
+            let minDay = null; // NEW
+            let maxDay = null; // NEW
+            let totalDays = 1; // NEW
+            let todayPct = null; // NEW
+
+            if (scheduledRows.length) { // NEW
+                minDay = Math.min.apply(null, scheduledRows.map(row => row.range.startDay)); // NEW
+                maxDay = Math.max.apply(null, scheduledRows.map(row => row.range.endDay)); // NEW
+                totalDays = Math.max(1, maxDay - minDay + 1); // NEW
+                const today = todayOverlayDayNumber(); // NEW
+                if (today >= minDay && today <= maxDay) todayPct = ((today - minDay) / totalDays) * 100; // NEW
+            } // NEW
+
+            if (!scheduledRows.length) { // NEW
+                const empty = document.createElement('div'); // NEW
+                empty.textContent = 'No scheduled occupancy dates'; // NEW
+                empty.style.color = '#5f6368'; // NEW
+                empty.style.padding = '8px 0'; // NEW
+                body.appendChild(empty); // NEW
+            } else { // NEW
+                const grid = document.createElement('div'); // NEW
+                renderScheduleAxis(grid, minDay, maxDay, todayPct, 'Planting'); // NEW
+                scheduledRows.sort((a, b) => a.range.startDay - b.range.startDay || String(a.item.cellId || '').localeCompare(String(b.item.cellId || ''))); // NEW
+                for (const row of scheduledRows) renderOccupancyRow(entry, grid, row.item, row.range, minDay, totalDays, todayPct); // NEW
+                body.appendChild(grid); // NEW
+            } // NEW
+
+            renderOccupancyUnscheduledSection(entry, body, unscheduledItems); // NEW
+        } // NEW
+
         function getSourceBoundsForPanel(source) { // CHANGE
             const host = getPanelHost(); // CHANGE
             const state = source && graph.getView && graph.getView().getState(source); // CHANGE
@@ -2383,6 +2579,11 @@ Draw.loadPlugin(function (ui) {
                 while (entry.panel.firstChild) entry.panel.removeChild(entry.panel.firstChild); // ADDED
                 entry.visibleItems = []; // ADDED
                 entry.panel.appendChild(createScheduleOnlyHeader(entry)); // ADDED
+                if (activeMode === MODE_OCCUPANCY) { // NEW
+                    const body = createBody(); // NEW
+                    entry.panel.appendChild(body); // NEW
+                    renderOccupancyView(entry, body); // NEW
+                } // NEW
                 if (!positionPanel(entry, source)) { // ADDED
                     removeEntry(entry); // ADDED
                     return; // ADDED
@@ -2412,13 +2613,14 @@ Draw.loadPlugin(function (ui) {
 
             while (entry.panel.firstChild) entry.panel.removeChild(entry.panel.firstChild); // CHANGE
             entry.visibleItems = []; // CHANGE
-            const headerCount = activeMode === MODE_SCHEDULE ? countScheduleRows(visibleCards) : countGroupItems(groups); // CHANGE
+            const headerCount = activeMode === MODE_OCCUPANCY ? countOccupancyRows(entry) : (activeMode === MODE_SCHEDULE ? countScheduleRows(visibleCards) : countGroupItems(groups)); // CHANGE
             entry.panel.appendChild(createHeader(entry, headerCount)); // CHANGE
             const body = createBody(); // CHANGE
             entry.panel.appendChild(body); // CHANGE
             mxEvent.addListener(body, 'scroll', function () { refreshLines(entry); }); // CHANGE
 
-            if (visibleCards.length === 0) renderEmptyTaskOverlayMessage(body); // CHANGE
+            if (activeMode === MODE_OCCUPANCY) renderOccupancyView(entry, body); // NEW
+            else if (visibleCards.length === 0) renderEmptyTaskOverlayMessage(body); // CHANGE
             else if (activeMode === MODE_SCHEDULE) renderScheduleView(entry, body, visibleCards); // CHANGE
             else if (groups.length) renderCardView(entry, body, groups); // CHANGE
             else renderEmptyTaskOverlayMessage(body); // CHANGE
@@ -2489,7 +2691,7 @@ Draw.loadPlugin(function (ui) {
         } // CHANGE
 
         function setMode(mode) { // CHANGE
-            activeMode = mode === MODE_SCHEDULE ? MODE_SCHEDULE : MODE_CARDS; // CHANGE
+            activeMode = mode === MODE_OCCUPANCY ? MODE_OCCUPANCY : (mode === MODE_SCHEDULE ? MODE_SCHEDULE : MODE_CARDS); // CHANGE
             refresh(); // CHANGE
         } // CHANGE
 

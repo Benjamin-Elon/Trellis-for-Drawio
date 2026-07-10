@@ -66,11 +66,11 @@ test("irrigation controls render above irrigation annotations and connection ove
     assert.match(source, /trellis-graph-connection-layer/); // NEW
     assert.match(source, /trellis-graph-annotation-layer/); // NEW
     assert.match(source, /hud\.style\.cssText = "position:absolute;z-index:" \+ GRAPH_OVERLAY_Z\.CONTROL/); // NEW
-    assert.match(source, /return "position:absolute;z-index:" \+ GRAPH_OVERLAY_Z\.CONTROL \+ ";width:" \+ PORT_BADGE_SIZE/); // NEW
-    assert.match(source, /nav\.style\.cssText = "position:absolute;z-index:" \+ GRAPH_OVERLAY_Z\.CONTROL/); // NEW
+    assert.match(source, /return "position:absolute;left:0;top:0;z-index:" \+ GRAPH_OVERLAY_Z\.CONTROL \+ ";width:" \+ PORT_BADGE_SIZE/); // CHANGE
+    assert.match(source, /nav\.style\.cssText = fixedModelButtonStyle/); // CHANGE
     assert.match(source, /btn\.style\.cssText = "position:absolute;z-index:" \+ GRAPH_OVERLAY_Z\.CONTROL/); // NEW
-    assert.match(source, /appendOverlayNode\(highlight, "connection", \{ modelSpace: true \}\)/); // CHANGE
-    assert.match(source, /appendOverlayNode\(badge, "annotation", \{ modelSpace: true \}\)/); // CHANGE
+    assert.match(source, /claimIrrigationGraphOverlay\(session, "pipe-highlight"/); // CHANGE
+    assert.match(source, /claimIrrigationGraphOverlay\(session, "warning"/); // CHANGE
     assert.match(source, /selected-pipe-highlight[\s\S]*z-index:" \+ GRAPH_OVERLAY_Z\.CONNECTION/); // NEW
     assert.match(source, /trellis-irrigation-zone-badge[\s\S]*z-index:" \+ GRAPH_OVERLAY_Z\.ANNOTATION/); // NEW
     assert.match(source, /trellis-irrigation-warning-badge[\s\S]*z-index:" \+ GRAPH_OVERLAY_Z\.ANNOTATION/); // NEW
@@ -112,7 +112,7 @@ test("custom Trellis dialogs render at the Draw.io dialog layer", () => { // NEW
 
 test("non-control graph overlays stay below controls", () => { // NEW
     assert.match(readPlugin("Garden_Scale.js"), /const OVERLAY_Z = GRAPH_OVERLAY_Z\.ANNOTATION;/); // NEW
-    assert.match(readPlugin("Bed_Succession_Navigator.js"), /styleOverlapBadge[\s\S]*el\.style\.zIndex = String\(GRAPH_OVERLAY_Z\.ANNOTATION\)/); // NEW
+    assert.doesNotMatch(readPlugin("Bed_Succession_Navigator.js"), /styleOverlapBadge|badgePrev|badgeNext/); // CHANGE
     assert.match(readPlugin("Bed_Succession_Navigator.js"), /function styleBtn[\s\S]*el\.style\.zIndex = String\(GRAPH_OVERLAY_Z\.CONTROL\)/); // NEW
     assert.match(readPlugin("Bed_Succession_Navigator.js"), /function styleSelectBtn[\s\S]*el\.style\.zIndex = String\(GRAPH_OVERLAY_Z\.CONTROL\)/); // NEW
     assert.match(readPlugin("Deep_Click_Through.js"), /handle\.style\.zIndex = String\(GRAPH_OVERLAY_Z\.CONTROL_TOP\)/); // NEW

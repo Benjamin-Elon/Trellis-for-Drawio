@@ -1696,6 +1696,21 @@ Draw.loadPlugin(function (ui) {
         return uniqueBoundaries(boundaries); // NEW
     } // NEW
 
+    function clearSelectedExternalPortBoundaries(session) { // NEW
+        session.selectedBoundaries = (session.selectedBoundaries || []).filter(function (boundary) { return normalizeBoundary(boundary).type !== "edge"; }); // NEW
+    } // NEW
+
+    function toggleSelectedPortBoundary(session, boundary) { // NEW
+        const normalized = normalizeBoundary(boundary); // NEW
+        const key = boundaryKey(normalized); // NEW
+        if (!key) return; // NEW
+        const current = selectedValidBoundaries(session); // NEW
+        const internal = current.filter(function (entry) { return normalizeBoundary(entry).type !== "edge"; }); // NEW
+        const selected = current.map(boundaryKey).indexOf(key) >= 0; // CHANGE
+        if (!selected) { session.selectedPorts = []; internal.push(normalized); } // CHANGE
+        session.selectedBoundaries = internal; // CHANGE
+    } // NEW
+
     function toggleSelectedBoundary(session, boundary) { // NEW
         const normalized = normalizeBoundary(boundary); // NEW
         const key = boundaryKey(normalized); // NEW
@@ -4556,7 +4571,7 @@ Draw.loadPlugin(function (ui) {
             if (ev && ev.stopPropagation) ev.stopPropagation(); // NEW
             const boundary = boundaryForPort(session.moduleCell, port); // NEW
             const bedPort = isAssembly(cell) && assemblyType(cell) === "bed"; // NEW
-            if (boundary) { toggleSelectedBoundary(session, boundary); if (bedPort) session.partPickerVisible = false; } // CHANGE
+            if (boundary) { toggleSelectedPortBoundary(session, boundary); if (bedPort) session.partPickerVisible = false; } // CHANGE
             else { toggleSelectedPort(session, port); if (bedPort) session.partPickerVisible = (session.selectedPorts || []).map(portKey).indexOf(portKey(port)) >= 0 && isPortFree(session.moduleCell, port); } // CHANGE
             session.bridgePorts = null; // NEW
             selectCell(findAssemblyAncestor(cell) || cell, false); // NEW
@@ -4616,9 +4631,11 @@ Draw.loadPlugin(function (ui) {
 
     function toggleSelectedPort(session, port) { // NEW
         const key = portKey(port); // NEW
-        const existing = (session.selectedPorts || []).map(portKey).indexOf(key); // NEW
-        if (existing >= 0) session.selectedPorts.splice(existing, 1); // NEW
-        else session.selectedPorts.push(normalizePort(port)); // NEW
+        const current = selectedValidPorts(session); // CHANGE
+        const existing = current.map(portKey).indexOf(key); // CHANGE
+        if (existing >= 0) current.splice(existing, 1); // CHANGE
+        else { clearSelectedExternalPortBoundaries(session); while (current.length >= 2) current.shift(); current.push(normalizePort(port)); } // CHANGE
+        session.selectedPorts = current; // NEW
     } // NEW
 
     function renderInternalConnectionBadges(session, selectedCells) { // NEW

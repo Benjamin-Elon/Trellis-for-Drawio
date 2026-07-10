@@ -74,11 +74,11 @@ function makeHarness(options = {}) { // NEW
     const bed = appendChild(layer, new TestCell("bed", { garden_bed: "1" })); // NEW
     const extraBeds = []; // NEW
     if (options.secondBed) extraBeds.push(appendChild(layer, new TestCell("bed2", { garden_bed: "1" }))); // NEW
-    const tiler1 = appendChild(layer, new TestCell("tiler1", { tiler_group: "1" })); // NEW
+    const tiler1 = appendChild(layer, new TestCell("tiler1", { tiler_group: "1", ...(options.tiler1Attrs || {}) })); // CHANGE
     const extraCells = []; // NEW
 
     if (options.secondTiler) { // NEW
-        extraCells.push(appendChild(layer, new TestCell("tiler2", { tiler_group: "1" }))); // NEW
+        extraCells.push(appendChild(layer, new TestCell("tiler2", { tiler_group: "1", ...(options.tiler2Attrs || {}) }))); // CHANGE
     } // NEW
 
     const model = new TestModel(root); // NEW
@@ -173,6 +173,12 @@ function childOrder(parent) { // NEW
     return (parent.children || []).map(child => child.id); // NEW
 } // NEW
 
+test("navigator source no longer contains day-count overlap badge machinery", () => { // NEW
+    const source = fs.readFileSync(PLUGIN_PATH, "utf8"); // NEW
+    assert.doesNotMatch(source, /badgePrev|badgeNext|styleOverlapBadge|updateOverlapValuesFor|positionOverlapBadgesFor/); // NEW
+    assert.doesNotMatch(source, /OVERLAP_BADGE|inclusiveOverlapDays/); // NEW
+}); // NEW
+
 test("selected singleton tiler on a garden bed shows only the bed-select control", () => { // NEW
     const { document, getSelected } = makeHarness(); // CHANGE
     const selectBeds = visibleImageByAlt(document, "Select bed"); // CHANGE
@@ -199,6 +205,23 @@ test("two selected tilers in the same garden bed keep succession controls and be
     assert.ok(visibleImageByAlt(document, "Select"), "expected visible cluster-select button"); // NEW
     assert.ok(visibleImageByTitle(document, "Previous"), "expected visible previous button"); // NEW
     assert.ok(visibleImageByTitle(document, "Next"), "expected visible next button"); // NEW
+}); // NEW
+
+test("selected cluster occupancy API returns schedule-ordered windows", () => { // NEW
+    const { graph, tiler1 } = makeHarness({ // NEW
+        secondTiler: true, // NEW
+        tiler1Attrs: { plant_name: "Tomato", sow_date: "2026-03-01", transplant_date: "2026-05-01", harvest_end: "2026-09-15" }, // NEW
+        tiler2Attrs: { plant_name: "Lettuce", sow_date: "2026-02-10", harvest_end: "2026-04-10" } // NEW
+    }); // NEW
+    const api = graph.__trellisBedSuccessionNavigator; // NEW
+    const result = api.getSelectedClusterOccupancy(tiler1); // NEW
+
+    assert.equal(result.selectedId, "tiler1"); // NEW
+    assert.deepEqual(JSON.parse(JSON.stringify(result.items.map(item => item.cellId))), ["tiler2", "tiler1"]); // CHANGE
+    assert.deepEqual(JSON.parse(JSON.stringify(result.items.map(item => [item.label, item.startISO, item.endISO]))), [ // CHANGE
+        ["Lettuce", "2026-02-10", "2026-04-10"], // NEW
+        ["Tomato", "2026-05-01", "2026-09-15"] // NEW
+    ]); // NEW
 }); // NEW
 
 test("bed-select returns beds behind tilers after selecting a tiler", () => { // NEW

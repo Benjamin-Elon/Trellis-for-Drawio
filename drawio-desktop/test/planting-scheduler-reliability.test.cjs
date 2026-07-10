@@ -346,6 +346,70 @@ test('indoor transplant applies transplant lead time', () => {
     assert.equal(result.timelines[0].transplant.toISOString().slice(0, 10), '2026-04-22');
 });
 
+test('indoor transplant primary date derives sow date for scheduler core', () => { // ADDED
+    const sowISO = hooks.sowDateFromPrimaryDate('2026-04-10', 'transplant.indoor', 21); // ADDED
+    assert.equal(sowISO, '2026-03-20'); // ADDED
+    const plant = makePlant({ days_transplant: 21 }); // ADDED
+    const result = hooks.computeScheduleResult(makeInputs({ // ADDED
+        plant, // ADDED
+        planningMode: 'transplant_indoor', // ADDED
+        methodCategoryId: 'transplant', // ADDED
+        methodId: 'transplant.indoor', // ADDED
+        startISO: sowISO // ADDED
+    })); // ADDED
+    assert.equal(result.rows[0].sow, '2026-03-20'); // ADDED
+    assert.equal(result.rows[0].trans, '2026-04-10'); // ADDED
+}); // ADDED
+
+test('cutting transplant primary date uses transplant-date conversion', () => { // ADDED
+    const sowISO = hooks.sowDateFromPrimaryDate('2026-04-10', 'transplant.cutting', 21); // ADDED
+    assert.equal(sowISO, '2026-03-20'); // ADDED
+    assert.equal(hooks.primaryDateFromSowDate(sowISO, 'transplant.cutting', 21), '2026-04-10'); // ADDED
+}); // ADDED
+
+test('cell transplant-days override beats plant default for derived sow date', () => { // ADDED
+    const cell = makeAttributeCell({ days_transplant: '35' }); // ADDED
+    const overrideDays = hooks.readCellTransplantDaysOverride(cell); // ADDED
+    const plant = makePlant({ days_transplant: 21 }); // ADDED
+    const config = hooks.resolveTransplantDaysConfig(plant, { // ADDED
+        methodId: 'transplant.indoor', // ADDED
+        overrideEnabled: overrideDays != null, // ADDED
+        overrideValue: overrideDays // ADDED
+    }); // ADDED
+    assert.equal(config.effectiveDays, 35); // ADDED
+    assert.equal(hooks.sowDateFromPrimaryDate('2026-04-24', 'transplant.indoor', config.effectiveDays), '2026-03-20'); // ADDED
+}); // ADDED
+
+test('schedule patch persists transplant-days only for explicit cell override', () => { // ADDED
+    const plant = makePlant({ days_transplant: 21 }); // ADDED
+    const inputs = makeInputs({ // ADDED
+        plant, // ADDED
+        planningMode: 'transplant_indoor', // ADDED
+        methodCategoryId: 'transplant', // ADDED
+        methodId: 'transplant.indoor', // ADDED
+        startISO: '2026-03-20' // ADDED
+    }); // ADDED
+    const result = hooks.computeScheduleResult(inputs); // ADDED
+    const inheritPatch = hooks.buildScheduleAttributePatch(inputs, result, { transplantDaysOverrideEnabled: false }); // ADDED
+    assert.equal(inheritPatch.sow_date, '2026-03-20'); // ADDED
+    assert.equal(inheritPatch.transplant_date, '2026-04-10'); // ADDED
+    assert.equal(inheritPatch.days_transplant, null); // ADDED
+    const overridePatch = hooks.buildScheduleAttributePatch(inputs, result, { transplantDaysOverrideEnabled: true, effectiveTransplantDays: 21 }); // ADDED
+    assert.equal(overridePatch.days_transplant, '21'); // ADDED
+}); // ADDED
+
+test('transplant-date display windows project sowing windows by lead days', () => { // ADDED
+    const projected = hooks.projectSowingSeasonForPrimaryDate({ // ADDED
+        id: 'spring', // ADDED
+        label: 'Spring (Mar 20-Apr 20)', // ADDED
+        startISO: '2026-03-20', // ADDED
+        endISO: '2026-04-20' // ADDED
+    }, 'transplant.indoor', 21); // ADDED
+    assert.equal(projected.startISO, '2026-04-10'); // ADDED
+    assert.equal(projected.endISO, '2026-05-11'); // ADDED
+    assert.match(projected.label, /^Spring \(Apr 10-May 11\)$/); // ADDED
+}); // ADDED
+
 test('lifecycle timeline shows annual direct sow and harvest milestones', () => { // ADDED
     const plant = makePlant(); // ADDED
     const result = hooks.computeScheduleResult(makeInputs({ plant })); // ADDED

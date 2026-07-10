@@ -235,6 +235,10 @@ function portBadgesInState(root, state) { // NEW
     return portBadges(root).filter(node => node.classList.contains("trellis-irrigation-port-badge-" + state)); // NEW
 } // NEW
 
+function selectedPortBadgeLabels(root) { // NEW
+    return portBadgesInState(root, "selected").map(node => node.textContent).sort(); // NEW
+} // NEW
+
 function assemblyCells(moduleCell, api) { // NEW
     return descendants(moduleCell, cell => cell.getAttribute && cell.getAttribute(api.attrs.ASSEMBLY) === "1"); // NEW
 } // NEW
@@ -828,6 +832,39 @@ test("selected port badges connect with automatic pipe choice and disconnect sel
     clickPort(graph.container, /Outlet 1 connected/); // NEW
     clickButton(graph.container, "Disconnect Parts"); // CHANGE
     assert.equal(api.__test.collectAssemblyEdges(moduleCell).length, 0); // NEW
+}); // NEW
+
+test("free selected port badges are capped with FIFO order", () => { // NEW
+    const { api, graph, moduleCell } = loadPlugin(); // NEW
+    api.writeCatalog(moduleCell, sampleCatalog()); // NEW
+    const source = api.__test.createSourceAssembly(moduleCell, "Well", { connectorType: "barb", nominalSize: "3/4", method: "drip", pipeConnection: true, usableFlowGpm: 5, staticPressurePsi: 45 }, { x: 30, y: 40 }); // NEW
+    const valve = api.__test.createPartAssembly(moduleCell, api.readCatalog(moduleCell).items.find(item => item.id === "valve"), { x: 30, y: 180 }); // NEW
+    api.openIrrigationMode(moduleCell, { preserveViewport: true }); // NEW
+    graph.setSelectionCells([source.assembly, valve.assembly]); // NEW
+    clickPort(graph.container, /Outlet 1 free/); // NEW
+    clickPort(graph.container, /Inlet 1 free/); // NEW
+    assert.deepEqual(selectedPortBadgeLabels(graph.container), ["I1", "O1"]); // NEW
+    clickPort(graph.container, /Outlet 2 free/); // NEW
+    assert.deepEqual(selectedPortBadgeLabels(graph.container), ["I1", "O2"]); // NEW
+    clickPort(graph.container, /Outlet 2 free selected/); // NEW
+    assert.deepEqual(selectedPortBadgeLabels(graph.container), ["I1"]); // NEW
+}); // NEW
+
+test("selecting a free port clears the selected occupied edge port pair", () => { // NEW
+    const { api, graph, moduleCell } = loadPlugin(); // NEW
+    api.writeCatalog(moduleCell, sampleCatalog()); // NEW
+    const source = api.__test.createSourceAssembly(moduleCell, "Well", { connectorType: "barb", nominalSize: "3/4", method: "drip", pipeConnection: true, usableFlowGpm: 5, staticPressurePsi: 45 }, { x: 30, y: 40 }); // NEW
+    const filter = api.__test.createPartAssembly(moduleCell, api.readCatalog(moduleCell).items.find(item => item.id === "filter"), { x: 30, y: 180 }); // NEW
+    api.__test.createAssemblyConnection(moduleCell, { cellId: api.__test.firstAssemblyPart(source.assembly).getId(), role: "output", index: 0 }, { cellId: api.__test.firstAssemblyPart(filter.assembly).getId(), role: "input", index: 0 }); // NEW
+    api.openIrrigationMode(moduleCell, { preserveViewport: true }); // NEW
+    graph.setSelectionCells([source.assembly, filter.assembly]); // NEW
+    clickPort(graph.container, /Outlet 1 connected/); // NEW
+    assert.equal(portBadgesInState(graph.container, "selected").filter(node => /connected selected/.test(node.title)).length, 2); // NEW
+    clickPort(graph.container, /Outlet 1 free/); // NEW
+    const selected = portBadgesInState(graph.container, "selected"); // NEW
+    assert.equal(selected.length, 1); // NEW
+    assert.match(selected[0].title, /free selected/); // NEW
+    assert.equal(selected.filter(node => /connected selected/.test(node.title)).length, 0); // NEW
 }); // NEW
 
 test("pipe edge stroke width is proportional to nominal pipe size", () => { // NEW

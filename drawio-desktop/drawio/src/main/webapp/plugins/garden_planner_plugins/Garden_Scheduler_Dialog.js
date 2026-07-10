@@ -296,6 +296,103 @@ Draw.loadPlugin(function (ui) {
         return String(currentStartISO || ''); // CHANGED
     }
 
+    const TRANSPLANT_DATE_INPUT_METHOD_IDS = Object.freeze(['transplant.indoor', 'transplant.cutting']); // ADDED
+
+    function methodUsesTransplantDateInput(methodIdOrBehavior) { // ADDED
+        const methodId = normId(methodIdOrBehavior?.methodId ?? methodIdOrBehavior); // ADDED
+        return TRANSPLANT_DATE_INPUT_METHOD_IDS.indexOf(methodId) >= 0; // ADDED
+    } // ADDED
+
+    function normalizeTransplantDays(value) { // ADDED
+        const n = finiteNumberOrNull(value); // ADDED
+        if (n == null || n < 0) return null; // ADDED
+        return Math.round(n); // ADDED
+    } // ADDED
+
+    function plantDefaultTransplantDays(plant) { // ADDED
+        return normalizeTransplantDays(plant?.days_transplant) ?? 0; // ADDED
+    } // ADDED
+
+    function readCellTransplantDaysOverride(cell) { // ADDED
+        const valueNode = cell?.value; // ADDED
+        const hasAttr = typeof valueNode?.hasAttribute === 'function' // ADDED
+            ? valueNode.hasAttribute('days_transplant') // ADDED
+            : cell?.getAttribute?.('days_transplant') != null; // ADDED
+        if (!hasAttr) return null; // ADDED
+        const raw = cell?.getAttribute?.('days_transplant') ?? valueNode?.getAttribute?.('days_transplant'); // ADDED
+        return normalizeTransplantDays(raw); // ADDED
+    } // ADDED
+
+    function resolveTransplantDaysConfig(plant, { methodId = '', overrideEnabled = false, overrideValue = null } = {}) { // ADDED
+        const plantDefaultDays = plantDefaultTransplantDays(plant); // ADDED
+        const explicitDays = overrideEnabled ? normalizeTransplantDays(overrideValue) : null; // ADDED
+        const effectiveDays = explicitDays == null ? plantDefaultDays : explicitDays; // ADDED
+        return { // ADDED
+            plantDefaultDays, // ADDED
+            overrideEnabled: !!overrideEnabled && methodUsesTransplantDateInput(methodId), // ADDED
+            overrideValue: explicitDays, // ADDED
+            effectiveDays // ADDED
+        }; // ADDED
+    } // ADDED
+
+    function requireEffectiveTransplantDays(methodId, effectiveDays) { // ADDED
+        if (methodUsesTransplantDateInput(methodId) && !(Number.isFinite(Number(effectiveDays)) && Number(effectiveDays) > 0)) { // ADDED
+            throw new Error(`methodId "${normId(methodId)}" requires transplant days > 0.`); // ADDED
+        } // ADDED
+    } // ADDED
+
+    function applyEffectiveTransplantDaysToPlant(plant, effectiveDays) { // ADDED
+        const days = normalizeTransplantDays(effectiveDays); // ADDED
+        if (!plant || days == null || days === plantDefaultTransplantDays(plant)) return plant; // ADDED
+        const row = toPlainDict(plant); // ADDED
+        row.days_transplant = days; // ADDED
+        return new PlantModel(row); // ADDED
+    } // ADDED
+
+    function shiftISODateByDays(value, days) { // ADDED
+        const date = parseISODateUTCValue(value); // ADDED
+        if (!date) return ''; // ADDED
+        return fmtISO(addDaysUTC(date, Number(days) || 0)); // ADDED
+    } // ADDED
+
+    function sowDateFromPrimaryDate(primaryDateISO, methodId, effectiveTransplantDays) { // ADDED
+        return methodUsesTransplantDateInput(methodId) // ADDED
+            ? shiftISODateByDays(primaryDateISO, -Math.max(0, Number(effectiveTransplantDays) || 0)) // ADDED
+            : String(primaryDateISO || '').trim(); // ADDED
+    } // ADDED
+
+    function primaryDateFromSowDate(sowDateISO, methodId, effectiveTransplantDays) { // ADDED
+        return methodUsesTransplantDateInput(methodId) // ADDED
+            ? shiftISODateByDays(sowDateISO, Math.max(0, Number(effectiveTransplantDays) || 0)) // ADDED
+            : String(sowDateISO || '').trim(); // ADDED
+    } // ADDED
+
+    function formatShortMonthDayUTC(date) { // ADDED
+        return date.toLocaleString('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric' }); // ADDED
+    } // ADDED
+
+    function labelProjectedSowingSeason(window, startDate, endDate) { // ADDED
+        const baseLabel = String(window?.label || '').replace(/\s*\([^)]*\)\s*$/, '').trim() || 'Season'; // ADDED
+        return `${baseLabel} (${formatShortMonthDayUTC(startDate)}-${formatShortMonthDayUTC(endDate)})`; // ADDED
+    } // ADDED
+
+    function projectSowingSeasonForPrimaryDate(window, methodId, effectiveTransplantDays) { // ADDED
+        const normalized = normalizeSowingSeason(window); // ADDED
+        if (!normalized || !methodUsesTransplantDateInput(methodId)) return normalized; // ADDED
+        const startDate = addDaysUTC(parseISODateUTCValue(normalized.startISO), Math.max(0, Number(effectiveTransplantDays) || 0)); // ADDED
+        const endDate = addDaysUTC(parseISODateUTCValue(normalized.endISO), Math.max(0, Number(effectiveTransplantDays) || 0)); // ADDED
+        return { // ADDED
+            ...normalized, // ADDED
+            label: labelProjectedSowingSeason(normalized, startDate, endDate), // ADDED
+            startISO: fmtISO(startDate), // ADDED
+            endISO: fmtISO(endDate) // ADDED
+        }; // ADDED
+    } // ADDED
+
+    function projectSowingSeasonsForPrimaryDate(windows, methodId, effectiveTransplantDays) { // ADDED
+        return normalizeSowingSeasons(windows).map(window => projectSowingSeasonForPrimaryDate(window, methodId, effectiveTransplantDays)).filter(Boolean); // ADDED
+    } // ADDED
+
     function isPerennialPlant(plant) { // FIX: keep lifespan-only schedules out of maturity-budget code paths
         return !!(plant && typeof plant.isPerennial === 'function' && plant.isPerennial());
     }
@@ -1712,8 +1809,8 @@ Draw.loadPlugin(function (ui) {
 
 
     async function buildScheduleContextFromForm(formState, selPlant, options = {}) {
-        const plant = await resolveEffectivePlant(formState.plantId, formState.varietyId);
-        if (!plant) throw new Error('Plant not found for schedule.');
+        const basePlant = await resolveEffectivePlant(formState.plantId, formState.varietyId); // CHANGED
+        if (!basePlant) throw new Error('Plant not found for schedule.'); // CHANGED
 
         const city = await CityClimate.resolve({ cityId: formState.cityId, cityName: formState.cityName }); // CHANGED
         if (!city) throw new Error('City not found for schedule.');
@@ -1722,6 +1819,13 @@ Draw.loadPlugin(function (ui) {
         const methodId = normId(formState.methodId); // FIX
         const resolvedBehavior = resolveMethodBehavior({ methodCategoryId, methodId });
         const planningMode = resolvedBehavior.planningMode;
+        const transplantDaysConfig = resolveTransplantDaysConfig(basePlant, { // ADDED
+            methodId, // ADDED
+            overrideEnabled: formState.transplantDaysOverrideEnabled, // ADDED
+            overrideValue: formState.transplantDaysOverrideValue // ADDED
+        }); // ADDED
+        requireEffectiveTransplantDays(methodId, transplantDaysConfig.effectiveDays); // ADDED
+        const plant = applyEffectiveTransplantDaysToPlant(basePlant, transplantDaysConfig.effectiveDays); // ADDED
 
         const climateResolution = resolveClimateModelPolicy( // ADDED
             options.climateModelModuleCell || formState.climateModelModuleCell || null, // ADDED
@@ -1772,7 +1876,8 @@ Draw.loadPlugin(function (ui) {
             methodId: resolvedBehavior.methodId,
             resolvedBehavior,
             policy,
-            inputs
+            inputs,
+            transplantDaysConfig // ADDED
         };
     }
 
@@ -2491,6 +2596,14 @@ Draw.loadPlugin(function (ui) {
         return Math.trunc(n);
     }
 
+    function readOptionalIntGE1(inputEl) { // ADDED
+        const s = String(inputEl?.value ?? '').trim(); // ADDED
+        if (s === '') return null; // ADDED
+        const n = Number(s); // ADDED
+        if (!Number.isFinite(n) || n < 1) throw new Error('Expected integer >= 1'); // ADDED
+        return Math.trunc(n); // ADDED
+    } // ADDED
+
     function readNumGE0(inputEl) {
         const n = Number(String(inputEl?.value ?? '').trim());
         if (!Number.isFinite(n) || n < 0) throw new Error('Expected number >= 0');
@@ -2979,6 +3092,8 @@ Draw.loadPlugin(function (ui) {
         seasonStartYear = '', // ADDED
         methodName = '', // ADDED
         startISO = '', // ADDED
+        selectedDateISO = '', // ADDED
+        dateInputMode = 'sow', // ADDED
         sowingSeasons = [], // CHANGED
         activeSowingSeasonId = '', // ADDED
         firstHarvestISO = '', // ADDED
@@ -2996,11 +3111,21 @@ Draw.loadPlugin(function (ui) {
         if (!perennial && warningMessages.length) { // CHANGED
             feasibility = { status: 'warning', label: warningMessages.join(' '), warningMessages }; // CHANGED
         } // ADDED
+        if (!perennial && dateInputMode === 'transplant' && feasibility?.label) { // ADDED
+            feasibility = { // ADDED
+                ...feasibility, // ADDED
+                label: String(feasibility.label) // ADDED
+                    .replace(/sow date/g, 'transplant date') // ADDED
+                    .replace(/Sow date/g, 'Transplant date') // ADDED
+                    .replace(/sowing season/g, 'transplant season') // ADDED
+                    .replace(/sowing seasons/g, 'transplant seasons') // ADDED
+            }; // ADDED
+        } // ADDED
         return { // ADDED
             crop: [plantName, varietyName].filter(Boolean).join(' / ') || '(none)', // ADDED
             context: [cityName, seasonStartYear].filter(value => String(value || '').trim()).join(' / ') || '(none)', // ADDED
             method: methodName || '(none)', // ADDED
-            selectedDate: startISO || '(not selected)', // ADDED
+            selectedDate: selectedDateISO || startISO || '(not selected)', // CHANGED
             firstHarvest: perennial ? 'Not calculated for perennial schedules' : (firstHarvestISO || '(not available)'), // ADDED
             harvestEnd: perennial ? 'Not calculated for perennial schedules' : (lastHarvestISO || '(not available)'), // ADDED
             feasibility // ADDED
@@ -5331,7 +5456,8 @@ Draw.loadPlugin(function (ui) {
             bedProfile: scheduleBedProfile = normalizeBedProfile(null),
             bedProfileSource: scheduleBedProfileSource = 'generic garden bed',
             dailyClimate: initialDailyClimate = null, // CHANGED
-            dailyClimateKey: initialDailyClimateKey = '' // CHANGED
+            dailyClimateKey: initialDailyClimateKey = '', // CHANGED
+            initialTransplantDaysOverrideValue = null // ADDED
         } = options || {};
         let hasPersistedSchedule = !!initialHasPersistedSchedule; // FIX: provenance changes after an automatic replacement
 
@@ -5584,6 +5710,7 @@ Draw.loadPlugin(function (ui) {
 
         let mode = getModeForPlant(selPlant);
 
+        let baseEffectivePlant = selPlant; // ADDED
         let effectivePlant = selPlant;
 
         function setSelectOptions(selectEl, opts, selectedValue) {
@@ -5598,13 +5725,19 @@ Draw.loadPlugin(function (ui) {
         }
 
         async function refreshEffectivePlant() {
-            effectivePlant = await resolveEffectivePlant(
+            baseEffectivePlant = await resolveEffectivePlant( // CHANGED
                 formState.plantId,
                 formState.varietyId
             );
-            if (!effectivePlant) {
-                effectivePlant = selPlant;
+            if (!baseEffectivePlant) { // CHANGED
+                baseEffectivePlant = selPlant; // CHANGED
             }
+            const transplantDaysConfig = resolveTransplantDaysConfig(baseEffectivePlant, { // ADDED
+                methodId: formState.methodId, // ADDED
+                overrideEnabled: formState.transplantDaysOverrideEnabled, // ADDED
+                overrideValue: formState.transplantDaysOverrideValue // ADDED
+            }); // ADDED
+            effectivePlant = applyEffectiveTransplantDaysToPlant(baseEffectivePlant, transplantDaysConfig.effectiveDays); // ADDED
             mode = getModeForPlant(effectivePlant);
         }
 
@@ -5952,13 +6085,15 @@ Draw.loadPlugin(function (ui) {
         const initialStartISO = fmtISO(earliestFeasibleSowDate); // FIX: allow an explicitly empty no-window state
         const initialLatestHarvestEndISO = fmtISO(latestHarvestEndDate); // ADDED
         const initialSelectedHarvestEndISO = fmtISO(selectedHarvestEndDate); // ADDED
+        const transplantDaysOverrideInitial = normalizeTransplantDays(initialTransplantDaysOverrideValue); // ADDED
 
         // User-selectable derived sowing season // ADDED
         const sowingSeasonSel = makeSelect([], ''); // ADDED
         const sowingSeasonBoundsInput = makeDisplayField(''); // ADDED
 
         // User-controlled first sow date (used for schedule startISO)                   
-        const startInput = makeDate(initialStartISO, false);
+        const initialPrimaryDateISO = primaryDateFromSowDate(initialStartISO, methodSel.value, transplantDaysOverrideInitial ?? plantDefaultTransplantDays(effectivePlant)); // ADDED
+        const startInput = makeDate(initialPrimaryDateISO, false); // CHANGED
 
         // Auto-computed season end constraint (read-only for annuals, editable for perennials)
         const seasonEndInput = makeDate(initialLatestHarvestEndISO, true); // CHANGED
@@ -5977,6 +6112,26 @@ Draw.loadPlugin(function (ui) {
         const harvestWindowInput = makeNullableNumber(hwDefault ?? null, { min: 0, step: 1 });
         const minYieldMultInput = makeNumber(0.50, { min: 0 }); minYieldMultInput.step = '0.01';
         minYieldMultInput.max = '1';
+        const transplantDaysOverrideChk = makeCheckbox(transplantDaysOverrideInitial != null); // ADDED
+        const transplantDaysInput = makeNullableNumber(transplantDaysOverrideInitial, { min: 1, step: 1 }); // ADDED
+        const transplantDaysWrap = document.createElement('div'); // ADDED
+        transplantDaysWrap.style.display = 'flex'; // ADDED
+        transplantDaysWrap.style.alignItems = 'center'; // ADDED
+        transplantDaysWrap.style.gap = '8px'; // ADDED
+        transplantDaysWrap.style.width = '100%'; // ADDED
+        const transplantDaysOverrideLabel = document.createElement('label'); // ADDED
+        transplantDaysOverrideLabel.style.display = 'flex'; // ADDED
+        transplantDaysOverrideLabel.style.alignItems = 'center'; // ADDED
+        transplantDaysOverrideLabel.style.gap = '4px'; // ADDED
+        transplantDaysOverrideLabel.style.whiteSpace = 'nowrap'; // ADDED
+        transplantDaysOverrideLabel.appendChild(transplantDaysOverrideChk); // ADDED
+        transplantDaysOverrideLabel.appendChild(document.createTextNode('Override')); // ADDED
+        const transplantDaysBaseHint = document.createElement('span'); // ADDED
+        transplantDaysBaseHint.style.fontSize = '11px'; // ADDED
+        transplantDaysBaseHint.style.color = '#6b7280'; // ADDED
+        transplantDaysWrap.appendChild(transplantDaysOverrideLabel); // ADDED
+        transplantDaysWrap.appendChild(transplantDaysInput); // ADDED
+        transplantDaysWrap.appendChild(transplantDaysBaseHint); // ADDED
 
         // --- Season control (single field) ---
         const seasonStartYear0 = finiteNumberOrNull(cell.getAttribute?.('season_start_year'))
@@ -6017,7 +6172,7 @@ Draw.loadPlugin(function (ui) {
             methodCategoryId: methodCategorySel.value,
             methodId: methodSel.value,
 
-            startISO: startInput.value,
+            startISO: initialStartISO, // CHANGED
             seasonEndISO: mode.perennial ? seasonEndInput.value : '', // CHANGED: reserve seasonEndISO for perennial lifespan end.
             latestHarvestEndISO: mode.perennial ? '' : initialLatestHarvestEndISO, // ADDED: annual display output is not a scheduling constraint.
             seasonStartYear: Number(seasonYearInput.value || (new Date()).getUTCFullYear()),
@@ -6036,8 +6191,50 @@ Draw.loadPlugin(function (ui) {
             climateModelModuleCell, // ADDED
             climateModelDraftPatch: null, // ADDED
             climateModelPolicy: DEFAULT_CLIMATE_MODEL_POLICY, // CHANGED
-            scheduleWarnings: [] // ADDED
+            scheduleWarnings: [], // ADDED
+            transplantDaysOverrideEnabled: transplantDaysOverrideInitial != null, // ADDED
+            transplantDaysOverrideValue: transplantDaysOverrideInitial // ADDED
         };
+
+        function currentMethodUsesTransplantDateInput() { // ADDED
+            return !mode.perennial && methodUsesTransplantDateInput(formState.methodId); // ADDED
+        } // ADDED
+
+        function currentTransplantDaysConfig() { // ADDED
+            return resolveTransplantDaysConfig(baseEffectivePlant || effectivePlant, { // ADDED
+                methodId: formState.methodId, // ADDED
+                overrideEnabled: formState.transplantDaysOverrideEnabled, // ADDED
+                overrideValue: formState.transplantDaysOverrideValue // ADDED
+            }); // ADDED
+        } // ADDED
+
+        function displayPrimaryDateISO(startISO = formState.startISO) { // ADDED
+            return primaryDateFromSowDate(startISO, formState.methodId, currentTransplantDaysConfig().effectiveDays); // ADDED
+        } // ADDED
+
+        function internalSowDateISO(primaryDateISO = startInput.value) { // ADDED
+            return sowDateFromPrimaryDate(primaryDateISO, formState.methodId, currentTransplantDaysConfig().effectiveDays); // ADDED
+        } // ADDED
+
+        function displaySowingSeasons() { // ADDED
+            return projectSowingSeasonsForPrimaryDate(formState.sowingSeasons, formState.methodId, currentTransplantDaysConfig().effectiveDays); // ADDED
+        } // ADDED
+
+        function syncStartInputFromState() { // ADDED
+            startInput.value = displayPrimaryDateISO(formState.startISO); // ADDED
+        } // ADDED
+
+        function displayDateClassification(classification) { // ADDED
+            if (!currentMethodUsesTransplantDateInput() || !classification?.label) return classification; // ADDED
+            return { // ADDED
+                ...classification, // ADDED
+                label: String(classification.label) // ADDED
+                    .replace(/sow date/g, 'transplant date') // ADDED
+                    .replace(/Sow date/g, 'Transplant date') // ADDED
+                    .replace(/sowing season/g, 'transplant season') // ADDED
+                    .replace(/sowing seasons/g, 'transplant seasons') // ADDED
+            }; // ADDED
+        } // ADDED
 
 
         function syncStateFromControls() {
@@ -6050,7 +6247,10 @@ Draw.loadPlugin(function (ui) {
             formState.methodCategoryId = normId(methodCategorySel.value); // FIX
             formState.methodId = normId(methodSel.value); // FIX
 
-            formState.startISO = startInput.value;
+            const usesTransplantDate = methodUsesTransplantDateInput(formState.methodId); // ADDED
+            formState.transplantDaysOverrideEnabled = usesTransplantDate && !!transplantDaysOverrideChk.checked; // ADDED
+            formState.transplantDaysOverrideValue = formState.transplantDaysOverrideEnabled ? readOptionalIntGE1(transplantDaysInput) : null; // ADDED
+            formState.startISO = internalSowDateISO(startInput.value); // CHANGED
             formState.activeSowingSeasonId = sowingSeasonSel.value || formState.activeSowingSeasonId || ''; // ADDED
             if (mode.perennial) formState.seasonEndISO = seasonEndInput.value; // CHANGED
             else formState.latestHarvestEndISO = seasonEndInput.value; // ADDED
@@ -6062,7 +6262,7 @@ Draw.loadPlugin(function (ui) {
 
         function syncControlsFromState({ start = false, end = false, harvest = false } = {}) { // CHANGED
             if (start) {
-                startInput.value = formState.startISO || ''; // FIX: clear fabricated or stale auto dates
+                syncStartInputFromState(); // CHANGED
             }
             if (end) {
                 seasonEndInput.value = mode.perennial ? (formState.seasonEndISO || '') : (formState.latestHarvestEndISO || ''); // CHANGED
@@ -6080,10 +6280,11 @@ Draw.loadPlugin(function (ui) {
         }
 
         function refreshSowingSeasonSelector() { // ADDED
+            const visibleWindows = displaySowingSeasons(); // ADDED
             const selectorState = buildSowingSeasonSelectorState({ // ADDED
-                sowingSeasons: formState.sowingSeasons, // ADDED
+                sowingSeasons: visibleWindows, // CHANGED
                 activeSowingSeasonId: formState.activeSowingSeasonId, // ADDED
-                startISO: formState.startISO // ADDED
+                startISO: displayPrimaryDateISO(formState.startISO) // CHANGED
             }); // ADDED
             while (sowingSeasonSel.firstChild) sowingSeasonSel.removeChild(sowingSeasonSel.firstChild); // ADDED
             selectorState.options.forEach(optionState => { // ADDED
@@ -6158,6 +6359,9 @@ Draw.loadPlugin(function (ui) {
 
         const firstSowRowObj = row('Sow date:', startInput); // CHANGED
         if (startNote) firstSowRowObj.row.appendChild(startNoteSpan); // CHANGED
+        const transplantDaysRowObj = row('Transplant lead days:', transplantDaysWrap); // ADDED
+        setTooltip(transplantDaysRowObj.label, 'Days from sowing to transplant for this planting group.'); // ADDED
+        setTooltip(transplantDaysInput, 'Unchecked: inherit the plant or variety default. Checked: save a group-specific days_transplant override.'); // ADDED
 
         const endRow = row('Latest harvest end:', seasonEndInput); // CHANGED
         const harvestStartRowObj = row('Expected first harvest:', harvestStartInput); // CHANGED
@@ -6165,6 +6369,7 @@ Draw.loadPlugin(function (ui) {
         const daysToFirstHarvestRowObj = row('Days to first harvest:', daysToFirstHarvestInput); // CHANGED
 
         appendFieldRows(contextSection.body, fieldRows, ['seasonStartYear', 'cityName', 'methodSelection']); // CHANGED
+        contextSection.body.appendChild(transplantDaysRowObj.row); // ADDED
         const legacyMethodControls = document.createElement('div'); // ADDED
         legacyMethodControls.style.display = 'none'; // ADDED
         legacyMethodControls.appendChild(methodCategorySel); // ADDED
@@ -6420,6 +6625,8 @@ Draw.loadPlugin(function (ui) {
                 seasonStartYear: formState.seasonStartYear, // ADDED
                 methodName, // ADDED
                 startISO: formState.startISO, // ADDED
+                selectedDateISO: displayPrimaryDateISO(formState.startISO), // ADDED
+                dateInputMode: currentMethodUsesTransplantDateInput() ? 'transplant' : 'sow', // ADDED
                 sowingSeasons: formState.sowingSeasons, // CHANGED
                 activeSowingSeasonId: formState.activeSowingSeasonId, // ADDED
                 firstHarvestISO: formState.firstHarvestISO, // ADDED
@@ -6428,8 +6635,19 @@ Draw.loadPlugin(function (ui) {
             })); // ADDED
         } // ADDED
 
+        function updateTransplantDaysControls() { // ADDED
+            const visible = currentMethodUsesTransplantDateInput(); // ADDED
+            transplantDaysRowObj.row.style.display = visible ? '' : 'none'; // ADDED
+            transplantDaysOverrideChk.disabled = !visible; // ADDED
+            transplantDaysInput.disabled = !visible || !transplantDaysOverrideChk.checked; // ADDED
+            const plantDays = plantDefaultTransplantDays(baseEffectivePlant || effectivePlant); // ADDED
+            transplantDaysBaseHint.textContent = visible ? `Plant default: ${plantDays}` : ''; // ADDED
+            if (visible && !transplantDaysOverrideChk.checked) transplantDaysInput.value = plantDays > 0 ? String(plantDays) : ''; // ADDED
+        } // ADDED
+
         function applyModeToUI() {
             const perennial = mode.perennial;
+            const transplantDateInput = currentMethodUsesTransplantDateInput(); // ADDED
 
             if (perennial) {
                 firstSowRowObj.label.textContent = 'Planting date:'; // CHANGED
@@ -6438,7 +6656,9 @@ Draw.loadPlugin(function (ui) {
                 harvestEndRowObj.row.style.display = 'none'; // CHANGED
                 daysToFirstHarvestRowObj.row.style.display = 'none'; // CHANGED
             } else {
-                firstSowRowObj.label.textContent = 'Sow date:'; // CHANGED
+                firstSowRowObj.label.textContent = transplantDateInput ? 'Transplant date:' : 'Sow date:'; // CHANGED
+                sowingSeasonRowObj.label.textContent = transplantDateInput ? 'Transplant season:' : 'Sowing season:'; // ADDED
+                sowingSeasonBoundsRowObj.label.textContent = transplantDateInput ? 'Transplant window:' : 'Sowing window:'; // ADDED
                 endRow.label.textContent = 'Latest harvest end:'; // CHANGED
                 harvestStartRowObj.row.style.display = ''; // CHANGED
                 harvestEndRowObj.row.style.display = ''; // CHANGED
@@ -6451,19 +6671,21 @@ Draw.loadPlugin(function (ui) {
             if (windowActions) windowActions.style.display = perennial ? 'none' : ''; // FIX
 
             seasonEndInput.disabled = !perennial; // CHANGED
+            updateTransplantDaysControls(); // ADDED
+            refreshSowingSeasonSelector(); // ADDED
             updateScheduleSummaryFromState(); // ADDED
         }
 
 
         function updateStartNote() {
             if (!startNoteSpan) return;
-            const classification = classifySelectedSowDate({ // CHANGED
+            const classification = displayDateClassification(classifySelectedSowDate({ // CHANGED
                 perennial: mode.perennial, // CHANGED
                 windowFeasible: formState.windowFeasible, // CHANGED
                 startISO: formState.startISO, // CHANGED
                 sowingSeasons: formState.sowingSeasons, // CHANGED
                 activeSowingSeasonId: formState.activeSowingSeasonId // ADDED
-            }); // CHANGED
+            })); // CHANGED
             const parts = [];
             const warningText = summarizeScheduleWarnings(formState.scheduleWarnings); // ADDED
             if (warningText) parts.push(warningText); // ADDED
@@ -6485,7 +6707,7 @@ Draw.loadPlugin(function (ui) {
 
         function requireSelectedScheduleDate() { // CHANGED
             if (mode.perennial) return; // CHANGED
-            if (!parseISODateUTCValue(formState.startISO)) throw new Error('Select a sow date.'); // CHANGED
+            if (!parseISODateUTCValue(formState.startISO)) throw new Error(currentMethodUsesTransplantDateInput() ? 'Select a transplant date.' : 'Select a sow date.'); // CHANGED
         } // ADDED
 
 
@@ -6732,6 +6954,7 @@ Draw.loadPlugin(function (ui) {
                 updateDaysToFirstHarvest(); // CHANGED
 
                 syncStartDateBounds(); // CHANGED
+                applyModeToUI(); // ADDED
                 updateTimeline(); // CHANGED
                 refreshContextSummary(); // ADDED
                 void refreshClimateModelTips(); // ADDED
@@ -6795,6 +7018,7 @@ Draw.loadPlugin(function (ui) {
                 harvest: true
             });
             syncStartDateBounds(); // CHANGED
+            applyModeToUI(); // ADDED
             updateStartNote();
             updateTimeline(); // CHANGED
             refreshContextSummary(); // ADDED
@@ -7165,8 +7389,8 @@ Draw.loadPlugin(function (ui) {
         sowingSeasonSel.addEventListener('change', () => { // ADDED
             void runUiAsync('Sowing season change error', async () => { // ADDED
                 formState.activeSowingSeasonId = sowingSeasonSel.value || ''; // ADDED
-                formState.startISO = resolveStartForSowingSeasonSwitch(formState.sowingSeasons, formState.activeSowingSeasonId, startInput.value || formState.startISO); // CHANGED
-                startInput.value = formState.startISO; // ADDED
+                formState.startISO = resolveStartForSowingSeasonSwitch(formState.sowingSeasons, formState.activeSowingSeasonId, formState.startISO); // CHANGED
+                syncStartInputFromState(); // CHANGED
                 userEditedStartThisSession = true; // CHANGED
                 syncStartDateBounds(); // ADDED
                 refreshSowingSeasonSelector(); // ADDED
@@ -7206,6 +7430,20 @@ Draw.loadPlugin(function (ui) {
                 await recomputeLastHarvestFromSchedule();
             });
         });
+
+        function handleTransplantDaysChanged() { // ADDED
+            void runUiAsync('Transplant days change error', async () => { // ADDED
+                syncStateFromControls(); // ADDED
+                await refreshEffectivePlant(); // ADDED
+                syncStartInputFromState(); // ADDED
+                updateTransplantDaysControls(); // ADDED
+                await recomputeAll('methodChanged'); // ADDED
+                await refreshTaskTemplateFromSelection(); // ADDED
+            }); // ADDED
+        } // ADDED
+
+        transplantDaysOverrideChk.addEventListener('change', handleTransplantDaysChanged); // ADDED
+        transplantDaysInput.addEventListener('input', handleTransplantDaysChanged); // ADDED
 
         citySel.addEventListener('change', () => {
             void runUiAsync('City change error', async () => { // FIX
@@ -7563,6 +7801,8 @@ Draw.loadPlugin(function (ui) {
                     taskTemplate, // FIX: generate tasks from the in-memory template saved by this action
                     sowingSeasonId: activeWindow?.id || '', // ADDED
                     sowingSeasonLabel: activeWindow?.label || '', // ADDED
+                    transplantDaysOverrideEnabled: formState.transplantDaysOverrideEnabled, // ADDED
+                    effectiveTransplantDays: inputs?.plant?.days_transplant, // ADDED
                     extraAttributePatches: climateModelAttributePatch ? [climateModelAttributePatch] : [], // ADDED
                     afterGraphUpdate: persistPlantTaskDefault // FIX: undo graph edits if the database write fails
                 });
@@ -9705,6 +9945,7 @@ Draw.loadPlugin(function (ui) {
             sowing_window_label: null, // CHANGED: remove stale pre-rename scheduler metadata on resave.
             tbase_c: String(env.Tbase),
             sow_date: fmt(sowDate),
+            days_transplant: options.transplantDaysOverrideEnabled ? String(options.effectiveTransplantDays ?? '') : null, // ADDED
             germ_date: perennial ? '' : fmt(timeline.germ),
             transplant_date: perennial ? '' : fmt(timeline.transplant),
             maturity_date: perennial ? '' : fmt(timeline.maturity),
@@ -9957,6 +10198,7 @@ Draw.loadPlugin(function (ui) {
         const storedSowDate = parseISODateUTCValue(cell?.getAttribute?.('sow_date'));
         const storedHarvestEndDate = parseISODateUTCValue(cell?.getAttribute?.('harvest_end'));
         const storedSeasonYear = finiteNumberOrNull(cell?.getAttribute?.('season_start_year'));
+        const initialTransplantDaysOverrideValue = readCellTransplantDaysOverride(cell); // ADDED
         const scheduleBedContext = resolveScheduleBedContext(cell); // ADDED: resolve bed conditions once for scheduler soil modeling.
         const year = storedSeasonYear != null && storedSeasonYear >= 1900 && storedSeasonYear <= 3000
             ? Math.trunc(storedSeasonYear)
@@ -9977,6 +10219,12 @@ Draw.loadPlugin(function (ui) {
         const initialMethodCategoryId = initialMethodSelection.methodCategoryId;
         const initialMethodId = initialMethodSelection.methodId;
         const initialResolvedBehavior = initialMethodSelection.resolvedBehavior;
+        const initialTransplantDaysConfig = resolveTransplantDaysConfig(selectedPlant, { // ADDED
+            methodId: initialMethodId, // ADDED
+            overrideEnabled: initialTransplantDaysOverrideValue != null, // ADDED
+            overrideValue: initialTransplantDaysOverrideValue // ADDED
+        }); // ADDED
+        const selectedPlantForSchedule = applyEffectiveTransplantDaysToPlant(selectedPlant, initialTransplantDaysConfig.effectiveDays); // ADDED
 
         const cityInit = await CityClimate.resolveUniqueNameFallback({ cityId: initialCityId, cityName: initialCityName }); // CHANGED
         if (!cityInit) throw new Error(`City not found: ${initialCityName}`);
@@ -9989,22 +10237,22 @@ Draw.loadPlugin(function (ui) {
                 model.endUpdate(); // ADDED
             } // ADDED
         } // ADDED
-        const initialClimateResolution = resolveClimateModelPolicy(climateModelModuleCell, initialCityName, selectedPlant.plant_id, null); // ADDED
+        const initialClimateResolution = resolveClimateModelPolicy(climateModelModuleCell, initialCityName, selectedPlantForSchedule.plant_id, null); // CHANGED
         const initialClimatePolicy = initialClimateResolution.effective; // ADDED
 
-        const selectedIsPerennial = isPerennialPlant(selectedPlant); // FIX
+        const selectedIsPerennial = isPerennialPlant(selectedPlantForSchedule); // CHANGED
         const perennialLifespanYears = selectedIsPerennial
-            ? requirePerennialLifespanYears(selectedPlant)
+            ? requirePerennialLifespanYears(selectedPlantForSchedule)
             : null; // FIX
-        const budget = selectedIsPerennial ? null : selectedPlant.firstHarvestBudget(); // FIX
+        const budget = selectedIsPerennial ? null : selectedPlantForSchedule.firstHarvestBudget(); // CHANGED
 
         // --- compute initial auto anchors safely ---
-        const overwinterAllowed0 = isCrossYearCrop(selectedPlant); // FIX: biennials may harvest in a later year
+        const overwinterAllowed0 = isCrossYearCrop(selectedPlantForSchedule); // CHANGED
         const scanStart = asUTCDate(year, 1, 1);
-        const scanEndHard = asUTCDate(annualSchedulerScanEndYear(selectedPlant, year), 12, 31); // CHANGED
+        const scanEndHard = asUTCDate(annualSchedulerScanEndYear(selectedPlantForSchedule, year), 12, 31); // CHANGED
 
 
-        const HW_DAYS = resolveHarvestWindowDays(null, selectedPlant); // FIX: use the canonical fallback
+        const HW_DAYS = resolveHarvestWindowDays(null, selectedPlantForSchedule); // CHANGED
 
         let initialWindowFeasible = selectedIsPerennial; // FIX
         let earliestFeasibleSowDate = selectedIsPerennial
@@ -10022,7 +10270,8 @@ Draw.loadPlugin(function (ui) {
         let initialDailyClimate = null; // ADDED
 
         if (!selectedIsPerennial && Number.isFinite(HW_DAYS)) { // FIX
-            const env = selectedPlant.cropTempEnvelope(); // FIX: annual-only maturity inputs
+            requireEffectiveTransplantDays(initialMethodId, initialTransplantDaysConfig.effectiveDays); // ADDED
+            const env = selectedPlantForSchedule.cropTempEnvelope(); // CHANGED
             const dailyClimate = await cityInit.loadDailyClimateModel({ scanStart, scanEndHard, climatePolicy: initialClimatePolicy }); // CHANGED
             initialDailyClimate = dailyClimate; // ADDED
             const dailyRates = cityInit.dailyRates(env.Tbase, year, initialClimatePolicy); // CHANGED
@@ -10039,16 +10288,14 @@ Draw.loadPlugin(function (ui) {
                 cropTemp: env,
                 scanStart,
                 scanEndHard,
-                soilGateThresholdC: finiteNumberOrNull(selectedPlant.soil_temp_min_plant_c),
+                soilGateThresholdC: finiteNumberOrNull(selectedPlantForSchedule.soil_temp_min_plant_c),
                 soilGateConsecutiveDays: initialClimatePolicy.soilGateConsecutiveDays, // CHANGED
-                startCoolingThresholdC: asCoolingThresholdC(selectedPlant.start_cooling_threshold_c),
+                startCoolingThresholdC: asCoolingThresholdC(selectedPlantForSchedule.start_cooling_threshold_c),
                 useSpringFrostGate: true, // FIX: keep spring frost checks for overwinter-capable plants
                 lastSpringFrostDOY: pickFrostByRisk(cityInit, initialClimatePolicy.springFrostRisk), // CHANGED
-                daysTransplant: Number.isFinite(Number(selectedPlant.days_transplant))
-                    ? Number(selectedPlant.days_transplant)
-                    : 0,
+                daysTransplant: initialTransplantDaysConfig.effectiveDays, // CHANGED
                 overwinterAllowed: overwinterAllowed0,
-                plantMetadata: selectedPlant, // ADDED
+                plantMetadata: selectedPlantForSchedule, // CHANGED
                 cityLatitudeDeg: finiteNumberOrNull(cityInit.latitude ?? cityInit.lat), // CHANGED
                 bedProfile: scheduleBedContext.profile, // ADDED
                 bedProfileSource: scheduleBedContext.source // ADDED
@@ -10073,14 +10320,14 @@ Draw.loadPlugin(function (ui) {
         // (For perennials / null HW_DAYS we skip this step but still open the dialog.)
         if (!selectedIsPerennial && initialWindowFeasible && Number.isFinite(HW_DAYS) && !hasPersistedSchedule) { // FIX
             const inputs0 = new sharedCore.ScheduleInputs({ // CHANGED
-                plant: selectedPlant,
+                plant: selectedPlantForSchedule,
                 city: cityInit,
                 planningMode: initialResolvedBehavior.planningMode,
                 methodCategoryId: initialMethodCategoryId,
                 methodId: initialMethodId,
                 startISO: earliestFeasibleSowDate.toISOString().slice(0, 10),
                 seasonEndISO: fmtISO(scanEndHard), // FIX: initial annual feasibility checks use lifecycle end, not latest harvest display.
-                policy: PolicyFlags.fromResolvedBehavior(selectedPlant, initialResolvedBehavior, initialClimatePolicy), // CHANGED
+                policy: PolicyFlags.fromResolvedBehavior(selectedPlantForSchedule, initialResolvedBehavior, initialClimatePolicy), // CHANGED
                 seasonStartYear: year,
                 harvestWindowDays: HW_DAYS,
                 bedProfile: scheduleBedContext.profile, // ADDED
@@ -10123,7 +10370,8 @@ Draw.loadPlugin(function (ui) {
             bedProfile: scheduleBedContext.profile, // ADDED
             bedProfileSource: scheduleBedContext.source, // ADDED
             dailyClimate: initialDailyClimate, // CHANGED
-            dailyClimateKey: initialDailyClimate ? `${cityInit.city_name || initialCityName}|${fmtISO(scanStart)}|${fmtISO(scanEndHard)}|${JSON.stringify(initialClimatePolicy)}` : '' // CHANGED
+            dailyClimateKey: initialDailyClimate ? `${cityInit.city_name || initialCityName}|${fmtISO(scanStart)}|${fmtISO(scanEndHard)}|${JSON.stringify(initialClimatePolicy)}` : '', // CHANGED
+            initialTransplantDaysOverrideValue // ADDED
         });
     }
 
@@ -10693,6 +10941,13 @@ Draw.loadPlugin(function (ui) {
             buildFeasibilityDiagnostics, // ADDED
             normalizeSowingSeasons, // ADDED
             ORPHAN_SOWING_SEASON_ID, // ADDED
+            methodUsesTransplantDateInput, // ADDED
+            readCellTransplantDaysOverride, // ADDED
+            resolveTransplantDaysConfig, // ADDED
+            sowDateFromPrimaryDate, // ADDED
+            primaryDateFromSowDate, // ADDED
+            projectSowingSeasonForPrimaryDate, // ADDED
+            projectSowingSeasonsForPrimaryDate, // ADDED
             formatSowingSeasonsSummary, // ADDED
             formatScheduleQualityDiagnosticRanges, // ADDED
             buildSowingSeasonSelectorState, // ADDED
