@@ -29,6 +29,7 @@ const TASK_MANUAL_STAGED_ATTR = 'manual_staged'; // NEW
 const TASK_VIEW_MODES = ['FULL', 'WEEK', 'DAY']; // NEW
 const TASK_WORKFLOW_STATES = ['STAGED', 'TODO', 'DOING', 'DONE']; // NEW
 const WEEK_DAY_LANE_KEYS = ['WEEK_SUN', 'WEEK_MON', 'WEEK_TUE', 'WEEK_WED', 'WEEK_THU', 'WEEK_FRI', 'WEEK_SAT']; // NEW
+const GRAPH_OVERLAY_Z = Object.freeze({ ANNOTATION: 10000, CONNECTION: 10010, CONTROL: 10020, CONTROL_TOP: 10030 }); // NEW
 
 const KANBAN_BOARD_KEY = 'KANBAN_BOARD'; // NEW: shared by runtime guards and pure policy tests
 const LEGACY_KANBAN_BOARD_KEY = 'MAIN_KANBAN_BOARD'; // NEW: preserve recognition of older board cells
@@ -3045,31 +3046,147 @@ Draw.loadPlugin(function (ui) {
     } // NEW
 
     function applyCardWorkflowAction(card, action) { // NEW
-        const board = findBoardAncestor(card); // NEW
-        if (!board) return false; // NEW
-        const patch = buildWorkflowPatch(card.value, action, { // NEW
+        return applyCardWorkflowActions([card], action) > 0; // CHANGE
+    } // NEW
+
+    function buildCardWorkflowContext(board) { // NEW
+        return { // NEW
             mode: getBoardViewMode(board), // NEW
             selectedDay: getSelectedDay(board), // NEW
             selectedWeekStart: getSelectedWeekStart(board), // NEW
             today: todayISO() // NEW
-        }); // NEW
-        if (!patch || !patch.attributes) return false; // NEW
+        }; // NEW
+    } // NEW
+
+    function uniqueKanbanCards(cells) { // NEW
+        const out = []; // NEW
+        const seen = new Set(); // NEW
+        for (const cell of (cells || [])) { // NEW
+            const id = cell && (cell.id || (cell.getId && cell.getId())); // NEW
+            if (!id || seen.has(id) || !model.isVertex(cell) || !isKanbanCard(cell)) continue; // NEW
+            seen.add(id); // NEW
+            out.push(cell); // NEW
+        } // NEW
+        return out; // NEW
+    } // NEW
+
+    function selectedKanbanCards() { // NEW
+        return uniqueKanbanCards(getSelectionCellsList()); // NEW
+    } // NEW
+
+    function applyCardWorkflowActions(cards, action) { // NEW
+        const selected = uniqueKanbanCards(cards); // NEW
+        const affectedBoards = new Map(); // NEW
+        let changedCount = 0; // NEW
+        if (!selected.length) return 0; // NEW
         model.beginUpdate(); // NEW
         try { // NEW
-            applyCardPatchInsideUpdate(card, patch.attributes); // NEW
-            scanAndReflowBoard(board, { insideUpdate: true }); // NEW
+            selected.forEach(card => { // NEW
+                const board = findBoardAncestor(card); // NEW
+                if (!board) return; // NEW
+                const patch = buildWorkflowPatch(card.value, action, buildCardWorkflowContext(board)); // NEW
+                if (!patch || !patch.attributes) return; // NEW
+                if (applyCardPatchInsideUpdate(card, patch.attributes)) { // NEW
+                    changedCount += 1; // NEW
+                    affectedBoards.set(board.id || board.getId && board.getId() || changedCount, board); // NEW
+                } // NEW
+            }); // NEW
+            affectedBoards.forEach(board => scanAndReflowBoard(board, { insideUpdate: true })); // NEW
         } finally { // NEW
             model.endUpdate(); // NEW
         } // NEW
-        return true; // NEW
+        return changedCount; // NEW
+    } // NEW
+
+    function applyBulkCardEdit(cards, opts) { // NEW
+        const selected = uniqueKanbanCards(cards); // NEW
+        const options = opts || {}; // NEW
+        const affectedBoards = new Map(); // NEW
+        const result = { changed: 0, noteChanged: 0, dateChanged: 0, dateSkipped: 0 }; // NEW
+        if (!selected.length || (!options.replaceNote && !options.setStartDate)) return result; // NEW
+        model.beginUpdate(); // NEW
+        try { // NEW
+            selected.forEach(card => { // NEW
+                const attributes = {}; // NEW
+                let dateChangedForCard = false; // NEW
+                if (options.replaceNote) { // NEW
+                    const notePatch = buildCardNotePatch(card.value, options.note); // NEW
+                    if (notePatch && notePatch.changed) { // NEW
+                        Object.assign(attributes, notePatch.attributes); // NEW
+                        result.noteChanged += 1; // NEW
+                    } // NEW
+                } // NEW
+                if (options.setStartDate) { // NEW
+                    if (!canEditCardDates(card)) { // NEW
+                        result.dateSkipped += 1; // NEW
+                    } else { // NEW
+                        const datePatch = buildCardDateOverridePatch(card.value, options.startDate); // NEW
+                        if (datePatch && datePatch.changed !== false && datePatch.attributes) { // NEW
+                            Object.assign(attributes, datePatch.attributes); // NEW
+                            dateChangedForCard = true; // NEW
+                            result.dateChanged += 1; // NEW
+                        } // NEW
+                    } // NEW
+                } // NEW
+                if (Object.keys(attributes).length === 0) return; // NEW
+                if (applyCardPatchInsideUpdate(card, attributes)) { // NEW
+                    result.changed += 1; // NEW
+                    if (dateChangedForCard) { // NEW
+                        const board = findBoardAncestor(card); // NEW
+                        if (board) affectedBoards.set(board.id || board.getId && board.getId() || result.changed, board); // NEW
+                    } // NEW
+                } // NEW
+            }); // NEW
+            affectedBoards.forEach(board => scanAndReflowBoard(board, { insideUpdate: true })); // NEW
+        } finally { // NEW
+            model.endUpdate(); // NEW
+        } // NEW
+        return result; // NEW
+    } // NEW
+
+    function resetCardDatesForCards(cards) { // NEW
+        const selected = uniqueKanbanCards(cards); // NEW
+        const affectedBoards = new Map(); // NEW
+        let changedCount = 0; // NEW
+        if (!selected.length) return 0; // NEW
+        model.beginUpdate(); // NEW
+        try { // NEW
+            selected.forEach(card => { // NEW
+                if (!hasCardDateOverride(card)) return; // NEW
+                const patch = buildCardDateResetPatch(card.value); // NEW
+                if (!patch) return; // NEW
+                if (applyCardPatchInsideUpdate(card, patch)) { // NEW
+                    changedCount += 1; // NEW
+                    const board = findBoardAncestor(card); // NEW
+                    if (board) affectedBoards.set(board.id || board.getId && board.getId() || changedCount, board); // NEW
+                } // NEW
+            }); // NEW
+            affectedBoards.forEach(board => scanAndReflowBoard(board, { insideUpdate: true })); // NEW
+        } finally { // NEW
+            model.endUpdate(); // NEW
+        } // NEW
+        return changedCount; // NEW
     } // NEW
 
     function ensureTaskControlOverlayHost() { // NEW
-        const host = graph.container || null; // NEW
-        if (!host) return null; // NEW
-        const style = window.getComputedStyle ? window.getComputedStyle(host) : null; // NEW
-        if (style && style.position === 'static') host.style.position = 'relative'; // NEW
-        return host; // NEW
+        const pane = graph.view && graph.view.overlayPane ? graph.view.overlayPane : null; // NEW
+        const paneIsSvg = !!(pane && pane.namespaceURI === 'http://www.w3.org/2000/svg'); // NEW
+        const baseHost = pane && !paneIsSvg ? pane : (graph.container || pane || null); // CHANGE
+        if (!baseHost) return null; // CHANGE
+        const style = window.getComputedStyle ? window.getComputedStyle(baseHost) : null; // CHANGE
+        if (style && style.position === 'static') baseHost.style.position = 'relative'; // CHANGE
+        let host = baseHost; // NEW
+        if (document && document.createElement && baseHost.namespaceURI !== 'http://www.w3.org/2000/svg') { // NEW
+            host = graph.__trellisTaskControlLayer && graph.__trellisTaskControlLayer.parentNode === baseHost ? graph.__trellisTaskControlLayer : null; // NEW
+            if (!host) { // NEW
+                host = document.createElement('div'); // NEW
+                host.className = 'trellis-task-control-layer'; // NEW
+                host.style.cssText = 'position:absolute;left:0;top:0;width:0;height:0;overflow:visible;pointer-events:none;z-index:' + GRAPH_OVERLAY_Z.CONTROL + ';'; // NEW
+                baseHost.appendChild(host); // NEW
+                graph.__trellisTaskControlLayer = host; // NEW
+            } // NEW
+        } // NEW
+        return host; // CHANGE
     } // NEW
 
     function getSelectionCellsList() { // NEW
@@ -3082,42 +3199,92 @@ Draw.loadPlugin(function (ui) {
         return !!(cell && model.isVertex(cell) && (getAttr(cell, 'board_key') === BOARD_KEY || getAttr(cell, 'board_key') === LEGACY_KANBAN_BOARD_KEY)); // NEW
     } // NEW
 
-    function positionDomOverlayFromCellState(element, cell, below, above) { // NEW
-        const state = graph.view && graph.view.getState ? graph.view.getState(cell) : null; // NEW
-        if (!element || !state || !element.parentNode) return false; // NEW
-        const host = element.parentNode; // NEW
-        const scrollLeft = host.scrollLeft || 0; // NEW
-        const scrollTop = host.scrollTop || 0; // NEW
-        const left = state.x + scrollLeft; // NEW
-        const topBase = state.y + scrollTop; // NEW
+    function getStateHostBounds(cell, state, host) { // NEW
+        if (!state) return null; // NEW
+        const shapeNode = state.shape && state.shape.node ? state.shape.node : null; // NEW
+        if (shapeNode && shapeNode.getBoundingClientRect && host && host.getBoundingClientRect) { // NEW
+            const rect = shapeNode.getBoundingClientRect(); // NEW
+            const hostRect = host.getBoundingClientRect(); // NEW
+            if (rect && hostRect && rect.width > 0 && rect.height > 0) { // NEW
+                return { x: rect.left - hostRect.left + (host.scrollLeft || 0), y: rect.top - hostRect.top + (host.scrollTop || 0), width: rect.width, height: rect.height, source: 'domRect' }; // NEW
+            } // NEW
+        } // NEW
+        return { x: Number(state.x) || 0, y: Number(state.y) || 0, width: Number(state.width) || 0, height: Number(state.height) || 0, source: 'mxCellState' }; // NEW
+    } // NEW
+
+    function getCellStateBounds(cells, host) { // CHANGE
+        let bounds = null; // NEW
+        for (const cell of (cells || [])) { // NEW
+            const state = graph.view && graph.view.getState ? graph.view.getState(cell) : null; // NEW
+            const hostBounds = getStateHostBounds(cell, state, host); // NEW
+            if (!hostBounds) continue; // CHANGE
+            const x = Number(hostBounds.x) || 0; // CHANGE
+            const y = Number(hostBounds.y) || 0; // CHANGE
+            const width = Number(hostBounds.width) || 0; // CHANGE
+            const height = Number(hostBounds.height) || 0; // CHANGE
+            if (!bounds) { // NEW
+                bounds = { x, y, right: x + width, bottom: y + height }; // NEW
+            } else { // NEW
+                bounds.x = Math.min(bounds.x, x); // NEW
+                bounds.y = Math.min(bounds.y, y); // NEW
+                bounds.right = Math.max(bounds.right, x + width); // NEW
+                bounds.bottom = Math.max(bounds.bottom, y + height); // NEW
+            } // NEW
+        } // NEW
+        return bounds ? { x: bounds.x, y: bounds.y, width: bounds.right - bounds.x, height: bounds.bottom - bounds.y } : null; // CHANGE
+    } // NEW
+
+    function positionDomOverlayFromBounds(element, bounds, below, above) { // NEW
+        if (!element || !bounds || !element.parentNode) return false; // CHANGE
+        const left = bounds.x; // CHANGE
+        const topBase = bounds.y; // CHANGE
         element.style.left = Math.max(0, Math.round(left)) + 'px'; // NEW
-        if (below) element.style.top = Math.max(0, Math.round(topBase + state.height + 6)) + 'px'; // NEW
+        if (below) element.style.top = Math.max(0, Math.round(topBase + bounds.height + 6)) + 'px'; // NEW
         else if (above) element.style.top = Math.max(0, Math.round(topBase - element.offsetHeight - 6)) + 'px'; // NEW
         else element.style.top = Math.max(0, Math.round(topBase)) + 'px'; // NEW
         return true; // NEW
     } // NEW
 
+    function positionDomOverlayFromCellState(element, cell, below, above) { // NEW
+        const state = graph.view && graph.view.getState ? graph.view.getState(cell) : null; // NEW
+        const hostBounds = getStateHostBounds(cell, state, element && element.parentNode); // NEW
+        return positionDomOverlayFromBounds(element, hostBounds, below, above); // CHANGE
+    } // NEW
+
+    function createDeferredTaskOverlayRefresh(refresh) { // CHANGE
+        let pending = false; // NEW
+        return function requestRefresh() { // CHANGE
+            if (pending) return; // CHANGE
+            pending = true; // NEW
+            setTimeout(function () { // NEW
+                pending = false; // NEW
+                refresh(); // NEW
+            }, 0); // NEW
+        }; // NEW
+    } // NEW
+
     function addGraphViewRefreshListener(refresh) { // NEW
         if (!refresh) return; // NEW
         if (graph.view && graph.view.addListener) { // NEW
-            graph.view.addListener(mxEvent.SCALE, refresh); // NEW
-            graph.view.addListener(mxEvent.TRANSLATE, refresh); // NEW
-            graph.view.addListener(mxEvent.SCALE_AND_TRANSLATE, refresh); // NEW
-            graph.view.addListener(mxEvent.REPAINT, refresh); // NEW
+            graph.view.addListener(mxEvent.SCALE, refresh); // CHANGE
+            graph.view.addListener(mxEvent.TRANSLATE, refresh); // CHANGE
+            graph.view.addListener(mxEvent.SCALE_AND_TRANSLATE, refresh); // CHANGE
+            graph.view.addListener(mxEvent.REPAINT, refresh); // CHANGE
         } // NEW
-        if (model.addListener) model.addListener(mxEvent.CHANGE, refresh); // NEW
-        if (graph.container && graph.container.addEventListener) graph.container.addEventListener('scroll', refresh, { passive: true }); // NEW
+        if (model.addListener) model.addListener(mxEvent.CHANGE, refresh); // CHANGE
+        if (graph.container && graph.container.addEventListener) graph.container.addEventListener('scroll', refresh, { passive: true }); // CHANGE
     } // NEW
 
     function installBoardHeaderControls() { // NEW
         if (graph.__trellisTaskBoardHeaderInstalled || !document || !document.createElement) return; // NEW
         graph.__trellisTaskBoardHeaderInstalled = true; // NEW
         const host = ensureTaskControlOverlayHost(); // NEW
-        if (!host) return; // NEW
+        if (!host) return; // CHANGE
         const bar = document.createElement('div'); // NEW
         bar.className = 'trellis-task-board-header-controls'; // NEW
-        bar.style.cssText = 'position:absolute;z-index:1005;display:none;flex-direction:column;gap:4px;align-items:flex-start;background:#fff;border:1px solid #111;padding:4px;font:12px Arial,sans-serif;pointer-events:auto;'; // NEW
-        host.appendChild(bar); // NEW
+        bar.style.cssText = 'position:absolute;display:none;flex-direction:column;gap:4px;align-items:flex-start;background:#fff;border:1px solid #111;padding:4px;font:12px Arial,sans-serif;pointer-events:auto;'; // CHANGE
+        bar.style.zIndex = String(GRAPH_OVERLAY_Z.CONTROL); // NEW
+        host.appendChild(bar); // CHANGE
         const dateInput = document.createElement('input'); // NEW
         dateInput.type = 'date'; // NEW
         dateInput.style.cssText = 'font:12px Arial,sans-serif;width:132px;'; // NEW
@@ -3132,7 +3299,7 @@ Draw.loadPlugin(function (ui) {
             btn.textContent = label; // NEW
             btn.style.cssText = 'font:12px Arial,sans-serif;padding:3px 6px;'; // NEW
             mxEvent.addListener(btn, 'mousedown', evt => mxEvent.consume(evt)); // NEW
-            mxEvent.addListener(btn, 'click', function (evt) { mxEvent.consume(evt); fn(); refresh(); }); // NEW
+            mxEvent.addListener(btn, 'click', function (evt) { mxEvent.consume(evt); fn(); requestRefresh(); }); // CHANGE
             row.appendChild(btn); // NEW
             return btn; // NEW
         } // NEW
@@ -3140,9 +3307,9 @@ Draw.loadPlugin(function (ui) {
         function selectedBoard() { // NEW
             const cells = getSelectionCellsList(); // NEW
             for (const cell of cells) { // NEW
-                if (isBoardCell(cell)) return cell; // NEW
+                if (isBoardCell(cell)) return cell; // CHANGE
                 const board = findBoardAncestor(cell); // NEW
-                if (board) return board; // NEW
+                if (board) return board; // CHANGE
             } // NEW
             return null; // NEW
         } // NEW
@@ -3162,17 +3329,17 @@ Draw.loadPlugin(function (ui) {
             const b = selectedBoard(); // NEW
             if (!b) return; // NEW
             const value = String(dateInput.value || '').trim(); // NEW
-            if (!value) { setBoardPlanningView(b, 'FULL'); refresh(); return; } // NEW
+            if (!value) { setBoardPlanningView(b, 'FULL'); requestRefresh(); return; } // CHANGE
             const weekStart = getTaskWeekStartISO(value); // NEW
             if (!weekStart) return; // NEW
             const mode = getBoardViewMode(b); // NEW
             setBoardPlanningView(b, mode === 'FULL' ? 'DAY' : mode, { [TASK_SELECTED_WEEK_START_ATTR]: weekStart, [TASK_SELECTED_DAY_ATTR]: value }); // NEW
-            refresh(); // NEW
+            requestRefresh(); // CHANGE
         }); // NEW
 
         function refresh() { // NEW
             const board = selectedBoard(); // NEW
-            if (!board) { bar.style.display = 'none'; return; } // NEW
+            if (!board) { bar.style.display = 'none'; return; } // CHANGE
             ensureBoardPlanningDefaults(board); // NEW
             const mode = getBoardViewMode(board); // NEW
             bar.style.display = 'flex'; // NEW
@@ -3188,23 +3355,133 @@ Draw.loadPlugin(function (ui) {
             endWeekBtn.textContent = 'End Week (' + countEndWeekCards(board) + ')'; // NEW
             endDayBtn.style.display = mode === 'DAY' ? '' : 'none'; // NEW
             endWeekBtn.style.display = mode === 'WEEK' ? '' : 'none'; // NEW
-            positionDomOverlayFromCellState(bar, board, false, true); // NEW
+            if (!positionDomOverlayFromCellState(bar, board, false, true)) bar.style.display = 'none'; // CHANGE
         } // NEW
 
-        graph.getSelectionModel().addListener(mxEvent.CHANGE, refresh); // NEW
-        addGraphViewRefreshListener(refresh); // NEW
-        refresh(); // NEW
+        const requestRefresh = createDeferredTaskOverlayRefresh(refresh); // CHANGE
+        graph.getSelectionModel().addListener(mxEvent.CHANGE, requestRefresh); // CHANGE
+        addGraphViewRefreshListener(requestRefresh); // CHANGE
+        requestRefresh(); // CHANGE
+    } // NEW
+
+    function showBulkEditCardsDialog(cards) { // NEW
+        const selected = uniqueKanbanCards(cards); // NEW
+        if (!selected.length) return; // NEW
+        if (selected.length === 1) { showEditCardDialog(selected[0]); return; } // NEW
+        const dateEditable = selected.filter(canEditCardDates); // NEW
+        const firstRange = dateEditable.length ? getTaskDateRange(dateEditable[0].value) : null; // NEW
+        const div = document.createElement('div'); // NEW
+        div.style.padding = '12px'; // NEW
+        div.style.boxSizing = 'border-box'; // NEW
+        div.style.fontFamily = 'Arial, sans-serif'; // NEW
+        const heading = document.createElement('div'); // NEW
+        heading.textContent = 'Edit ' + selected.length + ' Cards'; // NEW
+        heading.style.fontSize = '16px'; // NEW
+        heading.style.fontWeight = 'bold'; // NEW
+        heading.style.marginBottom = '10px'; // NEW
+        div.appendChild(heading); // NEW
+
+        function addToggleRow(toggle, labelText, input) { // NEW
+            const row = document.createElement('div'); // NEW
+            row.style.display = 'flex'; // NEW
+            row.style.alignItems = 'center'; // NEW
+            row.style.gap = '8px'; // NEW
+            row.style.marginBottom = '10px'; // NEW
+            const label = document.createElement('label'); // NEW
+            label.style.width = '115px'; // NEW
+            label.style.flex = '0 0 115px'; // NEW
+            label.appendChild(toggle); // NEW
+            label.appendChild(document.createTextNode(' ' + labelText)); // NEW
+            input.style.flex = '1'; // NEW
+            row.appendChild(label); // NEW
+            row.appendChild(input); // NEW
+            div.appendChild(row); // NEW
+        } // NEW
+
+        const noteCheck = document.createElement('input'); // NEW
+        noteCheck.type = 'checkbox'; // NEW
+        const noteInput = document.createElement('input'); // NEW
+        noteInput.type = 'text'; // NEW
+        noteInput.placeholder = 'Replace notes on selected cards'; // NEW
+        addToggleRow(noteCheck, 'Replace notes', noteInput); // NEW
+        const noteFeedback = document.createElement('div'); // NEW
+        noteFeedback.style.margin = '-6px 0 10px 123px'; // NEW
+        noteFeedback.style.fontSize = '12px'; // NEW
+        div.appendChild(noteFeedback); // NEW
+
+        const dateCheck = document.createElement('input'); // NEW
+        dateCheck.type = 'checkbox'; // NEW
+        const startInput = document.createElement('input'); // NEW
+        startInput.type = 'date'; // NEW
+        startInput.disabled = !dateEditable.length; // NEW
+        startInput.value = firstRange ? firstRange.startISO : ''; // NEW
+        addToggleRow(dateCheck, 'Set start date', startInput); // NEW
+        dateCheck.disabled = !dateEditable.length; // NEW
+
+        const error = document.createElement('div'); // NEW
+        error.style.color = '#b91c1c'; // NEW
+        error.style.minHeight = '18px'; // NEW
+        error.style.fontSize = '12px'; // NEW
+        error.style.marginBottom = '8px'; // NEW
+        div.appendChild(error); // NEW
+
+        function updateNoteFeedback() { // NEW
+            const collapsed = String(noteInput.value || '').replace(/\s+/g, ' ').trim(); // NEW
+            const length = Array.from(collapsed).length; // NEW
+            noteFeedback.textContent = length + '/' + CARD_NOTE_MAX_LENGTH + ' - replaces existing notes when checked'; // NEW
+            noteFeedback.style.color = length > CARD_NOTE_MAX_LENGTH ? '#b91c1c' : '#6b7280'; // NEW
+        } // NEW
+
+        noteInput.addEventListener('input', updateNoteFeedback); // NEW
+        noteInput.addEventListener('input', function () { noteCheck.checked = true; }); // NEW
+        startInput.addEventListener('input', function () { if (dateEditable.length) dateCheck.checked = true; }); // NEW
+        updateNoteFeedback(); // NEW
+
+        const buttons = document.createElement('div'); // NEW
+        buttons.style.display = 'flex'; // NEW
+        buttons.style.justifyContent = 'flex-end'; // NEW
+        buttons.style.gap = '8px'; // NEW
+        const cancelButton = mxUtils.button('Cancel', function () { ui.hideDialog(); }); // NEW
+        const saveButton = mxUtils.button('Save', function () { // NEW
+            const replaceNote = noteCheck.checked; // NEW
+            const setStartDate = dateCheck.checked; // NEW
+            if (!replaceNote && !setStartDate) { ui.hideDialog(); return; } // NEW
+            if (setStartDate && !parseTaskCalendarISO(startInput.value)) { // NEW
+                error.style.color = '#b91c1c'; // NEW
+                error.textContent = 'Enter a valid start date.'; // NEW
+                startInput.focus(); // NEW
+                return; // NEW
+            } // NEW
+            const result = applyBulkCardEdit(selected, { replaceNote, note: noteInput.value, setStartDate, startDate: startInput.value }); // NEW
+            if (setStartDate && result.dateSkipped > 0) { // NEW
+                error.style.color = '#374151'; // NEW
+                error.textContent = 'Saved. Skipped ' + result.dateSkipped + ' card' + (result.dateSkipped === 1 ? '' : 's') + ' not eligible for date editing.'; // NEW
+                return; // NEW
+            } // NEW
+            ui.hideDialog(); // NEW
+        }); // NEW
+        buttons.appendChild(cancelButton); // NEW
+        buttons.appendChild(saveButton); // NEW
+        div.appendChild(buttons); // NEW
+
+        mxEvent.addListener(div, 'keydown', function (evt) { // NEW
+            if (evt.key === 'Enter') saveButton.click(); // NEW
+            if (evt.key === 'Escape') ui.hideDialog(); // NEW
+        }); // NEW
+        ui.showDialog(div, 460, dateEditable.length ? 260 : 230, true, true); // NEW
+        noteInput.focus(); // NEW
     } // NEW
 
     function installSelectedCardActionOverlay() { // NEW
         if (graph.__trellisTaskCardOverlayInstalled || !document || !document.createElement) return; // NEW
         graph.__trellisTaskCardOverlayInstalled = true; // NEW
         const host = ensureTaskControlOverlayHost(); // NEW
-        if (!host) return; // NEW
+        if (!host) return; // CHANGE
         const overlay = document.createElement('div'); // NEW
         overlay.className = 'trellis-task-selected-card-actions'; // NEW
-        overlay.style.cssText = 'position:absolute;z-index:1006;display:none;gap:4px;background:#fff;border:1px solid #111;padding:4px;font:12px Arial,sans-serif;pointer-events:auto;'; // NEW
-        host.appendChild(overlay); // NEW
+        overlay.style.cssText = 'position:absolute;display:none;gap:4px;background:#fff;border:1px solid #111;padding:4px;font:12px Arial,sans-serif;pointer-events:auto;'; // CHANGE
+        overlay.style.zIndex = String(GRAPH_OVERLAY_Z.CONTROL); // NEW
+        host.appendChild(overlay); // CHANGE
         mxEvent.addListener(overlay, 'mousedown', evt => mxEvent.consume(evt)); // NEW
         mxEvent.addListener(overlay, 'mouseup', evt => mxEvent.consume(evt)); // NEW
 
@@ -3213,43 +3490,40 @@ Draw.loadPlugin(function (ui) {
             btn.type = 'button'; // NEW
             btn.textContent = label; // NEW
             btn.style.cssText = 'font:12px Arial,sans-serif;padding:3px 6px;'; // NEW
-            mxEvent.addListener(btn, 'click', function (evt) { mxEvent.consume(evt); const card = selectedCard(); if (card) fn(card); refresh(); }); // NEW
+            mxEvent.addListener(btn, 'click', function (evt) { mxEvent.consume(evt); const cards = selectedKanbanCards(); if (cards.length) fn(cards); requestRefresh(); }); // CHANGE
             overlay.appendChild(btn); // NEW
             return btn; // NEW
         } // NEW
 
-        function selectedCard() { // NEW
-            const cells = getSelectionCellsList(); // NEW
-            for (const cell of cells) { // NEW
-                if (cell && model.isVertex(cell) && isKanbanCard(cell)) return cell; // NEW
-            } // NEW
-            return null; // NEW
-        } // NEW
-
-        const editBtn = add('Edit', showEditCardDialog); // NEW
-        const todoBtn = add('TODO', card => applyCardWorkflowAction(card, 'TODO')); // NEW
-        const doingBtn = add('DOING', card => applyCardWorkflowAction(card, 'DOING')); // NEW
-        const doneBtn = add('DONE', card => applyCardWorkflowAction(card, 'DONE')); // NEW
-        const resetBtn = add('Reset Dates', resetCardDates); // NEW
-        const clearBtn = add('Clear Note', clearCardNote); // NEW
+        const editBtn = add('Edit', cards => cards.length === 1 ? showEditCardDialog(cards[0]) : showBulkEditCardsDialog(cards)); // CHANGE
+        const todoBtn = add('TODO', cards => applyCardWorkflowActions(cards, 'TODO')); // CHANGE
+        const doingBtn = add('DOING', cards => applyCardWorkflowActions(cards, 'DOING')); // CHANGE
+        const doneBtn = add('DONE', cards => applyCardWorkflowActions(cards, 'DONE')); // CHANGE
+        const resetBtn = add('Reset Dates', cards => cards.length === 1 ? resetCardDates(cards[0]) : resetCardDatesForCards(cards)); // CHANGE
+        const clearBtn = add('Clear Note', cards => cards.length === 1 ? clearCardNote(cards[0]) : applyBulkCardEdit(cards, { replaceNote: true, note: '' })); // CHANGE
 
         function refresh() { // NEW
-            const card = selectedCard(); // NEW
-            if (!card) { overlay.style.display = 'none'; return; } // NEW
-            const state = getEffectiveWorkflowState(card.value, laneKeyOfCard(card)); // NEW
+            const cards = selectedKanbanCards(); // NEW
+            if (!cards.length) { overlay.style.display = 'none'; return; } // CHANGE
+            const bounds = getCellStateBounds(cards, overlay.parentNode); // CHANGE
+            if (!bounds) { overlay.style.display = 'none'; return; } // CHANGE
+            const single = cards.length === 1; // NEW
+            const card = cards[0]; // NEW
+            const state = single ? getEffectiveWorkflowState(card.value, laneKeyOfCard(card)) : null; // CHANGE
             overlay.style.display = 'flex'; // NEW
             editBtn.style.display = ''; // NEW
-            todoBtn.style.display = state !== 'TODO' && state !== 'DONE' ? '' : 'none'; // NEW
-            doingBtn.style.display = state !== 'DOING' && state !== 'DONE' ? '' : 'none'; // NEW
-            doneBtn.style.display = state !== 'DONE' ? '' : 'none'; // NEW
-            resetBtn.style.display = canEditCardDates(card) && hasCardDateOverride(card) ? '' : 'none'; // NEW
-            clearBtn.style.display = getCardNote(card) ? '' : 'none'; // NEW
-            positionDomOverlayFromCellState(overlay, card, true, false); // NEW
+            todoBtn.style.display = !single || (state !== 'TODO' && state !== 'DONE') ? '' : 'none'; // CHANGE
+            doingBtn.style.display = !single || (state !== 'DOING' && state !== 'DONE') ? '' : 'none'; // CHANGE
+            doneBtn.style.display = !single || state !== 'DONE' ? '' : 'none'; // CHANGE
+            resetBtn.style.display = single ? (canEditCardDates(card) && hasCardDateOverride(card) ? '' : 'none') : (cards.some(hasCardDateOverride) ? '' : 'none'); // CHANGE
+            clearBtn.style.display = single ? (getCardNote(card) ? '' : 'none') : (cards.some(getCardNote) ? '' : 'none'); // CHANGE
+            if (!positionDomOverlayFromBounds(overlay, bounds, true, false)) overlay.style.display = 'none'; // CHANGE
         } // NEW
 
-        graph.getSelectionModel().addListener(mxEvent.CHANGE, refresh); // NEW
-        addGraphViewRefreshListener(refresh); // NEW
-        refresh(); // NEW
+        const requestRefresh = createDeferredTaskOverlayRefresh(refresh); // CHANGE
+        graph.getSelectionModel().addListener(mxEvent.CHANGE, requestRefresh); // CHANGE
+        addGraphViewRefreshListener(requestRefresh); // CHANGE
+        requestRefresh(); // CHANGE
     } // NEW
 
     // -------------------- Menu hook --------------------

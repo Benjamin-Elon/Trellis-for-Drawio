@@ -3143,32 +3143,35 @@ test('task manager installs planning mode header controls and selected-card DOM 
     const source = fs.readFileSync(taskManagerPath, 'utf8'); // NEW
     assert.match(source, /function installBoardHeaderControls\(\)/); // NEW
     assert.match(source, /function ensureTaskControlOverlayHost\(\)/); // NEW
-    assert.match(source, /const host = graph\.container \|\| null/); // NEW
-    assert.match(source, /if \(style && style\.position === 'static'\) host\.style\.position = 'relative'/); // NEW
+    assert.match(source, /const paneIsSvg = !!\(pane && pane\.namespaceURI === 'http:\/\/www\.w3\.org\/2000\/svg'\)/); // CHANGE
+    assert.match(source, /const baseHost = pane && !paneIsSvg \? pane : \(graph\.container \|\| pane \|\| null\)/); // CHANGE
+    assert.match(source, /trellis-task-control-layer/); // NEW
+    assert.match(source, /if \(style && style\.position === 'static'\) baseHost\.style\.position = 'relative'/); // CHANGE
     assert.match(source, /trellis-task-board-header-controls/); // NEW
-    assert.match(source, /bar\.style\.cssText = 'position:absolute;z-index:1005/); // NEW
+    assert.match(source, /bar\.style\.zIndex = String\(GRAPH_OVERLAY_Z\.CONTROL\)/); // CHANGE
     assert.match(source, /dateInput\.type = 'date'/); // NEW
     assert.match(source, /if \(!value\) \{\s*setBoardPlanningView\(b,\s*'FULL'\)/); // NEW
     assert.match(source, /setBoardPlanningView\(b,\s*mode === 'FULL' \? 'DAY' : mode,\s*\{\s*\[TASK_SELECTED_WEEK_START_ATTR\]: weekStart,\s*\[TASK_SELECTED_DAY_ATTR\]: value\s*\}\)/); // NEW
     assert.match(source, /positionDomOverlayFromCellState\(bar,\s*board,\s*false,\s*true\)/); // NEW
-    assert.match(source, /const left = state\.x \+ scrollLeft/); // NEW
-    assert.match(source, /const topBase = state\.y \+ scrollTop/); // NEW
+    assert.match(source, /const left = bounds\.x/); // CHANGE
+    assert.match(source, /const topBase = bounds\.y/); // CHANGE
     assert.match(source, /function getSelectionCellsList\(\)/); // NEW
-    assert.match(source, /if \(isBoardCell\(cell\)\) return cell/); // NEW
+    assert.match(source, /if \(isBoardCell\(cell\)\).*return cell/); // CHANGE
     assert.match(source, /const board = findBoardAncestor\(cell\)/); // NEW
     assert.match(source, /setBoardPlanningView\(b,\s*'WEEK'\)/); // NEW
     assert.match(source, /End Day \('/); // NEW
     assert.match(source, /End Week \('/); // NEW
     assert.match(source, /function installSelectedCardActionOverlay\(\)/); // NEW
     assert.match(source, /trellis-task-selected-card-actions/); // NEW
-    assert.match(source, /overlay\.style\.cssText = 'position:absolute;z-index:1006/); // NEW
-    assert.match(source, /for \(const cell of cells\) \{\s*\/\/ NEW\s*if \(cell && model\.isVertex\(cell\) && isKanbanCard\(cell\)\) return cell/s); // NEW
-    assert.match(source, /positionDomOverlayFromCellState\(overlay,\s*card,\s*true,\s*false\)/); // NEW
+    assert.match(source, /overlay\.style\.zIndex = String\(GRAPH_OVERLAY_Z\.CONTROL\)/); // CHANGE
+    assert.match(source, /function selectedKanbanCards\(\)/); // CHANGE
+    assert.match(source, /positionDomOverlayFromBounds\(overlay,\s*bounds,\s*true,\s*false\)/); // CHANGE
     assert.match(source, /graph\.view\.getState\(cell\)/); // NEW
-    assert.match(source, /graph\.view\.addListener\(mxEvent\.REPAINT,\s*refresh\)/); // NEW
-    assert.match(source, /model\.addListener\(mxEvent\.CHANGE,\s*refresh\)/); // NEW
-    assert.match(source, /graph\.container\.addEventListener\('scroll',\s*refresh,\s*\{\s*passive:\s*true\s*\}\)/); // NEW
-    assert.match(source, /applyCardWorkflowAction\(card,\s*'DONE'\)/); // NEW
+    assert.match(source, /graph\.view\.addListener\(mxEvent\.REPAINT,\s*refresh\)/); // CHANGE
+    assert.match(source, /model\.addListener\(mxEvent\.CHANGE,\s*refresh\)/); // CHANGE
+    assert.match(source, /graph\.container\.addEventListener\('scroll',\s*refresh,\s*\{\s*passive:\s*true\s*\}\)/); // CHANGE
+    assert.match(source, /function createDeferredTaskOverlayRefresh\(refresh\)/); // CHANGE
+    assert.match(source, /applyCardWorkflowActions\(cards,\s*'DONE'\)/); // CHANGE
     assert.match(source, /menu\.addItem\('Edit Card\.\.\.'/); // NEW
 }); // NEW
 

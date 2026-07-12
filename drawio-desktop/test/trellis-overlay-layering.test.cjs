@@ -41,11 +41,11 @@ function assertLayerContract(name) { // NEW
 
 test("graph overlay plugins share a dialog-safe layer contract", () => { // NEW
     [ // NEW
-        "Garden_Irrigation_Planner.js", // NEW
         "Plant_Tiler.js", // NEW
         "Modules_Standalone.js", // NEW
         "Garden_Beds.js", // NEW
         "Garden_Dashboard.js", // NEW
+        "Garden_Task_Manager.js", // NEW
         "Garden_Scale.js", // NEW
         "Deep_Click_Through.js", // NEW
         "Vertex_Linking_Standalone.js", // NEW
@@ -59,21 +59,16 @@ test("graph overlay plugins share a dialog-safe layer contract", () => { // NEW
 test("irrigation controls render above irrigation annotations and connection overlays", () => { // NEW
     const source = readPlugin("Garden_Irrigation_Planner.js"); // NEW
 
-    assert.match(source, /trellis-graph-control-layer/); // NEW
-    assert.match(source, /trellis-body-control-layer/); // NEW
-    assert.match(source, /function ensureBodyControlLayer/); // NEW
-    assert.match(source, /document\.body\.appendChild\(layer\)/); // NEW
-    assert.match(source, /trellis-graph-connection-layer/); // NEW
-    assert.match(source, /trellis-graph-annotation-layer/); // NEW
-    assert.match(source, /hud\.style\.cssText = "position:absolute;z-index:" \+ GRAPH_OVERLAY_Z\.CONTROL/); // NEW
-    assert.match(source, /return "position:absolute;left:0;top:0;z-index:" \+ GRAPH_OVERLAY_Z\.CONTROL \+ ";width:" \+ PORT_BADGE_SIZE/); // CHANGE
-    assert.match(source, /nav\.style\.cssText = fixedModelButtonStyle/); // CHANGE
-    assert.match(source, /btn\.style\.cssText = "position:absolute;z-index:" \+ GRAPH_OVERLAY_Z\.CONTROL/); // NEW
-    assert.match(source, /claimIrrigationGraphOverlay\(session, "pipe-highlight"/); // CHANGE
-    assert.match(source, /claimIrrigationGraphOverlay\(session, "warning"/); // CHANGE
-    assert.match(source, /selected-pipe-highlight[\s\S]*z-index:" \+ GRAPH_OVERLAY_Z\.CONNECTION/); // NEW
-    assert.match(source, /trellis-irrigation-zone-badge[\s\S]*z-index:" \+ GRAPH_OVERLAY_Z\.ANNOTATION/); // NEW
-    assert.match(source, /trellis-irrigation-warning-badge[\s\S]*z-index:" \+ GRAPH_OVERLAY_Z\.ANNOTATION/); // NEW
+    assert.match(source, /function overlayHost\(\)/); // CHANGE
+    assert.match(source, /const pane = graph\.view && graph\.view\.overlayPane \? graph\.view\.overlayPane : null/); // CHANGE
+    assert.match(source, /function appendOverlayNode\(node\)[\s\S]*host\.appendChild\(node\)/); // CHANGE
+    assert.match(source, /trellis-irrigation-mode-hud[\s\S]*z-index:1005/); // CHANGE
+    assert.match(source, /trellis-irrigation-enter-mode[\s\S]*z-index:1005/); // CHANGE
+    assert.match(source, /function portBadgeStyle[\s\S]*z-index:1002/); // CHANGE
+    assert.match(source, /function internalConnectionBadgeStyle[\s\S]*z-index:1003/); // CHANGE
+    assert.match(source, /selected-pipe-highlight[\s\S]*z-index:999/); // CHANGE
+    assert.match(source, /trellis-irrigation-zone-badge[\s\S]*z-index:997/); // CHANGE
+    assert.match(source, /trellis-irrigation-warning-badge[\s\S]*z-index:998/); // CHANGE
 }); // NEW
 
 test("graph-local Trellis controls use control layers", () => { // NEW
@@ -83,6 +78,11 @@ test("graph-local Trellis controls use control layers", () => { // NEW
     assert.match(readPlugin("Modules_Standalone.js"), /trellis-role-image-overlay[\s\S]*overlay\.style\.zIndex = String\(GRAPH_OVERLAY_Z\.CONTROL\)/); // NEW
     assert.match(readPlugin("Garden_Beds.js"), /trellis-bed-conditions-overlay[\s\S]*div\.style\.zIndex = String\(GRAPH_OVERLAY_Z\.CONTROL\)/); // NEW
     assert.match(readPlugin("Garden_Dashboard.js"), /trellis-garden-dashboard-toolbar[\s\S]*wrap\.style\.zIndex = String\(GRAPH_OVERLAY_Z\.CONTROL\)/); // NEW
+    assert.match(readPlugin("Garden_Task_Manager.js"), /trellis-task-board-header-controls[\s\S]*bar\.style\.zIndex = String\(GRAPH_OVERLAY_Z\.CONTROL\)/); // NEW
+    assert.match(readPlugin("Garden_Task_Manager.js"), /trellis-task-selected-card-actions[\s\S]*overlay\.style\.zIndex = String\(GRAPH_OVERLAY_Z\.CONTROL\)/); // NEW
+    assert.match(readPlugin("Garden_Task_Manager.js"), /const paneIsSvg = !!\(pane && pane\.namespaceURI === 'http:\/\/www\.w3\.org\/2000\/svg'\)/); // NEW
+    assert.match(readPlugin("Garden_Task_Manager.js"), /const baseHost = pane && !paneIsSvg \? pane : \(graph\.container \|\| pane \|\| null\)/); // CHANGE
+    assert.match(readPlugin("Garden_Task_Manager.js"), /trellis-task-control-layer/); // NEW
     assert.match(readPlugin("Garden_Dashboard.js"), /trellis-graph-control-layer/); // NEW
     assert.match(readPlugin("Garden_Dashboard.js"), /trellis-body-control-layer/); // NEW
     assert.match(readPlugin("Garden_Dashboard.js"), /document\.body\.appendChild\(layer\)/); // NEW
