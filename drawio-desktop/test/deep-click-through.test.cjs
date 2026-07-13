@@ -57,6 +57,9 @@ function makeHarness() { // NEW
     const tilerGroup = appendChild(gardenModule, new TestCell("tiler", { tiler_group: "1" })); // NEW
     const lane = appendChild(gardenModule, new TestCell("lane", { lane_key: "TODO" }, "swimlane;")); // NEW
     const card = appendChild(lane, new TestCell("card", { kanban_card: "1" })); // NEW
+    const kanbanBoard = appendChild(root, new TestCell("kanbanBoard", { board_key: "KANBAN_BOARD" }, "swimlane;")); // CHANGE
+    const kanbanLane = appendChild(kanbanBoard, new TestCell("kanbanLane", { lane_key: "TODO" }, "swimlane;")); // NEW
+    const kanbanCard = appendChild(kanbanLane, new TestCell("kanbanCard", { kanban_card: "1" })); // NEW
     const regularChild = appendChild(regularModule, new TestCell("regularChild", {})); // NEW
     const teamRole = appendChild(teamModule, new TestCell("teamRole", {}, "shape=swimlane;role_card=1")); // NEW
     const model = new TestModel(root); // NEW
@@ -69,6 +72,9 @@ function makeHarness() { // NEW
     stateMap.set(teamModule, { cell: teamModule, x: 400, y: 300, width: 300, height: 220 }); // NEW
     stateMap.set(lane, { cell: lane, x: 30, y: 50, width: 120, height: 160 }); // NEW
     stateMap.set(card, { cell: card, x: 40, y: 70, width: 80, height: 40 }); // NEW
+    stateMap.set(kanbanBoard, { cell: kanbanBoard, x: 760, y: 20, width: 160, height: 220 }); // CHANGE
+    stateMap.set(kanbanLane, { cell: kanbanLane, x: 780, y: 50, width: 120, height: 160 }); // CHANGE
+    stateMap.set(kanbanCard, { cell: kanbanCard, x: 790, y: 70, width: 80, height: 40 }); // CHANGE
     stateMap.set(bed, { cell: bed, x: 40, y: 130, width: 80, height: 40 }); // NEW
     stateMap.set(tilerGroup, { cell: tilerGroup, x: 150, y: 130, width: 80, height: 40 }); // NEW
     stateMap.set(regularChild, { cell: regularChild, x: 40, y: 360, width: 80, height: 40 }); // NEW
@@ -132,7 +138,7 @@ function makeHarness() { // NEW
         getCells(initialCell) { return [initialCell]; } // NEW
     }; // NEW
     vm.runInNewContext(fs.readFileSync(PLUGIN_PATH, "utf8"), context, { filename: PLUGIN_PATH }); // NEW
-    return { graph, window: dom.window, Handler: context.mxGraphHandler, gardenModule, legacyGardenModule, regularModule, teamModule, regularChild, teamRole, bed, tilerGroup, lane, card, movableCells, getSelected: () => selectedCells.slice() }; // CHANGE
+    return { graph, window: dom.window, Handler: context.mxGraphHandler, gardenModule, legacyGardenModule, regularModule, teamModule, regularChild, teamRole, bed, tilerGroup, lane, card, kanbanBoard, kanbanLane, kanbanCard, movableCells, getSelected: () => selectedCells.slice() }; // CHANGE
 } // NEW
 
 function plainClick(graph, cell, detail = 1) { // NEW
@@ -264,7 +270,7 @@ test("double-click on selected garden module does not clear selection", () => { 
 }); // NEW
 
 test("workspace classifier recognizes all Trellis modules and lane_key lanes", () => { // CHANGE
-    const { graph, gardenModule, legacyGardenModule, lane, regularModule, teamModule, bed } = makeHarness(); // CHANGE
+    const { graph, gardenModule, legacyGardenModule, lane, kanbanLane, regularModule, teamModule, bed } = makeHarness(); // CHANGE
     const api = graph.__trellisWorkspaceDragPolicy; // NEW
     assert.equal(api.isWorkspaceContainer(gardenModule), true); // NEW
     assert.equal(api.getWorkspaceContainerType(gardenModule), "module"); // NEW
@@ -275,6 +281,8 @@ test("workspace classifier recognizes all Trellis modules and lane_key lanes", (
     assert.equal(api.isWorkspaceContainer(teamModule), true); // NEW
     assert.equal(api.getWorkspaceContainerType(teamModule), "module"); // NEW
     assert.equal(api.getWorkspaceContainerType(lane), "lane"); // NEW
+    assert.equal(api.isWorkspaceContainer(kanbanLane), true); // NEW
+    assert.equal(api.getWorkspaceContainerType(kanbanLane), "lane"); // NEW
     assert.equal(api.isWorkspaceContainer(bed), false); // NEW
 }); // NEW
 
@@ -305,6 +313,25 @@ test("workspace handles include selected containers and hovered container", () =
     graph.setSelectionCells([gardenModule, legacyGardenModule]); // NEW
     api.setHoveredCellForTests(null); // NEW
     assert.deepEqual(ids(api.getHandleCells()), ["garden", "legacyGarden"]); // NEW
+}); // NEW
+
+test("workspace handles omit canonical kanban board lanes", () => { // NEW
+    const { graph, kanbanLane } = makeHarness(); // NEW
+    const api = graph.__trellisWorkspaceDragPolicy; // NEW
+    graph.setSelectionCell(kanbanLane); // NEW
+    api.setHoveredCellForTests(kanbanLane); // NEW
+    assert.deepEqual(ids(api.getHandleCells()), []); // NEW
+    api.refreshHandles(); // NEW
+    assert.equal(graph.container.querySelector("[data-trellis-workspace-drag-handle='1']"), null); // NEW
+}); // NEW
+
+test("workspace handles remain available for non-board lane_key lanes", () => { // NEW
+    const { graph, lane } = makeHarness(); // NEW
+    const api = graph.__trellisWorkspaceDragPolicy; // NEW
+    graph.setSelectionCell(lane); // NEW
+    assert.deepEqual(ids(api.getHandleCells()), ["lane"]); // NEW
+    api.refreshHandles(); // NEW
+    assert.ok(graph.container.querySelector("[data-trellis-workspace-drag-handle='1']"), "expected non-board lane handle"); // NEW
 }); // NEW
 
 test("workspace handles hide non-movable containers", () => { // NEW
@@ -422,6 +449,14 @@ test("workspace first-use callout anchors to cursor point", () => { // NEW
     const { graph, gardenModule } = makeHarness(); // NEW
     const anchor = graph.__trellisWorkspaceDragPolicy.getCalloutAnchorPointForTests(gardenModule, makeMouseEvent(gardenModule, 123, 145)); // NEW
     assert.deepEqual(anchor, { x: 123, y: 145 }); // NEW
+}); // NEW
+
+test("workspace move callout is suppressed for canonical kanban board lanes", () => { // NEW
+    const { graph, lane, kanbanLane } = makeHarness(); // NEW
+    const api = graph.__trellisWorkspaceDragPolicy; // NEW
+    const rubberband = { first: { x: 0, y: 0 } }; // NEW
+    assert.equal(api.shouldShowCalloutForTests({ cell: kanbanLane, type: "lane" }, rubberband, makeMouseEvent(kanbanLane, 20, 20)), false); // NEW
+    assert.equal(api.shouldShowCalloutForTests({ cell: lane, type: "lane" }, rubberband, makeMouseEvent(lane, 20, 20)), true); // NEW
 }); // NEW
 
 test("nested workspace surface drag chooses deepest eligible container", () => { // NEW

@@ -66,6 +66,16 @@ function buttonByText(root, text) {
     return Array.from(root.querySelectorAll("button")).find(button => button.textContent === text);
 }
 
+function saveSelectedWeekDayHours(h, dayIndex, startValue, endValue) { // NEW
+    const boardOverlay = h.document.querySelector(".trellis-task-board-header-controls"); // NEW
+    buttonByText(boardOverlay, "Edit Hours").click(); // NEW
+    const timeInputs = Array.from(h.lastDialog.querySelectorAll("input[type='time']")); // NEW
+    const selectedWeekOffset = 14 + (dayIndex * 2); // NEW
+    timeInputs[selectedWeekOffset].value = startValue; // NEW
+    timeInputs[selectedWeekOffset + 1].value = endValue; // NEW
+    buttonByText(h.lastDialog, "Save").click(); // NEW
+} // NEW
+
 function makeHarness(options = {}) { // CHANGE
     const dom = new JSDOM(options.svgOverlayPane // CHANGE
         ? "<!doctype html><body><div id='graph'><svg><g id='overlay'></g></svg></div></body>" // NEW
@@ -337,6 +347,7 @@ function makeHarness(options = {}) { // CHANGE
         get lastDialog() { return lastDialog; },
         get ui() { return currentUi; }, // NEW
         geometryChange(cell) { return new context.mxGeometryChange(cell); }, // NEW
+        childChange(cell, previous) { const change = new context.mxChildChange(); change.child = cell; change.previous = previous; return change; }, // NEW
         setState(cell, state) { states.set(cell, state); },
         fireViewEvent(eventName = "repaint") {
             viewListeners.filter(entry => entry.event === eventName).forEach(entry => entry.listener());
@@ -398,21 +409,24 @@ test("task manager DOM overlays avoid SVG overlayPane hosts", async () => { // N
     assert.equal(boardOverlay.parentNode.parentNode.id, "graph"); // CHANGE
 });
 
-test("task manager staged due badge follows weekly selection anchor", async () => { // NEW
+test("task manager staged start badge uses visible-week weekday wording", async () => { // CHANGE
     const h = makeHarness(); // NEW
 
     h.graph.setSelectionCell(h.board); // NEW
     await nextTick(); // NEW
-    assert.match(attr(h.stagedCard, "label"), /Due:/); // NEW
-    assert.match(attr(h.stagedCard, "label"), /Due now/); // NEW
+    assert.match(attr(h.stagedCard, "label"), /Start:/); // CHANGE
+    assert.match(attr(h.stagedCard, "label"), /Start (Tue|tomorrow)/); // CHANGE
+    assert.doesNotMatch(attr(h.stagedCard, "label"), /Due:/); // NEW
 
     h.graph.setSelectionCell(h.weekWedLane); // NEW
     await nextTick(); // NEW
-    assert.match(attr(h.stagedCard, "label"), /1d early/); // NEW
+    assert.match(attr(h.stagedCard, "label"), /Start (Tue|tomorrow)/); // CHANGE
+    assert.doesNotMatch(attr(h.stagedCard, "label"), /early|late/); // CHANGE
 
     h.graph.setSelectionCell(h.weekLaneCard); // NEW
     await nextTick(); // NEW
-    assert.match(attr(h.stagedCard, "label"), /1d early/); // NEW
+    assert.match(attr(h.stagedCard, "label"), /Start (Tue|tomorrow)/); // CHANGE
+    assert.doesNotMatch(attr(h.stagedCard, "label"), /early|late/); // CHANGE
 }); // NEW
 
 test("task manager week scheduler lays out day heights and selected-lane controls", async () => { // NEW
@@ -493,13 +507,38 @@ test("task manager hides day-owned breaks outside their visible week", async () 
 
     assert.equal(breakCard.visible, false); // NEW
     assert.equal(attr(breakCard, "schedule_start_minute"), null); // NEW
+    assert.equal(attr(breakCard, "schedule_duration_minutes"), "30"); // NEW
 
     setAttr(h.board, "task_selected_week_start", "2026-07-12"); // NEW
     setAttr(h.board, "task_selected_day", "2026-07-15"); // NEW
     h.graph.setSelectionCell(h.weekWedLane); // NEW
     await nextTick(); // NEW
     assert.equal(breakCard.visible, true); // NEW
-    assert.notEqual(attr(breakCard, "schedule_start_minute"), null); // CHANGE
+    assert.equal(h.weekWedLane.children.indexOf(h.weekLaneCard) < h.weekWedLane.children.indexOf(breakCard), true); // CHANGE
+    assert.equal(attr(h.weekLaneCard, "schedule_start_minute"), "360"); // NEW
+    assert.equal(attr(breakCard, "schedule_start_minute"), "420"); // CHANGE
+    assert.equal(attr(breakCard, "schedule_duration_minutes"), "30"); // NEW
+    assert.match(attr(breakCard, "label"), /<b>Time:<\/b> 7:00 AM-7:30 AM/); // NEW
+    assert.equal(attr(breakCard, "schedule_order"), "1"); // NEW
+    assert.equal(attr(breakCard, "schedule_order_day"), "2026-07-15"); // NEW
+}); // NEW
+
+test("task manager same-lane reorder refreshes persisted schedule order", async () => { // NEW
+    const h = makeHarness(); // NEW
+    const boardOverlay = h.document.querySelector(".trellis-task-board-header-controls"); // NEW
+    h.graph.setSelectionCell(h.weekWedLane); // NEW
+    await nextTick(); // NEW
+    buttonByText(boardOverlay, "Add Break").click(); // NEW
+    await nextTick(); // NEW
+    const breakCard = h.weekWedLane.children.find(cell => attr(cell, "schedule_break") === "1"); // NEW
+    h.weekWedLane.children = [breakCard, h.weekLaneCard]; // NEW
+    h.fireModelChange({ changes: [h.childChange(breakCard, h.weekWedLane)] }); // NEW
+    await nextTick(); // NEW
+
+    assert.equal(attr(breakCard, "schedule_start_minute"), "360"); // NEW
+    assert.equal(attr(h.weekLaneCard, "schedule_start_minute"), "390"); // NEW
+    assert.equal(attr(breakCard, "schedule_order"), "0"); // NEW
+    assert.equal(attr(h.weekLaneCard, "schedule_order"), "1"); // NEW
 }); // NEW
 
 test("task manager migrates existing undated breaks to the visible lane date", async () => { // NEW
@@ -582,6 +621,55 @@ test("task manager closed week days label closed and clear schedule attributes",
     assert.match(attr(h.weekWedLane, "label"), /closed/); // NEW
     assert.equal(attr(h.weekLaneCard, "schedule_start_minute"), null); // NEW
     assert.equal(attr(h.weekLaneCard, "schedule_duration_minutes"), null); // NEW
+}); // NEW
+
+test("task manager edit hours shifts existing day stack and marks overflow", async () => { // NEW
+    const h = makeHarness(); // NEW
+    const boardOverlay = h.document.querySelector(".trellis-task-board-header-controls"); // NEW
+    h.graph.setSelectionCell(h.weekWedLane); // NEW
+    await nextTick(); // NEW
+    buttonByText(boardOverlay, "Add Break").click(); // NEW
+    await nextTick(); // NEW
+    const breakCard = h.weekWedLane.children.find(cell => attr(cell, "schedule_break") === "1"); // NEW
+    const originalOrder = h.weekWedLane.children.map(cell => cell.id).join(","); // NEW
+
+    saveSelectedWeekDayHours(h, 3, "08:00", "09:00"); // NEW
+    await nextTick(); // NEW
+
+    assert.equal(h.weekWedLane.children.map(cell => cell.id).join(","), originalOrder); // NEW
+    assert.equal(attr(h.weekLaneCard, "schedule_start_minute"), "480"); // NEW
+    assert.equal(attr(h.weekLaneCard, "schedule_duration_minutes"), "60"); // NEW
+    assert.equal(attr(breakCard, "schedule_start_minute"), "540"); // NEW
+    assert.equal(attr(breakCard, "schedule_duration_minutes"), "30"); // NEW
+    assert.match(attr(h.weekLaneCard, "label"), /<b>Time:<\/b> 8:00 AM-9:00 AM/); // NEW
+    assert.match(attr(breakCard, "label"), /<b>Time:<\/b> 9:00 AM-9:30 AM/); // NEW
+    assert.doesNotMatch(h.weekLaneCard.style, /strokeColor=#B91C1C/); // NEW
+    assert.match(breakCard.style, /strokeColor=#B91C1C/); // NEW
+}); // NEW
+
+test("task manager edit hours start and end changes do not compress durations", async () => { // NEW
+    const h = makeHarness(); // NEW
+    const boardOverlay = h.document.querySelector(".trellis-task-board-header-controls"); // NEW
+    h.graph.setSelectionCell(h.weekWedLane); // NEW
+    await nextTick(); // NEW
+    buttonByText(boardOverlay, "Add Break").click(); // NEW
+    await nextTick(); // NEW
+    const breakCard = h.weekWedLane.children.find(cell => attr(cell, "schedule_break") === "1"); // NEW
+
+    saveSelectedWeekDayHours(h, 3, "08:00", "18:00"); // NEW
+    await nextTick(); // NEW
+    assert.equal(attr(h.weekLaneCard, "schedule_start_minute"), "480"); // NEW
+    assert.equal(attr(breakCard, "schedule_start_minute"), "540"); // NEW
+    assert.equal(attr(h.weekLaneCard, "schedule_duration_minutes"), "60"); // NEW
+    assert.equal(attr(breakCard, "schedule_duration_minutes"), "30"); // NEW
+
+    saveSelectedWeekDayHours(h, 3, "06:00", "07:00"); // NEW
+    await nextTick(); // NEW
+    assert.equal(attr(h.weekLaneCard, "schedule_start_minute"), "360"); // NEW
+    assert.equal(attr(breakCard, "schedule_start_minute"), "420"); // NEW
+    assert.equal(attr(h.weekLaneCard, "schedule_duration_minutes"), "60"); // NEW
+    assert.equal(attr(breakCard, "schedule_duration_minutes"), "30"); // NEW
+    assert.match(breakCard.style, /strokeColor=#B91C1C/); // NEW
 }); // NEW
 
 test("task manager edit hours dialog uses Trellis dialog layer", async () => { // NEW

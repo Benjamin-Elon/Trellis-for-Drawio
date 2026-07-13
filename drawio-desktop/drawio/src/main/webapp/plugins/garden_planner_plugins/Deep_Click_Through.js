@@ -181,6 +181,24 @@ Draw.loadPlugin(function (ui) { // CHANGE
         return !!cell && cell.getAttribute && !!cell.getAttribute('lane_key'); // NEW
     } // NEW
 
+    function isCanonicalKanbanBoardCell(cell) { // NEW
+        return !!cell && cell.getAttribute && cell.getAttribute('board_key') === 'KANBAN_BOARD'; // NEW
+    } // NEW
+
+    function findCanonicalKanbanBoardAncestor(cell) { // NEW
+        const model = graph && graph.getModel ? graph.getModel() : null; // NEW
+        let cur = cell; // NEW
+        while (cur) { // NEW
+            if (isCanonicalKanbanBoardCell(cur)) return cur; // NEW
+            cur = model && model.getParent ? model.getParent(cur) : null; // NEW
+        } // NEW
+        return null; // NEW
+    } // NEW
+
+    function isCanonicalKanbanBoardLane(cell) { // NEW
+        return isKanbanLane(cell) && !!findCanonicalKanbanBoardAncestor(cell); // NEW
+    } // NEW
+
     function getWorkspaceContainerType(cell) { // NEW
         if (isKanbanLane(cell)) return 'lane'; // CHANGE
         if (isGardenModule(cell) || isTrellisModule(cell)) return 'module'; // CHANGE
@@ -189,6 +207,10 @@ Draw.loadPlugin(function (ui) { // CHANGE
 
     function isWorkspaceContainer(cell) { // NEW
         return !!getWorkspaceContainerType(cell); // NEW
+    } // NEW
+
+    function isWorkspaceHandleEligibleForCell(cell) { // NEW
+        return isWorkspaceContainer(cell) && !isCanonicalKanbanBoardLane(cell); // NEW
     } // NEW
 
     function isLodSummary(cell) { // CHANGE
@@ -552,7 +574,7 @@ Draw.loadPlugin(function (ui) { // CHANGE
     } // NEW
 
     function isWorkspaceHandleVisibleForCell(cell) { // NEW
-        return isWorkspaceContainer(cell) && graph.isCellVisible(cell) && graph.isCellMovable(cell) && graph.view && graph.view.getState(cell); // NEW
+        return isWorkspaceHandleEligibleForCell(cell) && graph.isCellVisible(cell) && graph.isCellMovable(cell) && graph.view && graph.view.getState(cell); // CHANGE
     } // NEW
 
     function getWorkspaceHandleCells() { // NEW
@@ -773,6 +795,7 @@ Draw.loadPlugin(function (ui) { // CHANGE
 
     function shouldShowWorkspaceCallout(graph, context, rubberband, me) { // NEW
         if (!context || workspaceCalloutSeenByType[context.type]) return false; // NEW
+        if (context.type === 'lane' && isCanonicalKanbanBoardLane(context.cell)) return false; // NEW
         if (rubberband && rubberband.div) return true; // NEW
         if (!rubberband || !rubberband.first || !me) return false; // NEW
         const dx = Math.abs((rubberband.first.x || 0) - me.getX()); // NEW
@@ -849,6 +872,7 @@ Draw.loadPlugin(function (ui) { // CHANGE
         getWorkspaceContainerType: getWorkspaceContainerType, // NEW
         filterWorkspaceDescendantSelection: function (container, cells) { return filterWorkspaceDescendantSelection(graph, container, cells); }, // NEW
         getCalloutAnchorPointForTests: getWorkspaceCalloutAnchorPoint, // NEW
+        shouldShowCalloutForTests: function (context, rubberband, me) { return shouldShowWorkspaceCallout(graph, context, rubberband, me); }, // NEW
         getHandleCells: getWorkspaceHandleCells, // NEW
         shouldUseSelectCursorForTests: function (me) { return shouldUseWorkspaceSelectCursor(me, getDeepestCellForMouseEvent(graph, me, null)); }, // NEW
         updateHoverForTests: updateWorkspaceHoverFromMouseEvent, // NEW
