@@ -31,6 +31,7 @@ const TASK_SCHEDULER_DATES_LOCKED_ATTR = 'scheduler_dates_locked'; // NEW
 const TASK_MANUAL_STAGED_ATTR = 'manual_staged'; // NEW
 const TASK_SCHEDULE_START_MINUTE_ATTR = 'schedule_start_minute'; // NEW: derived from stacked day-lane order
 const TASK_SCHEDULE_DURATION_MINUTES_ATTR = 'schedule_duration_minutes'; // NEW: derived from card height
+const TASK_FULL_CARD_HEIGHT_ATTR = 'task_full_card_height'; // NEW: full-view visual card height, separate from week schedule duration
 const TASK_SCHEDULE_BREAK_ATTR = 'schedule_break'; // NEW: real stacked card that reserves schedule time
 const TASK_SCHEDULE_ORDER_ATTR = 'schedule_order'; // NEW: preserves day stack order across week navigation
 const TASK_SCHEDULE_ORDER_DAY_ATTR = 'schedule_order_day'; // NEW: prevents stale order from applying to another date
@@ -1264,12 +1265,12 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
 
 
     // -------------------- Template styles --------------------
-    const BOARD_STYLE =
-        'swimlane;fontStyle=2;childLayout=stackLayout;horizontal=1;startSize=28;horizontalStack=1;resizeParent=1;resizeParentMax=0;resizeLast=0;collapsible=1;marginBottom=0;swimlaneFillColor=none;fontFamily=Permanent Marker;fontSize=16;points=[];verticalAlign=top;stackBorder=0;resizable=1;strokeWidth=2;disableMultiStroke=1;';
+    const BOARD_STYLE = // CHANGE: task layout owns board-child geometry instead of Draw.io stack fill
+        'swimlane;fontStyle=2;horizontal=1;startSize=28;collapsible=1;swimlaneFillColor=#F8FAFC;fontFamily=Permanent Marker;fontSize=16;points=[];verticalAlign=top;resizable=1;strokeWidth=2;disableMultiStroke=1;'; // CHANGE: opaque body remains visible below shorter week lanes
     const LANE_STYLE_BASE =
-        'swimlane;strokeWidth=2;fontFamily=Permanent Marker;html=0;startSize=1;verticalAlign=bottom;spacingBottom=5;points=[];childLayout=stackLayout;stackBorder=20;stackSpacing=20;resizeLast=0;resizeParent=1;horizontalStack=0;collapsible=1;fillStyle=solid;swimlaneFillColor=default;';
+        'swimlane;strokeWidth=2;fontFamily=Permanent Marker;html=0;startSize=1;verticalAlign=bottom;spacingBottom=5;points=[];childLayout=stackLayout;stackBorder=20;stackSpacing=20;resizeLast=0;resizeParent=0;horizontalStack=0;collapsible=1;fillStyle=solid;swimlaneFillColor=default;'; // CHANGE
     const SCHEDULE_LANE_STYLE_BASE = // NEW: stack order is schedule order, so spacing must not consume time
-        'swimlane;strokeWidth=2;fontFamily=Permanent Marker;html=0;startSize=1;verticalAlign=bottom;spacingBottom=5;points=[];childLayout=stackLayout;stackBorder=20;stackSpacing=0;resizeLast=0;resizeParent=1;horizontalStack=0;collapsible=1;fillStyle=solid;swimlaneFillColor=default;'; // NEW
+        'swimlane;strokeWidth=2;fontFamily=Permanent Marker;html=0;startSize=1;verticalAlign=bottom;spacingBottom=5;points=[];childLayout=stackLayout;stackBorder=20;stackSpacing=0;resizeLast=0;resizeParent=0;horizontalStack=0;collapsible=1;fillStyle=solid;swimlaneFillColor=default;'; // CHANGE
     const CARD_STYLE =
         'whiteSpace=wrap;html=1;strokeWidth=2;fillColor=swimlane;fontStyle=1;spacingTop=0;rounded=1;arcSize=9;points=[];fontFamily=Permanent Marker;hachureGap=8;fillWeight=1;';
     const BREAK_CARD_STYLE = CARD_STYLE + 'dashed=1;fillColor=#F3F4F6;strokeColor=#6B7280;'; // NEW
@@ -1618,13 +1619,38 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
         return Math.max(SCHEDULE_MIN_CARD_HEIGHT, schedulePolicy.scheduleMinutesToPx(scheduledMinutes)); // CHANGE
     } // NEW
 
+    function getCanonicalLaneStyle(laneKey, emphasized) { // NEW: retain card stacking without allowing it to own lane geometry
+        const laneIndex = LANES.findIndex(lane => lane.key === laneKey); // NEW
+        const fillIndex = laneIndex >= 0 ? laneIndex % LANE_FILL.length : 0; // NEW
+        const styleBase = isWeekDayLane(laneKey) ? SCHEDULE_LANE_STYLE_BASE : LANE_STYLE_BASE; // NEW
+        const style = styleBase + 'fillColor=' + LANE_FILL[fillIndex] + ';strokeColor=' + LANE_FILL[fillIndex] + ';'; // NEW
+        return setStyleKey(style, 'strokeWidth', emphasized ? '3' : '2'); // NEW
+    } // NEW
+
+    function ensureCanonicalBoardStyle(board) { // NEW: recognized task boards are managed components
+        if (!board || board.getStyle() === BOARD_STYLE) return false; // NEW
+        board.setStyle(BOARD_STYLE); // NEW
+        return true; // NEW
+    } // NEW
+
+    function ensureCanonicalLaneStyles(lanes, selectedWeekLaneKey) { // NEW: migrate legacy resizeParent lane styles on every layout
+        Object.keys(lanes || {}).forEach(laneKey => { // NEW
+            const lane = lanes[laneKey]; // NEW
+            if (!lane) return; // NEW
+            const style = getCanonicalLaneStyle(laneKey, laneKey === selectedWeekLaneKey); // NEW
+            if (lane.getStyle() !== style) lane.setStyle(style); // NEW
+        }); // NEW
+    } // NEW
+
     function applyBoardViewLayout(board, lanes) { // NEW
         bumpTaskReflowTestCounter('boardLayout'); // NEW
+        ensureCanonicalBoardStyle(board); // NEW
         ensureBoardPlanningDefaults(board); // NEW
         const mode = getBoardViewMode(board); // NEW
         const visibleKeys = taskPolicy.getTaskViewLaneKeys(mode); // CHANGE
         const visibleSet = new Set(visibleKeys); // NEW
         const selectedWeekLaneKey = mode === 'WEEK' ? taskPolicy.getWeekLaneKeyForDate(getSelectedDay(board), getSelectedWeekStart(board)) : null; // CHANGE
+        ensureCanonicalLaneStyles(lanes, selectedWeekLaneKey); // NEW
         const laneHeights = {}; // NEW
         let maxLaneHeight = mode === 'WEEK' ? 0 : getBoardFullLaneHeight(board); // CHANGE
         if (mode === 'WEEK') { // NEW
@@ -1656,7 +1682,6 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
                 const label = (getAttr(lane, 'status') || lane.value || '') + (dayWindow && dayWindow.closed ? ' (closed)' : ''); // NEW
                 ensureXmlValue(lane).setAttribute('label', label); // NEW
             } // NEW
-            lane.setStyle(setStyleKey(lane.getStyle(), 'strokeWidth', laneKey === selectedWeekLaneKey ? '3' : '2')); // CHANGE
             if (model.isVisible && model.isVisible(lane) === false) model.setVisible(lane, true); // NEW
             visibleWidthTotal += laneWidth; // NEW
             x += laneWidth + LANE_GAP; // CHANGE
@@ -1692,10 +1717,8 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
         let x = 10;
         const y = 28;
 
-        LANES.forEach((lane, idx) => {
-            const fill = LANE_FILL[idx % LANE_FILL.length];
-            const styleBase = isWeekDayLane(lane.key) ? SCHEDULE_LANE_STYLE_BASE : LANE_STYLE_BASE; // NEW
-            const style = styleBase + 'fillColor=' + fill + ';strokeColor=' + fill + ';'; // CHANGE
+        LANES.forEach((lane, idx) => { // CHANGE
+            const style = getCanonicalLaneStyle(lane.key, false); // CHANGE
 
             let laneCell = existingByKey[lane.key];
 
@@ -3056,14 +3079,79 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
 
     function boardLanes(board) { return lanesMap(board); }
 
+    function normalizeTaskCardHeight(value, fallback) { // NEW: shared guard for persisted full-view heights and restored geometry
+        const numeric = Number(value); // NEW
+        const fallbackNumeric = Number(fallback); // NEW
+        const base = Number.isFinite(numeric) ? numeric : (Number.isFinite(fallbackNumeric) ? fallbackNumeric : DEFAULT_TASK_CARD_HEIGHT); // NEW
+        return Math.max(SCHEDULE_MIN_CARD_HEIGHT, Math.round(base)); // NEW
+    } // NEW
+
+    function getPersistedFullCardHeight(card) { // NEW
+        const raw = getAttr(card, TASK_FULL_CARD_HEIGHT_ATTR); // NEW
+        return raw == null || raw === '' ? null : normalizeTaskCardHeight(raw, DEFAULT_TASK_CARD_HEIGHT); // NEW
+    } // NEW
+
+    function persistFullCardHeight(card, height) { // NEW
+        if (!card || isScheduleBreakCard(card)) return false; // NEW
+        const normalized = normalizeTaskCardHeight(height, DEFAULT_TASK_CARD_HEIGHT); // NEW
+        const next = normalized === DEFAULT_TASK_CARD_HEIGHT ? null : String(normalized); // NEW
+        const current = getAttr(card, TASK_FULL_CARD_HEIGHT_ATTR); // NEW
+        if ((current == null ? null : String(current)) === next) return false; // NEW
+        setAttrNoUndo(card, TASK_FULL_CARD_HEIGHT_ATTR, next, true); // NEW
+        return true; // NEW
+    } // NEW
+
+    function persistFullCardHeightFromGeometry(card) { // NEW
+        const geo = card && model.getGeometry ? model.getGeometry(card) : (card && card.getGeometry ? card.getGeometry() : null); // NEW
+        return geo ? persistFullCardHeight(card, geo.height) : false; // NEW
+    } // NEW
+
+    function setCardGeometryHeight(card, height) { // NEW
+        const geo = card && model.getGeometry ? model.getGeometry(card) : (card && card.getGeometry ? card.getGeometry() : null); // NEW
+        if (!geo) return false; // NEW
+        const nextHeight = normalizeTaskCardHeight(height, DEFAULT_TASK_CARD_HEIGHT); // NEW
+        if (roundedGeometryValue(geo.height) === nextHeight) return false; // NEW
+        const nextGeo = geo.clone ? geo.clone() : new mxGeometry(geo.x || 0, geo.y || 0, geo.width || 160, geo.height || nextHeight); // NEW
+        nextGeo.height = nextHeight; // NEW
+        model.setGeometry(card, nextGeo); // NEW
+        return true; // NEW
+    } // NEW
+
+    function getWeekScheduleHeightForCard(card) { // NEW
+        const duration = schedulePolicy.snapScheduleMinutes(getAttr(card, TASK_SCHEDULE_DURATION_MINUTES_ATTR), null) // NEW
+            || schedulePolicy.defaultScheduleDurationFromHours(getAttr(card, 'task_estimated_hours')) // NEW
+            || 60; // NEW
+        return schedulePolicy.scheduleMinutesToPx(duration); // NEW
+    } // NEW
+
+    function applyCardHeightForLaneTransition(card, sourceLaneKey, targetLaneKey) { // NEW
+        if (!card || !isKanbanCard(card) || isScheduleBreakCard(card)) return false; // NEW
+        const hasSourceLane = !!sourceLaneKey; // NEW
+        const sourceIsWeek = isWeekDayLane(sourceLaneKey); // NEW
+        const targetIsWeek = isWeekDayLane(targetLaneKey); // NEW
+        let changed = false; // NEW
+        if (hasSourceLane && !sourceIsWeek) changed = persistFullCardHeightFromGeometry(card) || changed; // NEW
+        if (targetIsWeek) { // NEW
+            return (!sourceIsWeek ? setCardGeometryHeight(card, getWeekScheduleHeightForCard(card)) : false) || changed; // NEW
+        } // NEW
+        if (sourceIsWeek) { // NEW
+            return setCardGeometryHeight(card, getPersistedFullCardHeight(card) || DEFAULT_TASK_CARD_HEIGHT) || changed; // NEW
+        } // NEW
+        return changed; // NEW
+    } // NEW
+
     function putInLane(card, lanes, laneKey, suppressRefresh) {
         const lane = lanes[laneKey];
         if (!lane) return false;
-        if (model.getParent(card) === lane) {
+        const sourceParent = model.getParent(card); // NEW
+        const sourceLaneKey = sourceParent ? getAttr(sourceParent, 'lane_key') : null; // NEW
+        if (sourceParent === lane) {
+            const heightChanged = applyCardHeightForLaneTransition(card, sourceLaneKey, laneKey); // NEW
             const styleChanged = applyStagedCardVisualStyle(card, laneKey); // NEW
             updateBadgeForLane(card, laneKey, suppressRefresh);
-            return styleChanged; // CHANGE
+            return heightChanged || styleChanged; // CHANGE
         }
+        applyCardHeightForLaneTransition(card, sourceLaneKey, laneKey); // NEW
         model.add(lane, card, model.getChildCount(lane));
         const status = getAttr(lane, 'status') || lane.value || '';
         setAttrNoUndo(card, 'status', status, true);
@@ -3441,15 +3529,6 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
         return true; // NEW
     } // NEW
 
-    function resetCardToDefaultHeight(card) { // NEW
-        const geo = card && model.getGeometry ? model.getGeometry(card) : (card && card.getGeometry ? card.getGeometry() : null); // NEW
-        if (!geo || Math.round(Number(geo.height) || 0) === DEFAULT_TASK_CARD_HEIGHT) return false; // NEW
-        const nextGeo = geo.clone ? geo.clone() : new mxGeometry(geo.x || 0, geo.y || 0, geo.width || 160, geo.height || DEFAULT_TASK_CARD_HEIGHT); // NEW
-        nextGeo.height = DEFAULT_TASK_CARD_HEIGHT; // NEW
-        model.setGeometry(card, nextGeo); // NEW
-        return true; // NEW
-    } // NEW
-
     function shouldInspectKanbanPlacement(parent, child) { // NEW: limit safety repairs to kanban structures and locked kanban cells
         const parentType = getKanbanCellType(parent, KANBAN_LANE_KEYS); // NEW
         const childType = getKanbanCellType(child, KANBAN_LANE_KEYS); // NEW
@@ -3539,6 +3618,8 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
         graph.moveCells = function (cells, dx, dy, clone, target, evt, mapping) { // NEW
             const moved = Array.isArray(cells) ? cells : []; // NEW
             const movedCards = moved.filter(cell => cell && isKanbanCard(cell)); // NEW
+            const moveCardKey = (card, index) => card && (card.id || (card.getId && card.getId())) || String(index); // NEW
+            const sourceLaneKeys = new Map(movedCards.map((card, index) => [moveCardKey(card, index), laneKeyOfCard(card)])); // NEW
             if (target && moved.some(cell => !canPlaceKanbanChild(target, cell))) return moved; // NEW
             const targetLaneKey = target && getAttr(target, 'lane_key'); // NEW
             if (!targetLaneKey || clone) return originalMoveCells.apply(this, arguments); // NEW
@@ -3548,10 +3629,10 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
             model.beginUpdate(); // NEW
             try { // NEW
                 result = originalMoveCells.apply(this, arguments); // NEW
-                movedCards.forEach(card => { // NEW
+                movedCards.forEach((card, index) => { // CHANGE
                     const patch = buildLaneDropWorkflowPatch(card, targetBoard, targetLaneKey); // NEW
                     if (patch && patch.attributes) applyCardPatchInsideUpdate(card, patch.attributes); // NEW
-                    if (targetLaneKey === 'TODO_STAGED' && getBoardViewMode(targetBoard) === 'WEEK' && !isScheduleBreakCard(card)) resetCardToDefaultHeight(card); // NEW
+                    applyCardHeightForLaneTransition(card, sourceLaneKeys.get(moveCardKey(card, index)), targetLaneKey); // CHANGE
                 }); // NEW
                 scanAndReflowBoard(targetBoard, { insideUpdate: true, scope: getTaskReflowScopeForCommand('drop') }); // CHANGE
             } finally { // NEW
@@ -3649,7 +3730,17 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
                     continue; // NEW
                 } // NEW
                 const laneKey = currentParent ? getAttr(currentParent, 'lane_key') : null; // NEW
-                if (!isWeekDayLane(laneKey)) continue; // NEW
+                if (!isWeekDayLane(laneKey)) { // CHANGE
+                    const previousHeight = roundedGeometryHeight(ch.previous); // NEW
+                    const currentHeight = roundedGeometryHeight(model.getGeometry(cell)); // NEW
+                    const heightChanged = previousHeight == null || currentHeight == null || previousHeight !== currentHeight; // NEW
+                    const currentBoard = findBoardAncestor(currentParent || cell); // NEW
+                    if (heightChanged && currentBoard && getBoardViewMode(currentBoard) === 'FULL' && model.isVertex(cell) && isKanbanCard(cell) && !isScheduleBreakCard(cell)) { // NEW
+                        out.add(cell); // NEW
+                        boards.add(currentBoard); // NEW
+                    } // NEW
+                    continue; // CHANGE
+                } // NEW
             }
 
             if (!cell || !model.isVertex(cell) || !isKanbanCard(cell)) continue;
@@ -3746,6 +3837,7 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
 
                 const laneStatus = getAttr(parent, 'status') || parent.value || '';
                 setAttrNoUndo(cell, 'status', laneStatus, true); // CHANGE
+                applyCardHeightForLaneTransition(cell, laneKey, laneKey); // NEW
                 applyStagedCardVisualStyle(cell, laneKey); // NEW
                 updateBadgeForLane(cell, laneKey, true); // CHANGE
 

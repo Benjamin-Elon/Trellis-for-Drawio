@@ -16,6 +16,7 @@ const TEST_REALISTIC_WEEK_WORK_HOURS_JSON = JSON.stringify({ schemaVersion: 1, d
     { startMinute: 1020, endMinute: 1140 }, // NEW
     { startMinute: 480, endMinute: 720 } // NEW
 ] }); // CHANGE
+const TEST_LEGACY_BOARD_STYLE = "swimlane;fontStyle=2;childLayout=stackLayout;horizontal=1;startSize=28;horizontalStack=1;resizeParent=1;resizeParentMax=0;resizeLast=0;collapsible=1;marginBottom=0;swimlaneFillColor=none;fontFamily=Permanent Marker;fontSize=16;points=[];verticalAlign=top;stackBorder=0;resizable=1;strokeWidth=2;disableMultiStroke=1;"; // NEW
 
 function nextTick() {
     return new Promise(resolve => setTimeout(resolve, 5));
@@ -123,7 +124,7 @@ function makeHarness(options = {}) { // CHANGE
     let currentUi = null; // NEW
 
     const root = new TestCell("root", makeValue(document), new TestGeometry(0, 0, 0, 0));
-    const board = new TestCell("board", makeValue(document, { board_key: "KANBAN_BOARD", board_role: "main", task_view_mode: "WEEK", task_selected_week_start: "2026-07-12", task_selected_day: "2026-07-12", task_work_hours_defaults_json: TEST_REALISTIC_WEEK_WORK_HOURS_JSON }), new TestGeometry(10, 10, 700, 260)); // CHANGE
+    const board = new TestCell("board", makeValue(document, { board_key: "KANBAN_BOARD", board_role: "main", task_view_mode: "WEEK", task_selected_week_start: "2026-07-12", task_selected_day: "2026-07-12", task_work_hours_defaults_json: TEST_REALISTIC_WEEK_WORK_HOURS_JSON }), new TestGeometry(10, 10, 700, 260), TEST_LEGACY_BOARD_STYLE); // CHANGE
     const stagedLane = new TestCell("staged", makeValue(document, { lane_key: "TODO_STAGED", status: "TODO (staged)" }), new TestGeometry(20, 40, 200, 200)); // NEW
     const weekSunLane = new TestCell("weekSun", makeValue(document, { lane_key: "WEEK_SUN", status: "Sunday" }), new TestGeometry(240, 40, 200, 200)); // NEW
     const weekMonLane = new TestCell("weekMon", makeValue(document, { lane_key: "WEEK_MON", status: "Monday" }), new TestGeometry(460, 40, 200, 200)); // NEW
@@ -964,6 +965,30 @@ test("task manager ignores week-lane layout geometry when width is unchanged", a
     assert.equal(h.reflowCounters().layout, 0); // NEW
 }); // NEW
 
+test("task manager replaces legacy board layout ownership with canonical managed styles", async () => { // NEW
+    const h = makeHarness(); // NEW
+    assert.match(h.board.style, /(?:^|;)childLayout=stackLayout(?:;|$)/); // NEW
+    assert.match(h.board.style, /(?:^|;)swimlaneFillColor=none(?:;|$)/); // NEW
+
+    h.graph.setSelectionCell(h.board); // NEW
+    await nextTick(); // NEW
+
+    assert.match(h.board.style, /(?:^|;)swimlaneFillColor=#F8FAFC(?:;|$)/); // NEW
+    assert.doesNotMatch(h.board.style, /(?:^|;)swimlaneFillColor=none(?:;|$)/); // NEW
+    assert.doesNotMatch(h.board.style, /(?:^|;)childLayout=/); // NEW
+    assert.doesNotMatch(h.board.style, /(?:^|;)horizontalStack=/); // NEW
+    assert.doesNotMatch(h.board.style, /(?:^|;)resizeParent(?:Max)?=/); // NEW
+    assert.doesNotMatch(h.board.style, /(?:^|;)resizeLast=/); // NEW
+    assert.doesNotMatch(h.board.style, /(?:^|;)stackBorder=/); // NEW
+    assert.match(h.board.style, /(?:^|;)resizable=1(?:;|$)/); // NEW
+    h.board.children.filter(cell => attr(cell, "lane_key")).forEach(lane => { // NEW
+        assert.match(lane.style, /(?:^|;)childLayout=stackLayout(?:;|$)/); // NEW
+        assert.match(lane.style, /(?:^|;)horizontalStack=0(?:;|$)/); // NEW
+        assert.match(lane.style, /(?:^|;)resizeParent=0(?:;|$)/); // NEW
+        assert.doesNotMatch(lane.style, /(?:^|;)resizeParent=1(?:;|$)/); // NEW
+    }); // NEW
+}); // NEW
+
 test("task manager full-mode board resize persists lane height and refreshes paging", async () => { // NEW
     const h = makeHarness(); // NEW
     setAttr(h.board, "task_view_mode", "FULL"); // NEW
@@ -981,6 +1006,7 @@ test("task manager full-mode board resize persists lane height and refreshes pag
     const visibleTodoCards = h.todoLane.children.filter(cell => attr(cell, "kanban_card") === "1" && cell.visible !== false); // NEW
     const counters = h.reflowCounters(); // NEW
     assert.equal(attr(h.board, "task_full_lane_height"), "286"); // NEW
+    assert.equal(h.stagedLane.geometry.height, 286); // NEW
     assert.equal(h.todoLane.geometry.height, 286); // NEW
     assert.equal(h.doingLane.geometry.height, 286); // NEW
     assert.equal(h.board.geometry.height, 324); // NEW
@@ -990,6 +1016,68 @@ test("task manager full-mode board resize persists lane height and refreshes pag
     assert.ok(counters.layout > 0); // NEW
     assert.ok(counters.lanes > 0); // NEW
     assert.ok(counters.boardLayout > 0); // NEW
+}); // NEW
+
+test("task manager keeps week schedule height separate from full-view card height", async () => { // NEW
+    const h = makeHarness(); // NEW
+    const boardOverlay = h.document.querySelector(".trellis-task-board-header-controls"); // NEW
+    h.graph.setSelectionCell(h.weekWedLane); // NEW
+    await nextTick(); // NEW
+
+    const previousWeekGeometry = h.weekLaneCard.geometry.clone(); // NEW
+    h.weekLaneCard.geometry.height = 160; // NEW
+    h.fireModelChange({ changes: [h.geometryChange(h.weekLaneCard, previousWeekGeometry)] }); // NEW
+    await nextTick(); // NEW
+
+    assert.equal(attr(h.weekLaneCard, "schedule_duration_minutes"), "120"); // NEW
+    assert.equal(attr(h.weekLaneCard, "task_full_card_height"), null); // NEW
+
+    h.graph.setSelectionCell(h.board); // NEW
+    await nextTick(); // NEW
+    modeToggleButton(boardOverlay).click(); // NEW
+    await nextTick(); // NEW
+
+    assert.equal(attr(h.board, "task_view_mode"), "FULL"); // NEW
+    assert.equal(h.weekLaneCard.parent, h.todoLane); // NEW
+    assert.equal(h.weekLaneCard.geometry.height, 80); // NEW
+    assert.equal(attr(h.weekLaneCard, "task_full_card_height"), null); // NEW
+    assert.equal(attr(h.weekLaneCard, "schedule_duration_minutes"), "120"); // NEW
+
+    const previousFullGeometry = h.weekLaneCard.geometry.clone(); // NEW
+    h.weekLaneCard.geometry.height = 140; // NEW
+    h.fireModelChange({ changes: [h.geometryChange(h.weekLaneCard, previousFullGeometry)] }); // NEW
+    await nextTick(); // NEW
+
+    assert.equal(attr(h.weekLaneCard, "task_full_card_height"), "140"); // NEW
+    assert.equal(h.weekLaneCard.geometry.height, 140); // NEW
+
+    modeToggleButton(boardOverlay).click(); // NEW
+    await nextTick(); // NEW
+
+    assert.equal(attr(h.board, "task_view_mode"), "WEEK"); // NEW
+    assert.equal(h.weekLaneCard.parent, h.weekWedLane); // NEW
+    assert.equal(h.weekLaneCard.geometry.height, 160); // NEW
+    assert.equal(attr(h.weekLaneCard, "schedule_duration_minutes"), "120"); // NEW
+    assert.equal(attr(h.weekLaneCard, "task_full_card_height"), "140"); // NEW
+
+    modeToggleButton(boardOverlay).click(); // NEW
+    await nextTick(); // NEW
+
+    assert.equal(attr(h.board, "task_view_mode"), "FULL"); // NEW
+    assert.equal(h.weekLaneCard.parent, h.todoLane); // NEW
+    assert.equal(h.weekLaneCard.geometry.height, 140); // NEW
+}); // NEW
+
+test("task manager migrates existing full-view card height without using week schedule height", async () => { // NEW
+    const h = makeHarness(); // NEW
+    setAttr(h.board, "task_view_mode", "FULL"); // NEW
+    h.card1.geometry.height = 132; // NEW
+
+    h.graph.setSelectionCell(h.board); // NEW
+    await nextTick(); // NEW
+
+    assert.equal(attr(h.card1, "task_full_card_height"), "132"); // NEW
+    assert.equal(h.card1.geometry.height, 132); // NEW
 }); // NEW
 
 test("task manager week-mode board resize expands staged lane only", async () => { // CHANGE
