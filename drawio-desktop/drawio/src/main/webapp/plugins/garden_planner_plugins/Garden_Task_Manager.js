@@ -4272,14 +4272,35 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
         title.style.cssText = 'font-size:16px;font-weight:bold;margin-bottom:10px;'; // NEW
         div.appendChild(title); // NEW
         const rows = []; // NEW
+        const rowGridCss = 'display:grid;grid-template-columns:110px 78px minmax(136px,1fr) minmax(136px,1fr);gap:8px;align-items:center;'; // NEW
+        function styleTimeInput(input) { // NEW
+            input.style.cssText = 'width:100%;min-width:136px;box-sizing:border-box;font:12px Arial,sans-serif;'; // NEW
+        } // NEW
+        function updateClosedRowState(row, closed, start, end) { // NEW
+            const isClosed = !!closed.checked; // NEW
+            start.disabled = isClosed; // NEW
+            end.disabled = isClosed; // NEW
+            row.style.opacity = isClosed ? '0.72' : '1'; // NEW
+        } // NEW
+        function addHeaderRow() { // NEW
+            const header = document.createElement('div'); // NEW
+            header.style.cssText = rowGridCss + 'font-weight:bold;color:#374151;margin:0 0 5px;border-bottom:1px solid #d1d5db;padding-bottom:4px;'; // NEW
+            ['Day', 'Closed', 'Start', 'End'].forEach(text => { // NEW
+                const cell = document.createElement('div'); // NEW
+                cell.textContent = text; // NEW
+                header.appendChild(cell); // NEW
+            }); // NEW
+            div.appendChild(header); // NEW
+        } // NEW
         function addSection(labelText, sourceDays, kind) { // NEW
             const label = document.createElement('div'); // NEW
             label.textContent = labelText; // NEW
-            label.style.cssText = 'font-weight:bold;margin:10px 0 6px;'; // NEW
+            label.style.cssText = 'font-weight:bold;margin:12px 0 6px;'; // CHANGE
             div.appendChild(label); // NEW
+            addHeaderRow(); // NEW
             sourceDays.forEach((day, index) => { // NEW
                 const row = document.createElement('div'); // NEW
-                row.style.cssText = 'display:grid;grid-template-columns:70px 58px 92px 92px;gap:6px;align-items:center;margin-bottom:4px;'; // NEW
+                row.style.cssText = rowGridCss + 'margin-bottom:5px;'; // CHANGE
                 const name = document.createElement('span'); // NEW
                 name.textContent = KANBAN_LANE_DEFS[5 + index].label; // NEW
                 const closed = document.createElement('input'); // NEW
@@ -4289,10 +4310,14 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
                 start.type = 'time'; // NEW
                 start.step = String(SCHEDULE_MINUTE_SNAP * 60); // NEW
                 start.value = formatMinuteTimeInput(day.startMinute); // NEW
+                styleTimeInput(start); // NEW
                 const end = document.createElement('input'); // NEW
                 end.type = 'time'; // NEW
                 end.step = String(SCHEDULE_MINUTE_SNAP * 60); // NEW
                 end.value = formatMinuteTimeInput(day.endMinute); // NEW
+                styleTimeInput(end); // NEW
+                closed.addEventListener('change', function () { updateClosedRowState(row, closed, start, end); }); // NEW
+                updateClosedRowState(row, closed, start, end); // NEW
                 row.appendChild(name); // NEW
                 row.appendChild(closed); // NEW
                 row.appendChild(start); // NEW
@@ -4321,7 +4346,7 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
         buttons.appendChild(cancel); // NEW
         buttons.appendChild(save); // NEW
         div.appendChild(buttons); // NEW
-        taskDialogs.showTaskManagerDialog(div, 520, 560, true, true); // CHANGE
+        taskDialogs.showTaskManagerDialog(div, 660, 600, true, true); // CHANGE
     } // NEW
 
     function saveBoardWeekWorkHours(board, weekStart, weeks, nextDefaults, nextWeek) { // CHANGE

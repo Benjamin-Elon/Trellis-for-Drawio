@@ -3328,14 +3328,23 @@ test('task manager schedule order is date scoped for tasks and breaks', () => { 
     assert.match(source, /syncScheduleLanePhysicalOrder\(lane,\s*records\)/); // NEW
 }); // NEW
 
-test('task manager edit hours save reflows the board after persisting hours', () => { // NEW
+test('task manager edit hours dialog uses a readable table layout and preserves save reflow', () => { // CHANGE
     const source = fs.readFileSync(taskManagerPath, 'utf8'); // NEW
     const saveBlock = source.slice(source.indexOf("const save = mxUtils.button('Save'"), source.indexOf("buttons.appendChild(cancel)", source.indexOf("const save = mxUtils.button('Save'"))); // NEW
+    const hoursBlock = source.slice(source.indexOf('function showEditHoursDialogImpl'), source.indexOf('function saveBoardWeekWorkHours')); // NEW
+    assert.match(hoursBlock, /taskDialogs\.showTaskManagerDialog\(div,\s*660,\s*600,\s*true,\s*true\)/); // NEW
+    assert.match(hoursBlock, /grid-template-columns:110px 78px minmax\(136px,1fr\) minmax\(136px,1fr\)/); // NEW
+    assert.match(hoursBlock, /width:100%;min-width:136px;box-sizing:border-box/); // NEW
+    assert.match(hoursBlock, /\['Day',\s*'Closed',\s*'Start',\s*'End'\]/); // NEW
+    assert.match(hoursBlock, /function updateClosedRowState\(row,\s*closed,\s*start,\s*end\)/); // NEW
+    assert.match(hoursBlock, /start\.disabled = isClosed/); // NEW
+    assert.match(hoursBlock, /end\.disabled = isClosed/); // NEW
+    assert.match(hoursBlock, /closed\.addEventListener\('change',\s*function \(\) \{ updateClosedRowState\(row,\s*closed,\s*start,\s*end\); \}\)/); // NEW
     assert.match(saveBlock, /taskCommands\.saveBoardWeekWorkHours\(board,\s*weekStart,\s*weeks,\s*nextDefaults,\s*nextWeek\)/); // CHANGE
     assert.match(source, /function saveBoardWeekWorkHours\(board,\s*weekStart,\s*weeks,\s*nextDefaults,\s*nextWeek\)/); // CHANGE
     assert.match(source, /setAttrNoUndo\(board,\s*TASK_WORK_HOURS_DEFAULTS_ATTR,\s*serializeWeekWorkHours\(nextDefaults\),\s*true\)/); // CHANGE
     assert.match(source, /setAttrNoUndo\(board,\s*TASK_WORK_HOURS_WEEK_OVERRIDES_ATTR,\s*JSON\.stringify\(\{\s*schemaVersion:\s*1,\s*weeks:\s*nextWeeks\s*\}\),\s*true\)/); // CHANGE
-    assert.match(source, /scanAndReflowBoard\(board,\s*\{\s*insideUpdate:\s*true\s*\}\)/); // CHANGE
+    assert.match(source, /scanAndReflowBoard\(board,\s*\{\s*insideUpdate:\s*true,\s*scope:\s*getTaskReflowScopeForCommand\('editHours'\)\s*\}\)/); // CHANGE
 }); // NEW
 
 test('task manager dialog calls use Trellis dialog elevation', () => { // NEW
