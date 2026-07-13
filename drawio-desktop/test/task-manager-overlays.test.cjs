@@ -66,6 +66,20 @@ function buttonByText(root, text) {
     return Array.from(root.querySelectorAll("button")).find(button => button.textContent === text);
 }
 
+function modeToggleButton(root) { // NEW
+    return buttonByText(root, "Switch to Full view") || buttonByText(root, "Switch to Week view"); // CHANGE
+} // NEW
+
+function loadTaskManagerHooks() { // NEW
+    const context = vm.createContext({ // NEW
+        console, // NEW
+        globalThis: { __TRELLIS_TASK_MANAGER_TEST__: true }, // NEW
+        Draw: { loadPlugin() {} } // NEW
+    }); // NEW
+    vm.runInContext(fs.readFileSync(TASK_MANAGER_PATH, "utf8"), context, { filename: TASK_MANAGER_PATH }); // NEW
+    return context.globalThis.__TRELLIS_TASK_MANAGER_TEST_HOOKS__; // NEW
+} // NEW
+
 function saveSelectedWeekDayHours(h, dayIndex, startValue, endValue) { // NEW
     const boardOverlay = h.document.querySelector(".trellis-task-board-header-controls"); // NEW
     buttonByText(boardOverlay, "Edit Hours").click(); // NEW
@@ -86,12 +100,14 @@ function makeHarness(options = {}) { // CHANGE
     const selectionListeners = [];
     const modelListeners = [];
     const viewListeners = [];
+    const mouseListeners = []; // NEW
+    const graphListeners = new Map(); // NEW
     let selectedCells = [];
     let lastDialog = null;
     let currentUi = null; // NEW
 
     const root = new TestCell("root", makeValue(document), new TestGeometry(0, 0, 0, 0));
-    const board = new TestCell("board", makeValue(document, { board_key: "KANBAN_BOARD", board_role: "main", task_view_mode: "WEEK", task_selected_week_start: "2026-07-12", task_selected_day: "2026-07-15" }), new TestGeometry(10, 10, 700, 260)); // CHANGE
+    const board = new TestCell("board", makeValue(document, { board_key: "KANBAN_BOARD", board_role: "main", task_view_mode: "WEEK", task_selected_week_start: "2026-07-12", task_selected_day: "2026-07-12" }), new TestGeometry(10, 10, 700, 260)); // CHANGE
     const stagedLane = new TestCell("staged", makeValue(document, { lane_key: "TODO_STAGED", status: "TODO (staged)" }), new TestGeometry(20, 40, 200, 200)); // NEW
     const weekSunLane = new TestCell("weekSun", makeValue(document, { lane_key: "WEEK_SUN", status: "Sunday" }), new TestGeometry(240, 40, 200, 200)); // NEW
     const weekMonLane = new TestCell("weekMon", makeValue(document, { lane_key: "WEEK_MON", status: "Monday" }), new TestGeometry(460, 40, 200, 200)); // NEW
@@ -128,6 +144,22 @@ function makeHarness(options = {}) { // CHANGE
         title: "No date", // NEW
         workflow_state: "STAGED" // NEW
     }), new TestGeometry(30, 270, 120, 60)); // NEW
+    const weekTueCard = new TestCell("weekTueCard", makeValue(document, { // NEW
+        kanban_card: "1", // NEW
+        title: "Tuesday task", // NEW
+        workflow_state: "TODO", // NEW
+        assigned_day: "2026-07-14", // NEW
+        start: "2026-07-14", // NEW
+        end: "2026-07-14" // NEW
+    }), new TestGeometry(690, 60, 120, 60)); // NEW
+    const weekTueCard2 = new TestCell("weekTueCard2", makeValue(document, { // NEW
+        kanban_card: "1", // NEW
+        title: "Second Tuesday task", // NEW
+        workflow_state: "TODO", // NEW
+        assigned_day: "2026-07-14", // NEW
+        start: "2026-07-14", // NEW
+        end: "2026-07-14" // NEW
+    }), new TestGeometry(690, 130, 120, 60)); // NEW
     const weekLaneCard = new TestCell("weekLaneCard", makeValue(document, { // NEW
         kanban_card: "1", // NEW
         title: "Week lane task", // NEW
@@ -160,7 +192,19 @@ function makeHarness(options = {}) { // CHANGE
     }), new TestGeometry(30, 130, 120, 60));
 
     const cellById = new Map();
+    let labelSetCount = 0; // NEW
+    function instrumentLabelWrites(value) { // NEW
+        if (!value || typeof value.setAttribute !== "function" || value.__trellisLabelWritesInstrumented) return value; // NEW
+        const originalSetAttribute = value.setAttribute.bind(value); // NEW
+        value.setAttribute = function (name, attrValue) { // NEW
+            if (name === "label") labelSetCount += 1; // NEW
+            return originalSetAttribute(name, attrValue); // NEW
+        }; // NEW
+        value.__trellisLabelWritesInstrumented = true; // NEW
+        return value; // NEW
+    } // NEW
     function register(cell) {
+        if (cell) instrumentLabelWrites(cell.value); // NEW
         cellById.set(cell.id, cell);
         cell.children.forEach(register);
     }
@@ -188,11 +232,15 @@ function makeHarness(options = {}) { // CHANGE
     add(stagedLane, stagedBeforeCard); // NEW
     add(stagedLane, stagedAfterCard); // NEW
     add(stagedLane, stagedInvalidCard); // NEW
+    add(weekTueLane, weekTueCard); // NEW
+    add(weekTueLane, weekTueCard2); // NEW
     add(weekWedLane, weekLaneCard); // NEW
     add(todoLane, card1);
     add(todoLane, card2);
 
     const states = new Map();
+    let geometrySetCount = 0; // NEW
+    const refreshCalls = []; // NEW
     const model = {
         isVertex(cell) { return !!(cell && cell.vertex); },
         getParent(cell) { return cell ? cell.parent : null; },
@@ -201,8 +249,8 @@ function makeHarness(options = {}) { // CHANGE
         add(parent, child, index) { add(parent, child, index); },
         beginUpdate() {},
         endUpdate() {},
-        setValue(cell, value) { cell.value = value; },
-        setGeometry(cell, geometry) { cell.geometry = geometry; },
+        setValue(cell, value) { cell.value = instrumentLabelWrites(value); }, // CHANGE
+        setGeometry(cell, geometry) { geometrySetCount++; cell.geometry = geometry; }, // CHANGE
         getGeometry(cell) { return cell ? cell.geometry : null; },
         setVisible(cell, visible) { cell.visible = !!visible; },
         isVisible(cell) { return !cell || cell.visible !== false; },
@@ -236,16 +284,20 @@ function makeHarness(options = {}) { // CHANGE
             selectionListeners.forEach(listener => listener());
         },
         setSelectionCell(cell) { this.setSelectionCells(cell ? [cell] : []); },
-        refresh() {},
+        refresh(cell) { refreshCalls.push(cell || null); }, // CHANGE
         removeCellOverlays() {},
         addCellOverlay() {},
-        addListener() {},
+        addListener(event, listener) { // CHANGE
+            if (!graphListeners.has(event)) graphListeners.set(event, []); // NEW
+            graphListeners.get(event).push(listener); // NEW
+        }, // CHANGE
+        addMouseListener(listener) { mouseListeners.push(listener); }, // NEW
         fireEvent() {},
         getEdges() { return []; },
         scrollCellToVisible() {},
         isCellVisible(cell) { return !cell || cell.visible !== false; },
         isValidDropTarget() { return true; },
-        moveCells(cells) { return cells; }
+        moveCells(cells, dx, dy, clone, target) { if (target && !clone) (cells || []).forEach(cell => add(target, cell)); return cells; } // CHANGE
     };
 
     const context = vm.createContext({
@@ -255,6 +307,7 @@ function makeHarness(options = {}) { // CHANGE
         Promise,
         setTimeout,
         clearTimeout,
+        globalThis: { __TRELLIS_TASK_MANAGER_TEST__: true }, // NEW
         window: dom.window,
         document,
         Draw: {
@@ -301,6 +354,8 @@ function makeHarness(options = {}) { // CHANGE
             SCALE_AND_TRANSLATE: "scaleAndTranslate",
             REPAINT: "repaint",
             CLICK: "click",
+            CELLS_MOVED: "cellsMoved", // NEW
+            CELLS_RESIZED: "cellsResized", // NEW
             addListener(node, event, listener) { node.addEventListener(event, listener); },
             consume(evt) { if (evt && evt.preventDefault) evt.preventDefault(); },
             isControlDown() { return false; },
@@ -322,10 +377,11 @@ function makeHarness(options = {}) { // CHANGE
         mxChildChange: class {},
         mxValueChange: class {},
         mxStyleChange: class {},
-        mxGeometryChange: class { constructor(cell) { this.cell = cell; } } // CHANGE
+        mxGeometryChange: class { constructor(cell, previous) { this.cell = cell; this.previous = previous || null; } } // CHANGE
     });
 
     vm.runInContext(fs.readFileSync(TASK_MANAGER_PATH, "utf8"), context, { filename: TASK_MANAGER_PATH });
+    const taskHooks = context.globalThis.__TRELLIS_TASK_MANAGER_TEST_HOOKS__; // NEW
 
     return {
         document,
@@ -336,28 +392,66 @@ function makeHarness(options = {}) { // CHANGE
         weekTueLane, // NEW
         weekWedLane, // NEW
         weekSatLane, // NEW
+        todoLane, // NEW
         stagedCard, // NEW
         stagedBeforeCard, // NEW
         stagedAfterCard, // NEW
         stagedInvalidCard, // NEW
+        weekTueCard, // NEW
+        weekTueCard2, // NEW
         weekLaneCard, // NEW
         card1,
         card2,
         states,
+        get geometrySetCount() { return geometrySetCount; }, // NEW
+        get labelSetCount() { return labelSetCount; }, // NEW
+        reflowCounters() { return JSON.parse(JSON.stringify(taskHooks.snapshotTaskReflowTestCounters())); }, // NEW
+        get refreshCalls() { return refreshCalls.slice(); }, // NEW
         get lastDialog() { return lastDialog; },
         get ui() { return currentUi; }, // NEW
-        geometryChange(cell) { return new context.mxGeometryChange(cell); }, // NEW
+        geometryChange(cell, previous) { return new context.mxGeometryChange(cell, previous); }, // CHANGE
         childChange(cell, previous) { const change = new context.mxChildChange(); change.child = cell; change.previous = previous; return change; }, // NEW
         setState(cell, state) { states.set(cell, state); },
         fireViewEvent(eventName = "repaint") {
             viewListeners.filter(entry => entry.event === eventName).forEach(entry => entry.listener());
         },
+        fireGraphEvent(eventName, props = {}) { // NEW
+            const evt = { getProperty(key) { return Object.prototype.hasOwnProperty.call(props, key) ? props[key] : null; } }; // NEW
+            (graphListeners.get(eventName) || []).forEach(listener => listener(graph, evt)); // NEW
+        }, // NEW
         fireModelChange(edit = null) { // CHANGE
             const evt = { getProperty(key) { return key === "edit" ? edit : null; } }; // NEW
             modelListeners.filter(entry => entry.event === "change").forEach(entry => entry.listener(null, evt)); // CHANGE
-        }
+        },
+        mouseDown(cell = null) { // NEW
+            const me = { getCell() { return cell; }, getEvent() { return {}; } }; // NEW
+            mouseListeners.forEach(listener => { if (listener.mouseDown) listener.mouseDown(graph, me); }); // NEW
+        }, // NEW
+        mouseUp(cell = null) { // NEW
+            const me = { getCell() { return cell; }, getEvent() { return {}; } }; // NEW
+            mouseListeners.forEach(listener => { if (listener.mouseUp) listener.mouseUp(graph, me); }); // NEW
+        }, // NEW
+        resetCounters() { geometrySetCount = 0; labelSetCount = 0; refreshCalls.length = 0; taskHooks.resetTaskReflowTestCounters(); } // CHANGE
     };
 }
+
+test("task manager reflow scope policy maps command categories", () => { // NEW
+    const hooks = loadTaskManagerHooks(); // NEW
+    const plain = value => JSON.parse(JSON.stringify(value)); // NEW
+    assert.deepEqual(plain(hooks.normalizeTaskReflowScopePlan("full")), { // NEW
+        requested: ["full"], full: true, classification: true, lanes: true, layout: true, badges: true // NEW
+    }); // NEW
+    assert.deepEqual(plain(hooks.normalizeTaskReflowScopePlan("badges")), { // NEW
+        requested: ["badges"], full: false, classification: false, lanes: false, layout: false, badges: true // NEW
+    }); // NEW
+    assert.deepEqual(plain(hooks.normalizeTaskReflowScopePlan("layout")), { // NEW
+        requested: ["layout"], full: false, classification: false, lanes: true, layout: true, badges: true // NEW
+    }); // NEW
+    assert.equal(hooks.getTaskReflowScopeForCommand("workflow"), "classification"); // NEW
+    assert.equal(hooks.getTaskReflowScopeForCommand("editHours"), "layout"); // NEW
+    assert.equal(hooks.getTaskReflowScopeForCommand("selection"), "badges"); // NEW
+    assert.equal(hooks.getTaskReflowScopeForCommand("unknown-command"), "full"); // NEW
+}); // NEW
 
 test("task manager selection overlays render above graph and defer until states are available", async () => {
     const h = makeHarness();
@@ -409,6 +503,87 @@ test("task manager DOM overlays avoid SVG overlayPane hosts", async () => { // N
     assert.equal(boardOverlay.parentNode.parentNode.id, "graph"); // CHANGE
 });
 
+test("task manager hides task overlays during week card drag and refreshes once after mouseup", async () => { // NEW
+    const h = makeHarness(); // NEW
+    const boardOverlay = h.document.querySelector(".trellis-task-board-header-controls"); // NEW
+    const cardOverlay = h.document.querySelector(".trellis-task-selected-card-actions"); // NEW
+    h.setState(h.board, { x: 10, y: 10, width: 700, height: 260 }); // NEW
+    h.setState(h.weekTueCard, { x: 690, y: 60, width: 120, height: 60 }); // NEW
+    h.graph.setSelectionCell(h.weekTueCard); // NEW
+    await nextTick(); // NEW
+
+    assert.equal(boardOverlay.style.display, "flex"); // NEW
+    assert.equal(cardOverlay.style.display, "flex"); // NEW
+    const initialLeft = cardOverlay.style.left; // NEW
+
+    h.mouseDown(h.weekTueCard); // NEW
+    assert.equal(boardOverlay.style.display, "none"); // NEW
+    assert.equal(cardOverlay.style.display, "none"); // NEW
+
+    h.setState(h.weekTueCard, { x: 760, y: 90, width: 120, height: 60 }); // NEW
+    h.fireViewEvent("repaint"); // NEW
+    h.fireModelChange(); // NEW
+    await nextTick(); // NEW
+    assert.equal(cardOverlay.style.display, "none"); // NEW
+    assert.equal(cardOverlay.style.left, initialLeft); // NEW
+
+    h.mouseUp(h.weekTueCard); // NEW
+    await nextTick(); // NEW
+    assert.equal(boardOverlay.style.display, "flex"); // NEW
+    assert.equal(cardOverlay.style.display, "flex"); // NEW
+    assert.notEqual(cardOverlay.style.left, initialLeft); // NEW
+}); // NEW
+
+test("task manager hides task overlays during full-mode card drag", async () => { // NEW
+    const h = makeHarness(); // NEW
+    const cardOverlay = h.document.querySelector(".trellis-task-selected-card-actions"); // NEW
+    setAttr(h.board, "task_view_mode", "FULL"); // NEW
+    h.setState(h.card1, { x: 30, y: 60, width: 120, height: 60 }); // NEW
+    h.graph.setSelectionCell(h.card1); // NEW
+    await nextTick(); // NEW
+
+    assert.equal(cardOverlay.style.display, "flex"); // NEW
+    h.mouseDown(h.card1); // NEW
+    assert.equal(cardOverlay.style.display, "none"); // NEW
+    h.mouseUp(h.card1); // NEW
+    await nextTick(); // NEW
+    assert.equal(cardOverlay.style.display, "flex"); // NEW
+}); // NEW
+
+test("task manager releases overlay suppression on moved and resized commit events", async () => { // NEW
+    const h = makeHarness(); // NEW
+    const cardOverlay = h.document.querySelector(".trellis-task-selected-card-actions"); // NEW
+    h.setState(h.weekTueCard, { x: 690, y: 60, width: 120, height: 60 }); // NEW
+    h.graph.setSelectionCell(h.weekTueCard); // NEW
+    await nextTick(); // NEW
+
+    h.mouseDown(h.weekTueCard); // NEW
+    assert.equal(cardOverlay.style.display, "none"); // NEW
+    h.fireGraphEvent("cellsMoved", { cells: [h.weekTueCard] }); // NEW
+    await nextTick(); // NEW
+    assert.equal(cardOverlay.style.display, "flex"); // NEW
+
+    h.mouseDown(h.weekTueCard); // NEW
+    assert.equal(cardOverlay.style.display, "none"); // NEW
+    h.fireGraphEvent("cellsResized", { cells: [h.weekTueCard] }); // NEW
+    await nextTick(); // NEW
+    assert.equal(cardOverlay.style.display, "flex"); // NEW
+}); // NEW
+
+test("task manager non-task mouse interactions do not suppress overlays", async () => { // NEW
+    const h = makeHarness(); // NEW
+    const boardOverlay = h.document.querySelector(".trellis-task-board-header-controls"); // NEW
+    h.setState(h.board, { x: 10, y: 10, width: 700, height: 260 }); // NEW
+    h.graph.setSelectionCell(h.board); // NEW
+    await nextTick(); // NEW
+
+    assert.equal(boardOverlay.style.display, "flex"); // NEW
+    h.mouseDown(h.board); // NEW
+    h.fireViewEvent("repaint"); // NEW
+    await nextTick(); // NEW
+    assert.equal(boardOverlay.style.display, "flex"); // NEW
+}); // NEW
+
 test("task manager staged start badge uses visible-week weekday wording", async () => { // CHANGE
     const h = makeHarness(); // NEW
 
@@ -449,6 +624,145 @@ test("task manager week scheduler lays out day heights and selected-lane control
     assert.equal(attr(h.board, "task_selected_day"), "2026-07-15"); // NEW
 }); // NEW
 
+test("task manager week selection only reflows when active day changes", async () => { // NEW
+    const h = makeHarness(); // NEW
+    h.graph.setSelectionCell(h.weekTueCard); // NEW
+    await nextTick(); // NEW
+
+    assert.equal(attr(h.board, "task_selected_day"), "2026-07-14"); // NEW
+    assert.ok(h.geometrySetCount > 0); // NEW
+
+    h.resetCounters(); // NEW
+    h.graph.setSelectionCell(h.weekTueCard2); // NEW
+    await nextTick(); // NEW
+
+    const counters = h.reflowCounters(); // NEW
+    assert.equal(attr(h.board, "task_selected_day"), "2026-07-14"); // NEW
+    assert.equal(h.geometrySetCount, 0); // NEW
+    assert.equal(h.labelSetCount, 0); // NEW
+    assert.equal(counters.badges, 1); // NEW
+    assert.equal(counters.classification, 0); // NEW
+    assert.equal(counters.layout, 0); // NEW
+    assert.equal(counters.lanes, 0); // NEW
+    assert.equal(counters.boardLayout, 0); // NEW
+    assert.equal(counters.schedulePack, 0); // NEW
+    assert.ok(counters.labelWriteSkip > 0); // NEW
+}); // NEW
+
+test("task manager note-only edits refresh badges without layout", async () => { // NEW
+    const h = makeHarness(); // NEW
+    const overlay = h.document.querySelector(".trellis-task-selected-card-actions"); // NEW
+    h.setState(h.card1, { x: 30, y: 60, width: 120, height: 60 }); // NEW
+    h.graph.setSelectionCell(h.card1); // NEW
+    await nextTick(); // NEW
+
+    h.resetCounters(); // NEW
+    buttonByText(overlay, "Clear Note").click(); // NEW
+    await nextTick(); // NEW
+
+    const counters = h.reflowCounters(); // NEW
+    assert.equal(attr(h.card1, "card_note"), null); // NEW
+    assert.equal(h.geometrySetCount, 0); // NEW
+    assert.equal(counters.classification, 0); // NEW
+    assert.equal(counters.layout, 0); // NEW
+    assert.equal(counters.lanes, 0); // NEW
+    assert.equal(counters.boardLayout, 0); // NEW
+    assert.equal(counters.schedulePack, 0); // NEW
+    assert.equal(h.card1.parent, h.todoLane); // NEW
+    assert.doesNotMatch(attr(h.card1, "label"), /<b>Note:<\/b>/); // NEW
+}); // NEW
+
+test("task manager unchanged badge refresh skips label rewrites", async () => { // NEW
+    const h = makeHarness(); // NEW
+    h.graph.setSelectionCell(h.weekTueCard); // NEW
+    await nextTick(); // NEW
+
+    h.resetCounters(); // NEW
+    h.graph.setSelectionCell(h.weekTueCard2); // NEW
+    await nextTick(); // NEW
+
+    const counters = h.reflowCounters(); // NEW
+    assert.equal(attr(h.board, "task_selected_day"), "2026-07-14"); // NEW
+    assert.equal(h.geometrySetCount, 0); // NEW
+    assert.equal(h.labelSetCount, 0); // NEW
+    assert.ok(counters.labelWriteSkip > 0); // NEW
+}); // NEW
+
+test("task manager restores staged card style when week card is dragged back to staged", async () => { // NEW
+    const h = makeHarness(); // NEW
+    h.weekLaneCard.setStyle("whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#000000;customFlag=keep;"); // NEW
+    setAttr(h.weekLaneCard, "workflow_state", "DONE"); // NEW
+    setAttr(h.weekLaneCard, "completed", "2026-07-15"); // NEW
+
+    h.resetCounters(); // NEW
+    h.graph.moveCells([h.weekLaneCard], 0, 0, false, h.stagedLane); // NEW
+    await nextTick(); // NEW
+
+    const counters = h.reflowCounters(); // NEW
+    assert.equal(h.stagedLane.children.includes(h.weekLaneCard), true); // NEW
+    assert.equal(attr(h.weekLaneCard, "workflow_state"), "STAGED"); // NEW
+    assert.equal(attr(h.weekLaneCard, "assigned_day"), null); // NEW
+    assert.equal(attr(h.weekLaneCard, "completed"), null); // NEW
+    assert.equal(attr(h.weekLaneCard, "manual_staged"), "1"); // NEW
+    assert.match(h.weekLaneCard.style, /fillColor=swimlane/); // NEW
+    assert.match(h.weekLaneCard.style, /customFlag=keep/); // NEW
+    assert.doesNotMatch(h.weekLaneCard.style, /fillColor=#D5E8D4/); // NEW
+    assert.doesNotMatch(h.weekLaneCard.style, /strokeColor=#000000/); // NEW
+    assert.ok(counters.classification > 0); // NEW
+    assert.ok(counters.lanes > 0); // NEW
+    assert.ok(counters.layout > 0); // NEW
+}); // NEW
+
+test("task manager toggles destination view labels, arrows, and board selection", async () => { // CHANGE
+    const h = makeHarness(); // NEW
+    const boardOverlay = h.document.querySelector(".trellis-task-board-header-controls"); // NEW
+    h.setState(h.board, { x: 10, y: 10, width: 700, height: 260 }); // NEW
+    h.graph.setSelectionCell(h.board); // NEW
+    await nextTick(); // NEW
+
+    assert.equal(boardOverlay.firstChild.textContent, "Mode: Week"); // NEW
+    assert.equal(modeToggleButton(boardOverlay).textContent, "Switch to Full view"); // CHANGE
+    assert.equal(modeToggleButton(boardOverlay).getAttribute("aria-pressed"), "true"); // NEW
+    assert.equal(buttonByText(boardOverlay, "<").style.display, ""); // NEW
+    assert.equal(buttonByText(boardOverlay, ">").style.display, ""); // NEW
+    assert.equal(buttonByText(boardOverlay, "This Week").style.display, ""); // NEW
+
+    modeToggleButton(boardOverlay).click(); // CHANGE
+    await nextTick(); // NEW
+
+    assert.equal(attr(h.board, "task_view_mode"), "FULL"); // NEW
+    assert.equal(h.graph.getSelectionCell(), h.board); // NEW
+    assert.equal(boardOverlay.firstChild.textContent, "Mode: Full"); // NEW
+    assert.equal(modeToggleButton(boardOverlay).textContent, "Switch to Week view"); // CHANGE
+    assert.equal(modeToggleButton(boardOverlay).getAttribute("aria-pressed"), "false"); // NEW
+    assert.equal(buttonByText(boardOverlay, "<").style.display, "none"); // NEW
+    assert.equal(buttonByText(boardOverlay, ">").style.display, "none"); // NEW
+    assert.equal(buttonByText(boardOverlay, "Today").style.display, "none"); // NEW
+
+    modeToggleButton(boardOverlay).click(); // NEW
+    await nextTick(); // NEW
+
+    assert.equal(attr(h.board, "task_view_mode"), "WEEK"); // NEW
+    assert.equal(boardOverlay.firstChild.textContent, "Mode: Week"); // NEW
+    assert.equal(modeToggleButton(boardOverlay).textContent, "Switch to Full view"); // CHANGE
+    assert.equal(buttonByText(boardOverlay, "<").style.display, ""); // NEW
+    assert.equal(buttonByText(boardOverlay, ">").style.display, ""); // NEW
+
+    h.setState(h.weekWedLane, { x: 460, y: 40, width: 200, height: 960 }); // NEW
+    h.graph.setSelectionCell(h.weekWedLane); // NEW
+    await nextTick(); // NEW
+
+    assert.equal(h.graph.getSelectionCell(), h.weekWedLane); // NEW
+    modeToggleButton(boardOverlay).click(); // NEW
+    await nextTick(); // NEW
+
+    assert.equal(attr(h.board, "task_view_mode"), "FULL"); // NEW
+    assert.equal(h.graph.getSelectionCell(), h.board); // NEW
+    assert.equal(boardOverlay.style.display, "flex"); // NEW
+    assert.equal(boardOverlay.firstChild.textContent, "Mode: Full"); // NEW
+    assert.equal(modeToggleButton(boardOverlay).textContent, "Switch to Week view"); // CHANGE
+}); // NEW
+
 test("task manager week day cards show workflow colors and time badge", async () => { // NEW
     const h = makeHarness(); // NEW
     h.graph.setSelectionCell(h.weekWedLane); // NEW
@@ -458,11 +772,13 @@ test("task manager week day cards show workflow colors and time badge", async ()
     assert.match(attr(h.weekLaneCard, "label"), /<b>Time:<\/b> 6:00 AM-7:00 AM/); // NEW
 
     setAttr(h.weekLaneCard, "workflow_state", "DOING"); // NEW
+    setAttr(h.board, "task_selected_day", "2026-07-12"); // NEW
     h.graph.setSelectionCell(h.weekWedLane); // NEW
     await nextTick(); // NEW
     assert.match(h.weekLaneCard.style, /fillColor=#FFF2CC/); // NEW
 
     setAttr(h.weekLaneCard, "workflow_state", "DONE"); // NEW
+    setAttr(h.board, "task_selected_day", "2026-07-12"); // NEW
     h.graph.setSelectionCell(h.weekWedLane); // NEW
     await nextTick(); // NEW
     assert.match(h.weekLaneCard.style, /fillColor=#D5E8D4/); // NEW
@@ -502,7 +818,7 @@ test("task manager hides day-owned breaks outside their visible week", async () 
 
     setAttr(h.board, "task_selected_week_start", "2026-07-19"); // NEW
     setAttr(h.board, "task_selected_day", "2026-07-22"); // NEW
-    h.graph.setSelectionCell(h.weekWedLane); // NEW
+    h.graph.setSelectionCell(h.board); // CHANGE
     await nextTick(); // NEW
 
     assert.equal(breakCard.visible, false); // NEW
@@ -511,7 +827,7 @@ test("task manager hides day-owned breaks outside their visible week", async () 
 
     setAttr(h.board, "task_selected_week_start", "2026-07-12"); // NEW
     setAttr(h.board, "task_selected_day", "2026-07-15"); // NEW
-    h.graph.setSelectionCell(h.weekWedLane); // NEW
+    h.graph.setSelectionCell(h.board); // CHANGE
     await nextTick(); // NEW
     assert.equal(breakCard.visible, true); // NEW
     assert.equal(h.weekWedLane.children.indexOf(h.weekLaneCard) < h.weekWedLane.children.indexOf(breakCard), true); // CHANGE
@@ -551,7 +867,7 @@ test("task manager migrates existing undated breaks to the visible lane date", a
     const breakCard = h.weekWedLane.children.find(cell => attr(cell, "schedule_break") === "1"); // NEW
     setAttr(breakCard, "assigned_day", null); // NEW
 
-    h.graph.setSelectionCell(h.weekWedLane); // NEW
+    h.graph.setSelectionCell(h.board); // CHANGE
     await nextTick(); // NEW
 
     assert.equal(attr(breakCard, "assigned_day"), "2026-07-15"); // NEW
@@ -595,8 +911,9 @@ test("task manager direct day-lane resize persists selected weekday width", asyn
     h.graph.setSelectionCell(h.weekWedLane); // NEW
     await nextTick(); // NEW
 
+    const previousGeometry = h.weekWedLane.geometry.clone(); // NEW
     h.weekWedLane.geometry.width = 1200; // CHANGE
-    h.fireModelChange({ changes: [h.geometryChange(h.weekWedLane)] }); // NEW
+    h.fireModelChange({ changes: [h.geometryChange(h.weekWedLane, previousGeometry)] }); // CHANGE
     await nextTick(); // NEW
 
     const widths = JSON.parse(attr(h.board, "task_day_lane_widths_json")).widths; // NEW
@@ -605,6 +922,21 @@ test("task manager direct day-lane resize persists selected weekday width", asyn
     assert.equal(h.weekWedLane.geometry.width, 1200); // CHANGE
     assert.equal(h.stagedLane.geometry.width, 220); // NEW
     assert.equal(h.board.geometry.width, 2872); // CHANGE
+}); // NEW
+
+test("task manager ignores week-lane layout geometry when width is unchanged", async () => { // NEW
+    const h = makeHarness(); // NEW
+    h.resetCounters(); // NEW
+
+    const previousGeometry = h.weekWedLane.geometry.clone(); // NEW
+    h.weekWedLane.geometry.x += 40; // NEW
+    h.weekWedLane.geometry.y += 12; // NEW
+    h.weekWedLane.geometry.height += 80; // NEW
+    h.fireModelChange({ changes: [h.geometryChange(h.weekWedLane, previousGeometry)] }); // NEW
+    await nextTick(); // NEW
+
+    assert.equal(attr(h.board, "task_day_lane_widths_json"), null); // NEW
+    assert.equal(h.reflowCounters().layout, 0); // NEW
 }); // NEW
 
 test("task manager closed week days label closed and clear schedule attributes", async () => { // NEW
@@ -633,9 +965,11 @@ test("task manager edit hours shifts existing day stack and marks overflow", asy
     const breakCard = h.weekWedLane.children.find(cell => attr(cell, "schedule_break") === "1"); // NEW
     const originalOrder = h.weekWedLane.children.map(cell => cell.id).join(","); // NEW
 
+    h.resetCounters(); // NEW
     saveSelectedWeekDayHours(h, 3, "08:00", "09:00"); // NEW
     await nextTick(); // NEW
 
+    const counters = h.reflowCounters(); // NEW
     assert.equal(h.weekWedLane.children.map(cell => cell.id).join(","), originalOrder); // NEW
     assert.equal(attr(h.weekLaneCard, "schedule_start_minute"), "480"); // NEW
     assert.equal(attr(h.weekLaneCard, "schedule_duration_minutes"), "60"); // NEW
@@ -645,6 +979,11 @@ test("task manager edit hours shifts existing day stack and marks overflow", asy
     assert.match(attr(breakCard, "label"), /<b>Time:<\/b> 9:00 AM-9:30 AM/); // NEW
     assert.doesNotMatch(h.weekLaneCard.style, /strokeColor=#B91C1C/); // NEW
     assert.match(breakCard.style, /strokeColor=#B91C1C/); // NEW
+    assert.equal(counters.classification, 0); // NEW
+    assert.ok(counters.layout > 0); // NEW
+    assert.ok(counters.lanes > 0); // NEW
+    assert.ok(counters.boardLayout > 0); // NEW
+    assert.ok(counters.schedulePack > 0); // NEW
 }); // NEW
 
 test("task manager edit hours start and end changes do not compress durations", async () => { // NEW
@@ -725,15 +1064,19 @@ test("task manager multi-card overlay applies workflow, note, date, reset, and c
     noteInput.dispatchEvent(new h.document.defaultView.Event("input", { bubbles: true }));
     dateInput.value = "2026-08-01";
     dateInput.dispatchEvent(new h.document.defaultView.Event("input", { bubbles: true }));
+    h.resetCounters(); // NEW
     buttonByText(h.lastDialog, "Save").click();
     await nextTick();
 
+    const dateCounters = h.reflowCounters(); // NEW
     assert.equal(attr(h.card1, "card_note"), "shared note");
     assert.equal(attr(h.card2, "card_note"), "shared note");
     assert.equal(attr(h.card1, "start"), "2026-08-01");
     assert.equal(attr(h.card1, "end"), "2026-08-03");
     assert.equal(attr(h.card2, "start"), "2026-08-01");
     assert.equal(attr(h.card2, "end"), "2026-08-05");
+    assert.ok(dateCounters.classification > 0); // NEW
+    assert.ok(dateCounters.layout > 0); // NEW
 
     buttonByText(overlay, "Reset Dates").click();
     await nextTick();
@@ -747,8 +1090,12 @@ test("task manager multi-card overlay applies workflow, note, date, reset, and c
     assert.equal(attr(h.card1, "card_note"), null);
     assert.equal(attr(h.card2, "card_note"), null);
 
+    h.resetCounters(); // NEW
     buttonByText(overlay, "DOING").click();
     await nextTick();
+    const workflowCounters = h.reflowCounters(); // NEW
     assert.equal(attr(h.card1, "workflow_state"), "DOING");
     assert.equal(attr(h.card2, "workflow_state"), "DOING");
+    assert.ok(workflowCounters.classification > 0); // NEW
+    assert.ok(workflowCounters.layout > 0); // NEW
 });

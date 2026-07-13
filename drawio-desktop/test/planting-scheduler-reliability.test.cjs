@@ -3233,7 +3233,7 @@ test('combined card saves use one value replacement and reflow only for date cha
     const valueWrites = commitSource.match(/model\.setValue\(card,\s*cloneCardValueWithAttributes\(card,\s*attributes\)\)/g) || []; // CHANGED
     assert.equal(valueWrites.length, 1);
     assert.match(source, /function commitCardPatch\(card,\s*attributes,\s*opts\)/);
-    assert.match(source, /if \(shouldReflow\) \{\s*scanAndReflowBoard\(board,\s*\{\s*insideUpdate:\s*true\s*\}\)/);
+    assert.match(source, /if \(shouldReflow\) \{\s*scanAndReflowBoard\(board,\s*\{\s*insideUpdate:\s*true,\s*scope:\s*getTaskReflowScopeForCommand\('dateEdit'\)\s*\}\)/); // CHANGE
     assert.match(source, /commitCardPatch\(card,\s*attributes,\s*\{\s*reflow:\s*dateChanged\s*\}\)/);
     assert.match(source, /if \(!canEditCardDates\(card\)\).*reject the entire combined save/s);
     assert.match(source, /if \(Object\.keys\(attributes\)\.length === 0\)/);
@@ -3274,7 +3274,11 @@ test('task manager installs planning mode header controls and selected-card DOM 
     assert.match(source, /function getSelectionCellsList\(\)/); // NEW
     assert.match(source, /if \(isBoardCell\(cell\)\).*return cell/); // CHANGE
     assert.match(source, /const board = findBoardAncestor\(cell\)/); // NEW
-    assert.match(source, /taskCommands\.setBoardPlanningView\(b,\s*'WEEK'\)/); // CHANGE
+    assert.match(source, /function restoreBoardSelectionIfNeeded\(board\)/); // CHANGE
+    assert.match(source, /function toggleBoardPlanningView\(\)/); // NEW
+    assert.match(source, /modeLabel\.textContent = mode === 'WEEK' \? 'Mode: Week' : 'Mode: Full'/); // CHANGE
+    assert.match(source, /modeToggle\.textContent = mode === 'WEEK' \? 'Switch to Full view' : 'Switch to Week view'/); // CHANGE
+    assert.match(source, /prev\.style\.display = mode === 'WEEK' \? '' : 'none'/); // NEW
     assert.match(source, /End Day \('/); // NEW
     assert.match(source, /End Week \('/); // NEW
     assert.match(source, /function installSelectedCardActionOverlay\(\)/); // NEW
@@ -3327,13 +3331,18 @@ test('task manager edit hours save reflows the board after persisting hours', ()
 test('task manager dialog calls use Trellis dialog elevation', () => { // NEW
     const source = fs.readFileSync(taskManagerPath, 'utf8'); // NEW
     assert.match(source, /const TRELLIS_DIALOG_Z = 2000000000;/); // NEW
+    assert.match(source, /function createTaskDialogRuntime\(\{\s*ui,\s*document,\s*commands,\s*adapters\s*\}\)/); // CHANGE
+    assert.match(source, /const taskDialogs = createTaskDialogRuntime\(\{/); // CHANGE
+    assert.match(source, /function showEditCardDialog\(card\) \{ return taskDialogs\.showEditCardDialog\(card\); \}/); // CHANGE
+    assert.match(source, /taskDialogs\.showEditHoursDialog\(b\)/); // CHANGE
+    assert.match(source, /taskDialogs\.showBulkEditCardsDialog\(cards\)/); // CHANGE
     assert.match(source, /function elevateTaskManagerDialog\(\)/); // NEW
     assert.match(source, /dlg\.container\.style\.zIndex = String\(TRELLIS_DIALOG_Z\)/); // NEW
     assert.match(source, /dlg\.bg\.style\.zIndex = String\(TRELLIS_DIALOG_Z - 1\)/); // NEW
     const directCalls = (source.match(/ui\.showDialog\(/g) || []).length; // NEW
-    const wrapperCalls = (source.match(/showTaskManagerDialog\(/g) || []).length; // NEW
+    const wrapperCalls = (source.match(/taskDialogs\.showTaskManagerDialog\(/g) || []).length; // CHANGE
     assert.equal(directCalls, 1); // NEW
-    assert.ok(wrapperCalls >= 4); // NEW
+    assert.ok(wrapperCalls >= 3); // CHANGE
 }); // NEW
 
 test('task manager isolates no-undo planning view reflow', () => { // NEW
