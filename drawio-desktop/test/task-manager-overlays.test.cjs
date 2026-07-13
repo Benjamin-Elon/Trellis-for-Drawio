@@ -90,6 +90,13 @@ function saveSelectedWeekDayHours(h, dayIndex, startValue, endValue) { // NEW
     buttonByText(h.lastDialog, "Save").click(); // NEW
 } // NEW
 
+function addHarnessCard(h, lane, id, attrs = {}, height = 60) { // NEW
+    const card = new TestCell(id, makeValue(h.document, Object.assign({ kanban_card: "1", title: id }, attrs)), new TestGeometry(30, 60 + (lane.children.length * 70), 120, height)); // NEW
+    card.parent = lane; // NEW
+    lane.children.push(card); // NEW
+    return card; // NEW
+} // NEW
+
 function makeHarness(options = {}) { // CHANGE
     const dom = new JSDOM(options.svgOverlayPane // CHANGE
         ? "<!doctype html><body><div id='graph'><svg><g id='overlay'></g></svg></div></body>" // NEW
@@ -393,6 +400,7 @@ function makeHarness(options = {}) { // CHANGE
         weekWedLane, // NEW
         weekSatLane, // NEW
         todoLane, // NEW
+        doingLane, // NEW
         stagedCard, // NEW
         stagedBeforeCard, // NEW
         stagedAfterCard, // NEW
@@ -449,6 +457,7 @@ test("task manager reflow scope policy maps command categories", () => { // NEW
     }); // NEW
     assert.equal(hooks.getTaskReflowScopeForCommand("workflow"), "classification"); // NEW
     assert.equal(hooks.getTaskReflowScopeForCommand("editHours"), "layout"); // NEW
+    assert.equal(hooks.getTaskReflowScopeForCommand("boardResize"), "layout"); // NEW
     assert.equal(hooks.getTaskReflowScopeForCommand("selection"), "badges"); // NEW
     assert.equal(hooks.getTaskReflowScopeForCommand("unknown-command"), "full"); // NEW
 }); // NEW
@@ -693,6 +702,9 @@ test("task manager restores staged card style when week card is dragged back to 
     h.weekLaneCard.setStyle("whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#000000;customFlag=keep;"); // NEW
     setAttr(h.weekLaneCard, "workflow_state", "DONE"); // NEW
     setAttr(h.weekLaneCard, "completed", "2026-07-15"); // NEW
+    setAttr(h.weekLaneCard, "schedule_start_minute", "360"); // NEW
+    setAttr(h.weekLaneCard, "schedule_duration_minutes", "120"); // NEW
+    h.weekLaneCard.geometry.height = 160; // NEW
 
     h.resetCounters(); // NEW
     h.graph.moveCells([h.weekLaneCard], 0, 0, false, h.stagedLane); // NEW
@@ -704,6 +716,9 @@ test("task manager restores staged card style when week card is dragged back to 
     assert.equal(attr(h.weekLaneCard, "assigned_day"), null); // NEW
     assert.equal(attr(h.weekLaneCard, "completed"), null); // NEW
     assert.equal(attr(h.weekLaneCard, "manual_staged"), "1"); // NEW
+    assert.equal(h.weekLaneCard.geometry.height, 80); // NEW
+    assert.equal(attr(h.weekLaneCard, "schedule_start_minute"), "360"); // NEW
+    assert.equal(attr(h.weekLaneCard, "schedule_duration_minutes"), "120"); // NEW
     assert.match(h.weekLaneCard.style, /fillColor=swimlane/); // NEW
     assert.match(h.weekLaneCard.style, /customFlag=keep/); // NEW
     assert.doesNotMatch(h.weekLaneCard.style, /fillColor=#D5E8D4/); // NEW
@@ -937,6 +952,78 @@ test("task manager ignores week-lane layout geometry when width is unchanged", a
 
     assert.equal(attr(h.board, "task_day_lane_widths_json"), null); // NEW
     assert.equal(h.reflowCounters().layout, 0); // NEW
+}); // NEW
+
+test("task manager full-mode board resize persists lane height and refreshes paging", async () => { // NEW
+    const h = makeHarness(); // NEW
+    setAttr(h.board, "task_view_mode", "FULL"); // NEW
+    h.graph.setSelectionCell(h.board); // NEW
+    await nextTick(); // NEW
+    for (let i = 0; i < 4; i++) addHarnessCard(h, h.todoLane, `todoExtra${i}`, { workflow_state: "TODO", start: `2026-07-${10 + i}` }); // NEW
+    setAttr(h.todoLane, "page_index", "5"); // NEW
+    h.resetCounters(); // NEW
+
+    const previousGeometry = h.board.geometry.clone(); // NEW
+    h.board.geometry.height = 324; // NEW
+    h.fireModelChange({ changes: [h.geometryChange(h.board, previousGeometry)] }); // NEW
+    await nextTick(); // NEW
+
+    const visibleTodoCards = h.todoLane.children.filter(cell => attr(cell, "kanban_card") === "1" && cell.visible !== false); // NEW
+    const counters = h.reflowCounters(); // NEW
+    assert.equal(attr(h.board, "task_full_lane_height"), "286"); // NEW
+    assert.equal(h.todoLane.geometry.height, 286); // NEW
+    assert.equal(h.doingLane.geometry.height, 286); // NEW
+    assert.equal(h.board.geometry.height, 324); // NEW
+    assert.equal(attr(h.todoLane, "page_index"), "2"); // CHANGE
+    assert.equal(visibleTodoCards.length, 3); // NEW
+    assert.equal(counters.classification, 0); // NEW
+    assert.ok(counters.layout > 0); // NEW
+    assert.ok(counters.lanes > 0); // NEW
+    assert.ok(counters.boardLayout > 0); // NEW
+}); // NEW
+
+test("task manager week-mode board resize keeps schedule-derived board height", async () => { // NEW
+    const h = makeHarness(); // NEW
+    h.graph.setSelectionCell(h.board); // NEW
+    await nextTick(); // NEW
+    const expectedLaneHeight = h.weekWedLane.geometry.height; // NEW
+    const expectedBoardHeight = h.board.geometry.height; // NEW
+    h.resetCounters(); // NEW
+
+    const previousGeometry = h.board.geometry.clone(); // NEW
+    h.board.geometry.height = 1600; // NEW
+    h.fireModelChange({ changes: [h.geometryChange(h.board, previousGeometry)] }); // NEW
+    await nextTick(); // NEW
+
+    const counters = h.reflowCounters(); // NEW
+    assert.equal(attr(h.board, "task_full_lane_height"), null); // NEW
+    assert.equal(h.weekWedLane.geometry.height, expectedLaneHeight); // NEW
+    assert.equal(h.board.geometry.height, expectedBoardHeight); // NEW
+    assert.ok(counters.layout > 0); // NEW
+    assert.ok(counters.boardLayout > 0); // NEW
+}); // NEW
+
+test("task manager restores persisted full-mode board height after week mode", async () => { // NEW
+    const h = makeHarness(); // NEW
+    const boardOverlay = h.document.querySelector(".trellis-task-board-header-controls"); // NEW
+    setAttr(h.board, "task_view_mode", "FULL"); // NEW
+    setAttr(h.board, "task_full_lane_height", "300"); // NEW
+    h.graph.setSelectionCell(h.board); // NEW
+    await nextTick(); // NEW
+
+    assert.equal(h.todoLane.geometry.height, 300); // NEW
+    assert.equal(h.board.geometry.height, 338); // NEW
+    modeToggleButton(boardOverlay).click(); // CHANGE
+    await nextTick(); // NEW
+    assert.equal(attr(h.board, "task_view_mode"), "WEEK"); // NEW
+    assert.ok(h.weekWedLane.geometry.height > 300); // NEW
+    assert.notEqual(h.board.geometry.height, 338); // NEW
+
+    modeToggleButton(boardOverlay).click(); // CHANGE
+    await nextTick(); // NEW
+    assert.equal(attr(h.board, "task_view_mode"), "FULL"); // NEW
+    assert.equal(h.todoLane.geometry.height, 300); // NEW
+    assert.equal(h.board.geometry.height, 338); // NEW
 }); // NEW
 
 test("task manager closed week days label closed and clear schedule attributes", async () => { // NEW

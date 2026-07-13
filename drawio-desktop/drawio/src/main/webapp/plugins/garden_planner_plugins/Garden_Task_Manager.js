@@ -37,6 +37,7 @@ const TASK_SCHEDULE_ORDER_DAY_ATTR = 'schedule_order_day'; // NEW: prevents stal
 const TASK_WORK_HOURS_DEFAULTS_ATTR = 'task_work_hours_defaults_json'; // NEW
 const TASK_WORK_HOURS_WEEK_OVERRIDES_ATTR = 'task_work_hours_week_overrides_json'; // NEW
 const TASK_DAY_LANE_WIDTHS_ATTR = 'task_day_lane_widths_json'; // NEW: user-resized per-weekday lane widths
+const TASK_FULL_LANE_HEIGHT_ATTR = 'task_full_lane_height'; // NEW: user-resized full-mode lane height
 const TASK_VIEW_MODES = ['FULL', 'WEEK']; // CHANGE: Day mode now normalizes to Week
 const TASK_WORKFLOW_STATES = ['STAGED', 'TODO', 'DOING', 'DONE']; // NEW
 const WEEK_DAY_LANE_KEYS = ['WEEK_SUN', 'WEEK_MON', 'WEEK_TUE', 'WEEK_WED', 'WEEK_THU', 'WEEK_FRI', 'WEEK_SAT']; // NEW
@@ -45,6 +46,7 @@ const TRELLIS_DIALOG_Z = 2000000000; // NEW: match Draw.io dialog layer ordering
 const SCHEDULE_PX_PER_HOUR = 80; // NEW
 const SCHEDULE_MINUTE_SNAP = 15; // NEW
 const SCHEDULE_MIN_CARD_HEIGHT = 20; // NEW
+const DEFAULT_TASK_CARD_HEIGHT = 80; // NEW
 const DEFAULT_DAY_LANE_WIDTH = 220; // NEW
 const MIN_DAY_LANE_WIDTH = 140; // NEW
 const DEFAULT_WORK_START_MINUTE = 6 * 60; // NEW
@@ -1009,6 +1011,7 @@ const TASK_REFLOW_COMMAND_SCOPES = Object.freeze({ // NEW: pure command-to-scope
     dateEdit: 'classification', // NEW
     editHours: 'layout', // NEW
     dayLaneResize: 'layout', // NEW
+    boardResize: 'layout', // NEW
     selection: 'badges', // NEW
     stagedBadgeRefresh: 'badges', // NEW
     noteEdit: 'badges' // NEW
@@ -1254,6 +1257,7 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
 
     const BOARD_GEOM = { x: 40, y: 40, w: 2200, h: 760 };
     const LANE_W = DEFAULT_DAY_LANE_WIDTH, LANE_H = 680, LANE_GAP = 16; // CHANGE
+    const BOARD_LANE_Y = 28, BOARD_BOTTOM_PADDING = 10, FULL_LANE_MIN_H = 126; // NEW: full-mode board resize math
     const WORKFLOW_CARD_FILL = { TODO: '#F8CECC', DOING: '#FFF2CC', DONE: '#D5E8D4' }; // NEW
 
     const LINK_ATTR = 'linkedTo';
@@ -1334,6 +1338,10 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
 
     function roundedGeometryWidth(geo) { // NEW
         return geo ? roundedGeometryValue(geo.width) : null; // NEW
+    } // NEW
+
+    function roundedGeometryHeight(geo) { // NEW
+        return geo ? roundedGeometryValue(geo.height) : null; // NEW
     } // NEW
 
     function geometryMatchesRounded(left, right) { // NEW
@@ -1432,6 +1440,34 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
         return true; // NEW
     } // NEW
 
+    function normalizeFullLaneHeight(value, fallback) { // NEW
+        const numeric = Number(value); // NEW
+        const base = Number.isFinite(numeric) ? numeric : fallback; // NEW
+        return Math.max(FULL_LANE_MIN_H, Math.round(Number.isFinite(base) ? base : LANE_H)); // NEW
+    } // NEW
+
+    function getPersistedFullLaneHeight(board) { // NEW
+        const raw = getAttr(board, TASK_FULL_LANE_HEIGHT_ATTR); // NEW
+        return raw == null || raw === '' ? null : normalizeFullLaneHeight(raw, LANE_H); // NEW
+    } // NEW
+
+    function getBoardFullLaneHeight(board) { // NEW
+        return getPersistedFullLaneHeight(board) || LANE_H; // NEW
+    } // NEW
+
+    function deriveFullLaneHeightFromBoardGeometry(board) { // NEW
+        const geo = board && model.getGeometry ? model.getGeometry(board) : (board && board.getGeometry ? board.getGeometry() : null); // NEW
+        return normalizeFullLaneHeight((geo ? geo.height : BOARD_GEOM.h) - BOARD_LANE_Y - BOARD_BOTTOM_PADDING, LANE_H); // NEW
+    } // NEW
+
+    function persistFullLaneHeight(board, height) { // NEW
+        if (!board) return false; // NEW
+        const nextHeight = normalizeFullLaneHeight(height, LANE_H); // NEW
+        if (getPersistedFullLaneHeight(board) === nextHeight) return false; // NEW
+        setAttrNoUndo(board, TASK_FULL_LANE_HEIGHT_ATTR, String(nextHeight), true); // NEW
+        return true; // NEW
+    } // NEW
+
     function getWeekDayIndexForLaneKey(laneKey) { // NEW
         return WEEK_DAY_LANE_KEYS.indexOf(String(laneKey || '')); // NEW
     } // NEW
@@ -1522,7 +1558,7 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
         const visibleSet = new Set(visibleKeys); // NEW
         const selectedWeekLaneKey = mode === 'WEEK' ? taskPolicy.getWeekLaneKeyForDate(getSelectedDay(board), getSelectedWeekStart(board)) : null; // CHANGE
         const laneHeights = {}; // NEW
-        let maxLaneHeight = mode === 'WEEK' ? 0 : LANE_H; // CHANGE
+        let maxLaneHeight = mode === 'WEEK' ? 0 : getBoardFullLaneHeight(board); // CHANGE
         if (mode === 'WEEK') { // NEW
             WEEK_DAY_LANE_KEYS.forEach(laneKey => { // NEW
                 laneHeights[laneKey] = computeWeekLaneHeight(board, lanes, laneKey); // NEW
@@ -1531,7 +1567,7 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
             laneHeights.TODO_STAGED = Math.max(SCHEDULE_MIN_CARD_HEIGHT, maxLaneHeight); // CHANGE
         } // NEW
         let x = 10; // NEW
-        const y = 28; // NEW
+        const y = BOARD_LANE_Y; // CHANGE
         let visibleWidthTotal = 0; // NEW
 
         visibleKeys.forEach(laneKey => { // NEW
@@ -1542,7 +1578,7 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
             geo.x = x; // NEW
             geo.y = y; // NEW
             geo.width = laneWidth; // CHANGE
-            geo.height = laneHeights[laneKey] || LANE_H; // CHANGE
+            geo.height = laneHeights[laneKey] || maxLaneHeight; // CHANGE
             if (!geometryMatchesRounded(lane.getGeometry && lane.getGeometry(), geo)) model.setGeometry(lane, geo); // CHANGE
             if (mode === 'WEEK' && isWeekDayLane(laneKey)) { // NEW
                 const dayIndex = getWeekDayIndexForLaneKey(laneKey); // NEW
@@ -1565,7 +1601,7 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
         const totalW = 10 + visibleWidthTotal + (Math.max(0, visibleKeys.length - 1) * LANE_GAP) + 10; // CHANGE
         const geo = board.getGeometry().clone(); // NEW
         geo.width = Math.max(totalW, BOARD_GEOM.w); // NEW
-        geo.height = mode === 'WEEK' ? y + Math.max(SCHEDULE_MIN_CARD_HEIGHT, maxLaneHeight) + 10 : BOARD_GEOM.h; // CHANGE
+        geo.height = mode === 'WEEK' ? y + Math.max(SCHEDULE_MIN_CARD_HEIGHT, maxLaneHeight) + BOARD_BOTTOM_PADDING : (getPersistedFullLaneHeight(board) ? y + maxLaneHeight + BOARD_BOTTOM_PADDING : BOARD_GEOM.h); // CHANGE
         if (!geometryMatchesRounded(board.getGeometry && board.getGeometry(), geo)) model.setGeometry(board, geo); // CHANGE
         graph.refresh(board); // NEW
     } // NEW
@@ -2587,7 +2623,7 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
 
 
     function createCard(parentLane, { title, notes, startISO, endISO }, suppressRefresh) {
-        const card = createVertex('', 0, 0, 160, 80, CARD_STYLE);
+        const card = createVertex('', 0, 0, 160, DEFAULT_TASK_CARD_HEIGHT, CARD_STYLE); // CHANGE
         model.add(parentLane, card, model.getChildCount(parentLane));
         setAttrNoUndo(card, 'kanban_card', '1', /*suppressRefresh*/ !!suppressRefresh);
         setAttrNoUndo(card, 'title', title || 'Task', !!suppressRefresh);
@@ -3124,6 +3160,8 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
     function renderBoardLanes(board, lanes, dirtyLanes, sortContext, opts) { // NEW: lane sorting, schedule packing, paging, and optional board geometry
         bumpTaskReflowTestCounter('lanes'); // NEW
         const laneKeyFilter = normalizeReflowLaneKeySet(opts); // NEW
+        const layoutBeforeLanes = !!(opts && opts.applyLayoutBeforeLanes && opts.applyLayout !== false); // CHANGE
+        if (layoutBeforeLanes) applyBoardViewLayout(board, lanes); // NEW
         for (const { lane, laneKey } of dirtyLanes.values()) { // CHANGE
             if (laneKeyFilter && !laneKeyFilter.has(laneKey)) continue; // NEW
             resortAndPageLane(lane, laneKey, Object.assign({ insideUpdate: true }, sortContext)); // CHANGE
@@ -3151,7 +3189,7 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
             ensureLanePagingControls(lane, laneKey, countRenderable(cards)); // CHANGE
         } // CHANGE
 
-        if (!opts || opts.applyLayout !== false) applyBoardViewLayout(board, lanes); // NEW
+        if ((!opts || opts.applyLayout !== false) && !layoutBeforeLanes) applyBoardViewLayout(board, lanes); // CHANGE
     } // NEW
 
     function reflowBoard(board, opts) { // NEW: scoped reflow orchestrator behind scanAndReflowBoard compatibility API
@@ -3332,6 +3370,15 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
         return true; // NEW
     } // NEW
 
+    function resetCardToDefaultHeight(card) { // NEW
+        const geo = card && model.getGeometry ? model.getGeometry(card) : (card && card.getGeometry ? card.getGeometry() : null); // NEW
+        if (!geo || Math.round(Number(geo.height) || 0) === DEFAULT_TASK_CARD_HEIGHT) return false; // NEW
+        const nextGeo = geo.clone ? geo.clone() : new mxGeometry(geo.x || 0, geo.y || 0, geo.width || 160, geo.height || DEFAULT_TASK_CARD_HEIGHT); // NEW
+        nextGeo.height = DEFAULT_TASK_CARD_HEIGHT; // NEW
+        model.setGeometry(card, nextGeo); // NEW
+        return true; // NEW
+    } // NEW
+
     function shouldInspectKanbanPlacement(parent, child) { // NEW: limit safety repairs to kanban structures and locked kanban cells
         const parentType = getKanbanCellType(parent, KANBAN_LANE_KEYS); // NEW
         const childType = getKanbanCellType(child, KANBAN_LANE_KEYS); // NEW
@@ -3433,6 +3480,7 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
                 movedCards.forEach(card => { // NEW
                     const patch = buildLaneDropWorkflowPatch(card, targetBoard, targetLaneKey); // NEW
                     if (patch && patch.attributes) applyCardPatchInsideUpdate(card, patch.attributes); // NEW
+                    if (targetLaneKey === 'TODO_STAGED' && getBoardViewMode(targetBoard) === 'WEEK' && !isScheduleBreakCard(card)) resetCardToDefaultHeight(card); // NEW
                 }); // NEW
                 scanAndReflowBoard(targetBoard, { insideUpdate: true, scope: getTaskReflowScopeForCommand('drop') }); // CHANGE
             } finally { // NEW
@@ -3452,6 +3500,7 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
     let pendingRepairBoards = new Set(); // NEW
     let pendingInvalidKanbanPlacements = new Map(); // NEW
     let pendingWeekLaneWidthChanges = new Map(); // NEW
+    let pendingFullLaneHeightChanges = new Map(); // NEW
     let repairTimer = null; // NEW
     const taskOverlayGestureElements = []; // NEW
     const taskOverlayGestureRefreshers = new Set(); // NEW
@@ -3463,8 +3512,9 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
         const boards = new Set(); // NEW
         const invalidPlacements = new Map(); // NEW
         const laneWidthChanges = new Map(); // NEW
-        if (isKanbanViewReflowing()) return { cards: out, boards, invalidPlacements, laneWidthChanges }; // CHANGE
-        if (!edit || !edit.changes) return { cards: out, boards, invalidPlacements, laneWidthChanges }; // CHANGE
+        const fullLaneHeightChanges = new Map(); // NEW
+        if (isKanbanViewReflowing()) return { cards: out, boards, invalidPlacements, laneWidthChanges, fullLaneHeightChanges }; // CHANGE
+        if (!edit || !edit.changes) return { cards: out, boards, invalidPlacements, laneWidthChanges, fullLaneHeightChanges }; // CHANGE
 
         for (const ch of edit.changes) {
             let cell = null;
@@ -3498,6 +3548,18 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
             } else if (ch instanceof mxGeometryChange) {
                 cell = ch.cell; // CHANGE: schedule card height edits commit duration
                 currentParent = model.getParent(cell); // NEW
+                if (isBoardCell(cell)) { // NEW
+                    const geo = model.getGeometry(cell); // NEW
+                    const previousHeight = roundedGeometryHeight(ch.previous); // NEW
+                    const currentHeight = roundedGeometryHeight(geo); // NEW
+                    const heightChanged = previousHeight == null || currentHeight == null || previousHeight !== currentHeight; // NEW
+                    if (heightChanged && getBoardViewMode(cell) === 'FULL') { // NEW
+                        fullLaneHeightChanges.set(cell.id || String(fullLaneHeightChanges.size), { board: cell, height: deriveFullLaneHeightFromBoardGeometry(cell) }); // NEW
+                        boards.add(cell); // NEW
+                    } // NEW
+                    if (heightChanged && getBoardViewMode(cell) === 'WEEK') boards.add(cell); // NEW
+                    continue; // NEW
+                } // NEW
                 const changedLaneKey = getAttr(cell, 'lane_key'); // NEW
                 if (isWeekDayLane(changedLaneKey) && currentParent && isBoardCell(currentParent)) { // NEW
                     const geo = model.getGeometry(cell); // NEW
@@ -3524,20 +3586,22 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
             out.add(cell); // CHANGE
         }
 
-        return { cards: out, boards, invalidPlacements, laneWidthChanges }; // CHANGE
+        return { cards: out, boards, invalidPlacements, laneWidthChanges, fullLaneHeightChanges }; // CHANGE
     }
 
-    function scheduleKanbanRepair(cards, boards, invalidPlacements, laneWidthChanges) { // CHANGE
+    function scheduleKanbanRepair(cards, boards, invalidPlacements, laneWidthChanges, fullLaneHeightChanges) { // CHANGE
         const hasCards = cards && cards.size > 0; // NEW
         const hasBoards = boards && boards.size > 0; // NEW
         const hasInvalidPlacements = invalidPlacements && invalidPlacements.size > 0; // NEW
         const hasLaneWidthChanges = laneWidthChanges && laneWidthChanges.size > 0; // NEW
-        if (!hasCards && !hasBoards && !hasInvalidPlacements && !hasLaneWidthChanges) return; // CHANGE
+        const hasFullLaneHeightChanges = fullLaneHeightChanges && fullLaneHeightChanges.size > 0; // NEW
+        if (!hasCards && !hasBoards && !hasInvalidPlacements && !hasLaneWidthChanges && !hasFullLaneHeightChanges) return; // CHANGE
 
         if (hasCards) cards.forEach(card => pendingRepairCards.add(card)); // CHANGE
         if (hasBoards) boards.forEach(board => pendingRepairBoards.add(board)); // NEW
         if (hasInvalidPlacements) invalidPlacements.forEach((entry, key) => pendingInvalidKanbanPlacements.set(key, entry)); // NEW
         if (hasLaneWidthChanges) laneWidthChanges.forEach((entry, key) => pendingWeekLaneWidthChanges.set(key, entry)); // NEW
+        if (hasFullLaneHeightChanges) fullLaneHeightChanges.forEach((entry, key) => pendingFullLaneHeightChanges.set(key, entry)); // NEW
 
         if (repairTimer != null) return;
 
@@ -3548,17 +3612,19 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
             const boardsToRepair = Array.from(pendingRepairBoards); // NEW
             const invalidPlacementsToRepair = Array.from(pendingInvalidKanbanPlacements.values()); // NEW
             const laneWidthChangesToRepair = Array.from(pendingWeekLaneWidthChanges.values()); // NEW
+            const fullLaneHeightChangesToRepair = Array.from(pendingFullLaneHeightChanges.values()); // NEW
             pendingRepairCards.clear();
             pendingRepairBoards.clear(); // NEW
             pendingInvalidKanbanPlacements.clear(); // NEW
             pendingWeekLaneWidthChanges.clear(); // NEW
+            pendingFullLaneHeightChanges.clear(); // NEW
 
-            repairChangedCards(cardsToRepair, boardsToRepair, invalidPlacementsToRepair, laneWidthChangesToRepair); // CHANGE
+            repairChangedCards(cardsToRepair, boardsToRepair, invalidPlacementsToRepair, laneWidthChangesToRepair, fullLaneHeightChangesToRepair); // CHANGE
         }, 0);
     }
 
-    function repairChangedCards(cards, boards, invalidPlacements, laneWidthChanges) { // CHANGE
-        if ((!cards || cards.length === 0) && (!boards || boards.length === 0) && (!invalidPlacements || invalidPlacements.length === 0) && (!laneWidthChanges || laneWidthChanges.length === 0)) return; // CHANGE
+    function repairChangedCards(cards, boards, invalidPlacements, laneWidthChanges, fullLaneHeightChanges) { // CHANGE
+        if ((!cards || cards.length === 0) && (!boards || boards.length === 0) && (!invalidPlacements || invalidPlacements.length === 0) && (!laneWidthChanges || laneWidthChanges.length === 0) && (!fullLaneHeightChanges || fullLaneHeightChanges.length === 0)) return; // CHANGE
 
         const affectedBoards = new Map(); // NEW
         const touchedGroups = new Set();
@@ -3573,6 +3639,11 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
             (laneWidthChanges || []).forEach(entry => { // NEW
                 if (!entry || !entry.board) return; // NEW
                 if (persistWeekDayLaneWidth(entry.board, entry.laneKey, entry.width)) affectedBoards.set(entry.board.id || entry.laneKey, entry.board); // NEW
+            }); // NEW
+
+            (fullLaneHeightChanges || []).forEach(entry => { // NEW
+                if (!entry || !entry.board) return; // NEW
+                if (persistFullLaneHeight(entry.board, entry.height)) affectedBoards.set(entry.board.id || String(entry.height), entry.board); // NEW
             }); // NEW
 
             for (const cell of (cards || [])) { // CHANGE
@@ -3596,8 +3667,10 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
                 getLinkedCellsOf(cell).filter(isTilerGroup).forEach(g => touchedGroups.add(g.id)); // NEW
             }
 
-            const scope = ((cards && cards.length) || (invalidPlacements && invalidPlacements.length)) ? getTaskReflowScopeForCommand('workflow') : getTaskReflowScopeForCommand('dayLaneResize'); // NEW
-            affectedBoards.forEach(board => scanAndReflowBoard(board, { insideUpdate: true, scope })); // CHANGE
+            const hasFullLaneHeightRepair = !!(fullLaneHeightChanges && fullLaneHeightChanges.length); // NEW
+            const hasCardRepair = !!((cards && cards.length) || (invalidPlacements && invalidPlacements.length)); // NEW
+            const scope = hasCardRepair ? getTaskReflowScopeForCommand('workflow') : (hasFullLaneHeightRepair ? getTaskReflowScopeForCommand('boardResize') : getTaskReflowScopeForCommand('dayLaneResize')); // CHANGE
+            affectedBoards.forEach(board => scanAndReflowBoard(board, { insideUpdate: true, scope, applyLayoutBeforeLanes: hasFullLaneHeightRepair })); // CHANGE
 
             touchedGroups.forEach(id => {
                 const group = model.getCell(id);
@@ -3613,7 +3686,7 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
     model.addListener(mxEvent.CHANGE, function (_sender, evt) {
         const edit = evt.getProperty('edit');
         const changes = collectChangedKanbanCards(edit); // CHANGE
-        scheduleKanbanRepair(changes.cards, changes.boards, changes.invalidPlacements, changes.laneWidthChanges); // CHANGE: defer mutation out of CHANGE event
+        scheduleKanbanRepair(changes.cards, changes.boards, changes.invalidPlacements, changes.laneWidthChanges, changes.fullLaneHeightChanges); // CHANGE: defer mutation out of CHANGE event
     });
 
 
