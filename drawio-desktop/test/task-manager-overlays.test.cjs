@@ -7,6 +7,15 @@ const { JSDOM } = require("jsdom");
 
 const PROJECT_ROOT = path.join(__dirname, "..");
 const TASK_MANAGER_PATH = path.join(PROJECT_ROOT, "drawio", "src", "main", "webapp", "plugins", "garden_planner_plugins", "Garden_Task_Manager.js");
+const TEST_REALISTIC_WEEK_WORK_HOURS_JSON = JSON.stringify({ schemaVersion: 1, days: [ // CHANGE
+    { startMinute: 480, endMinute: 720 }, // NEW
+    { startMinute: 1020, endMinute: 1140 }, // NEW
+    { startMinute: 1020, endMinute: 1140 }, // NEW
+    { startMinute: 1020, endMinute: 1140 }, // NEW
+    { startMinute: 1020, endMinute: 1140 }, // NEW
+    { startMinute: 1020, endMinute: 1140 }, // NEW
+    { startMinute: 480, endMinute: 720 } // NEW
+] }); // CHANGE
 
 function nextTick() {
     return new Promise(resolve => setTimeout(resolve, 5));
@@ -114,7 +123,7 @@ function makeHarness(options = {}) { // CHANGE
     let currentUi = null; // NEW
 
     const root = new TestCell("root", makeValue(document), new TestGeometry(0, 0, 0, 0));
-    const board = new TestCell("board", makeValue(document, { board_key: "KANBAN_BOARD", board_role: "main", task_view_mode: "WEEK", task_selected_week_start: "2026-07-12", task_selected_day: "2026-07-12" }), new TestGeometry(10, 10, 700, 260)); // CHANGE
+    const board = new TestCell("board", makeValue(document, { board_key: "KANBAN_BOARD", board_role: "main", task_view_mode: "WEEK", task_selected_week_start: "2026-07-12", task_selected_day: "2026-07-12", task_work_hours_defaults_json: TEST_REALISTIC_WEEK_WORK_HOURS_JSON }), new TestGeometry(10, 10, 700, 260)); // CHANGE
     const stagedLane = new TestCell("staged", makeValue(document, { lane_key: "TODO_STAGED", status: "TODO (staged)" }), new TestGeometry(20, 40, 200, 200)); // NEW
     const weekSunLane = new TestCell("weekSun", makeValue(document, { lane_key: "WEEK_SUN", status: "Sunday" }), new TestGeometry(240, 40, 200, 200)); // NEW
     const weekMonLane = new TestCell("weekMon", makeValue(document, { lane_key: "WEEK_MON", status: "Monday" }), new TestGeometry(460, 40, 200, 200)); // NEW
@@ -621,9 +630,10 @@ test("task manager week scheduler lays out day heights and selected-lane control
 
     const boardOverlay = h.document.querySelector(".trellis-task-board-header-controls"); // NEW
     assert.equal(buttonByText(boardOverlay, "Day"), undefined); // NEW
-    assert.equal(h.weekWedLane.geometry.height, 960); // NEW
-    assert.equal(h.stagedLane.geometry.height, 960); // NEW
-    assert.equal(h.board.geometry.height, 998); // NEW
+    assert.equal(h.weekWedLane.geometry.height, 160); // CHANGE
+    assert.equal(h.weekSunLane.geometry.height, 320); // NEW
+    assert.equal(h.stagedLane.geometry.height, 320); // CHANGE
+    assert.equal(h.board.geometry.height, 358); // CHANGE
 
     h.setState(h.weekWedLane, { x: 460, y: 40, width: 200, height: 960 }); // NEW
     h.graph.setSelectionCell(h.weekWedLane); // NEW
@@ -784,7 +794,7 @@ test("task manager week day cards show workflow colors and time badge", async ()
     await nextTick(); // NEW
 
     assert.match(h.weekLaneCard.style, /fillColor=#F8CECC/); // NEW
-    assert.match(attr(h.weekLaneCard, "label"), /<b>Time:<\/b> 6:00 AM-7:00 AM/); // NEW
+    assert.match(attr(h.weekLaneCard, "label"), /<b>Time:<\/b> 5:00 PM-6:00 PM/); // CHANGE
 
     setAttr(h.weekLaneCard, "workflow_state", "DOING"); // NEW
     setAttr(h.board, "task_selected_day", "2026-07-12"); // NEW
@@ -814,9 +824,9 @@ test("task manager adds break cards and derives stacked schedule attributes", as
     assert.ok(breakCard); // NEW
     assert.equal(attr(breakCard, "assigned_day"), "2026-07-15"); // NEW
     assert.equal(attr(breakCard, "schedule_duration_minutes"), "30"); // NEW
-    assert.equal(attr(h.weekLaneCard, "schedule_start_minute"), "360"); // NEW
-    assert.equal(attr(breakCard, "schedule_start_minute"), "420"); // NEW
-    assert.match(attr(breakCard, "label"), /<b>Time:<\/b> 7:00 AM-7:30 AM/); // NEW
+    assert.equal(attr(h.weekLaneCard, "schedule_start_minute"), "1020"); // CHANGE
+    assert.equal(attr(breakCard, "schedule_start_minute"), "1080"); // CHANGE
+    assert.match(attr(breakCard, "label"), /<b>Time:<\/b> 6:00 PM-6:30 PM/); // CHANGE
     assert.match(breakCard.style, /fillColor=#F3F4F6/); // NEW
     assert.match(breakCard.style, /strokeColor=#6B7280/); // NEW
 }); // NEW
@@ -846,10 +856,10 @@ test("task manager hides day-owned breaks outside their visible week", async () 
     await nextTick(); // NEW
     assert.equal(breakCard.visible, true); // NEW
     assert.equal(h.weekWedLane.children.indexOf(h.weekLaneCard) < h.weekWedLane.children.indexOf(breakCard), true); // CHANGE
-    assert.equal(attr(h.weekLaneCard, "schedule_start_minute"), "360"); // NEW
-    assert.equal(attr(breakCard, "schedule_start_minute"), "420"); // CHANGE
+    assert.equal(attr(h.weekLaneCard, "schedule_start_minute"), "1020"); // CHANGE
+    assert.equal(attr(breakCard, "schedule_start_minute"), "1080"); // CHANGE
     assert.equal(attr(breakCard, "schedule_duration_minutes"), "30"); // NEW
-    assert.match(attr(breakCard, "label"), /<b>Time:<\/b> 7:00 AM-7:30 AM/); // NEW
+    assert.match(attr(breakCard, "label"), /<b>Time:<\/b> 6:00 PM-6:30 PM/); // CHANGE
     assert.equal(attr(breakCard, "schedule_order"), "1"); // NEW
     assert.equal(attr(breakCard, "schedule_order_day"), "2026-07-15"); // NEW
 }); // NEW
@@ -866,8 +876,8 @@ test("task manager same-lane reorder refreshes persisted schedule order", async 
     h.fireModelChange({ changes: [h.childChange(breakCard, h.weekWedLane)] }); // NEW
     await nextTick(); // NEW
 
-    assert.equal(attr(breakCard, "schedule_start_minute"), "360"); // NEW
-    assert.equal(attr(h.weekLaneCard, "schedule_start_minute"), "390"); // NEW
+    assert.equal(attr(breakCard, "schedule_start_minute"), "1020"); // CHANGE
+    assert.equal(attr(h.weekLaneCard, "schedule_start_minute"), "1050"); // CHANGE
     assert.equal(attr(breakCard, "schedule_order"), "0"); // NEW
     assert.equal(attr(h.weekLaneCard, "schedule_order"), "1"); // NEW
 }); // NEW
@@ -982,12 +992,11 @@ test("task manager full-mode board resize persists lane height and refreshes pag
     assert.ok(counters.boardLayout > 0); // NEW
 }); // NEW
 
-test("task manager week-mode board resize keeps schedule-derived board height", async () => { // NEW
+test("task manager week-mode board resize expands staged lane only", async () => { // CHANGE
     const h = makeHarness(); // NEW
     h.graph.setSelectionCell(h.board); // NEW
     await nextTick(); // NEW
-    const expectedLaneHeight = h.weekWedLane.geometry.height; // NEW
-    const expectedBoardHeight = h.board.geometry.height; // NEW
+    const expectedDayLaneHeight = h.weekWedLane.geometry.height; // CHANGE
     h.resetCounters(); // NEW
 
     const previousGeometry = h.board.geometry.clone(); // NEW
@@ -995,12 +1004,59 @@ test("task manager week-mode board resize keeps schedule-derived board height", 
     h.fireModelChange({ changes: [h.geometryChange(h.board, previousGeometry)] }); // NEW
     await nextTick(); // NEW
 
+    const heights = JSON.parse(attr(h.board, "task_week_board_heights_json")).weeks; // NEW
     const counters = h.reflowCounters(); // NEW
+    assert.equal(heights["2026-07-12"], 1600); // NEW
     assert.equal(attr(h.board, "task_full_lane_height"), null); // NEW
-    assert.equal(h.weekWedLane.geometry.height, expectedLaneHeight); // NEW
-    assert.equal(h.board.geometry.height, expectedBoardHeight); // NEW
+    assert.equal(h.weekWedLane.geometry.height, expectedDayLaneHeight); // CHANGE
+    assert.equal(h.stagedLane.geometry.height, 1562); // NEW
+    assert.equal(h.board.geometry.height, 1600); // CHANGE
     assert.ok(counters.layout > 0); // NEW
     assert.ok(counters.boardLayout > 0); // NEW
+}); // CHANGE
+
+test("task manager week-mode board resize clamps below tallest day lane", async () => { // NEW
+    const h = makeHarness(); // NEW
+    h.graph.setSelectionCell(h.board); // NEW
+    await nextTick(); // NEW
+    const expectedDayLaneHeight = h.weekWedLane.geometry.height; // NEW
+    const expectedMinimumBoardHeight = h.board.geometry.height; // NEW
+
+    const previousGeometry = h.board.geometry.clone(); // NEW
+    h.board.geometry.height = 100; // NEW
+    h.fireModelChange({ changes: [h.geometryChange(h.board, previousGeometry)] }); // NEW
+    await nextTick(); // NEW
+
+    assert.equal(h.weekWedLane.geometry.height, expectedDayLaneHeight); // NEW
+    assert.equal(h.board.geometry.height, expectedMinimumBoardHeight); // NEW
+    assert.ok(h.board.geometry.height >= h.weekWedLane.geometry.y + h.weekWedLane.geometry.height + 10); // NEW
+}); // NEW
+
+test("task manager week-mode board height is restored per selected week", async () => { // NEW
+    const h = makeHarness(); // NEW
+    h.graph.setSelectionCell(h.board); // NEW
+    await nextTick(); // NEW
+    const defaultBoardHeight = h.board.geometry.height; // NEW
+
+    const previousGeometry = h.board.geometry.clone(); // NEW
+    h.board.geometry.height = 1600; // NEW
+    h.fireModelChange({ changes: [h.geometryChange(h.board, previousGeometry)] }); // NEW
+    await nextTick(); // NEW
+    assert.equal(h.board.geometry.height, 1600); // NEW
+
+    setAttr(h.board, "task_selected_week_start", "2026-07-19"); // NEW
+    setAttr(h.board, "task_selected_day", "2026-07-19"); // NEW
+    h.graph.setSelectionCell(h.board); // NEW
+    await nextTick(); // NEW
+    assert.equal(h.board.geometry.height, defaultBoardHeight); // NEW
+    assert.equal(h.stagedLane.geometry.height, h.weekSunLane.geometry.height); // CHANGE
+
+    setAttr(h.board, "task_selected_week_start", "2026-07-12"); // NEW
+    setAttr(h.board, "task_selected_day", "2026-07-12"); // NEW
+    h.graph.setSelectionCell(h.board); // NEW
+    await nextTick(); // NEW
+    assert.equal(h.board.geometry.height, 1600); // NEW
+    assert.equal(h.stagedLane.geometry.height, 1562); // NEW
 }); // NEW
 
 test("task manager restores persisted full-mode board height after week mode", async () => { // NEW
@@ -1016,7 +1072,7 @@ test("task manager restores persisted full-mode board height after week mode", a
     modeToggleButton(boardOverlay).click(); // CHANGE
     await nextTick(); // NEW
     assert.equal(attr(h.board, "task_view_mode"), "WEEK"); // NEW
-    assert.ok(h.weekWedLane.geometry.height > 300); // NEW
+    assert.ok(h.weekSunLane.geometry.height > 300); // CHANGE
     assert.notEqual(h.board.geometry.height, 338); // NEW
 
     modeToggleButton(boardOverlay).click(); // CHANGE

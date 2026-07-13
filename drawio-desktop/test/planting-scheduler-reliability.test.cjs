@@ -2764,6 +2764,16 @@ test('stack scheduler time helpers snap, normalize hours, and pack cumulatively'
         WEEK_FRI: 220, // NEW
         WEEK_SAT: 220 // NEW
     }); // NEW
+    const defaults = taskHooks.defaultWeekWorkHours(); // NEW
+    assert.deepEqual(JSON.parse(JSON.stringify(defaults.map(day => [day.startMinute, day.endMinute, day.closed]))), [ // CHANGE
+        [480, 720, false], // NEW
+        [1020, 1140, false], // NEW
+        [1020, 1140, false], // NEW
+        [1020, 1140, false], // NEW
+        [1020, 1140, false], // NEW
+        [1020, 1140, false], // NEW
+        [480, 720, false] // NEW
+    ]); // NEW
 
     const closed = taskHooks.normalizeWorkHourWindow({ closed: true, startMinute: 500, endMinute: 700 }); // NEW
     assert.equal(closed.closed, true); // NEW
