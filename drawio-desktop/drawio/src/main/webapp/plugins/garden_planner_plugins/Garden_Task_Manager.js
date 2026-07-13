@@ -486,10 +486,16 @@ function schedulePxToMinutes(px) { // NEW
     return Math.max(SCHEDULE_MINUTE_SNAP, snapScheduleMinutes(minutes, SCHEDULE_MINUTE_SNAP)); // NEW
 } // NEW
 
-function scheduleMinuteOffsetToPx(minutes) { // NEW
-    const numeric = Number(minutes); // NEW
-    return Math.max(0, Math.round(((Number.isFinite(numeric) ? numeric : 0) / 60) * SCHEDULE_PX_PER_HOUR)); // NEW
-} // NEW
+    function scheduleMinuteOffsetToPx(minutes) { // NEW
+        const numeric = Number(minutes); // NEW
+        return Math.max(0, Math.round(((Number.isFinite(numeric) ? numeric : 0) / 60) * SCHEDULE_PX_PER_HOUR)); // NEW
+    } // NEW
+
+    function schedulePxDeltaToMinutes(px) { // NEW
+        const numeric = Number(px); // NEW
+        if (!Number.isFinite(numeric) || numeric === 0) return 0; // NEW
+        return Math.round((numeric / SCHEDULE_PX_PER_HOUR) * (60 / SCHEDULE_MINUTE_SNAP)) * SCHEDULE_MINUTE_SNAP; // NEW
+    } // NEW
 
 function getDateScopedScheduleOrder(source, visibleDay) { // NEW
     if (!parseTaskCalendarISO(visibleDay)) return null; // NEW
@@ -1144,6 +1150,7 @@ const SchedulePolicyCore = Object.freeze({ // CHANGE
     scheduleMinutesToPx, // CHANGE
     schedulePxToMinutes, // CHANGE
     scheduleMinuteOffsetToPx, // NEW
+    schedulePxDeltaToMinutes, // NEW
     getDateScopedScheduleOrder, // CHANGE
     compareDateScopedScheduleOrderRecords, // CHANGE
     normalizeWeekDayLaneWidth, // CHANGE
@@ -1302,7 +1309,7 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
     const LANE_STYLE_BASE =
         'swimlane;strokeWidth=2;fontFamily=Permanent Marker;html=0;startSize=1;verticalAlign=bottom;spacingBottom=5;points=[];childLayout=stackLayout;stackBorder=20;stackSpacing=20;resizeLast=0;resizeParent=0;horizontalStack=0;collapsible=1;fillStyle=solid;swimlaneFillColor=default;'; // CHANGE
     const SCHEDULE_LANE_STYLE_BASE = // NEW: stack order is schedule order, so spacing must not consume time
-        'swimlane;strokeWidth=2;fontFamily=Permanent Marker;html=0;startSize=1;verticalAlign=bottom;spacingBottom=5;points=[];childLayout=stackLayout;stackBorder=20;stackSpacing=0;resizeLast=0;resizeParent=0;horizontalStack=0;collapsible=1;fillStyle=solid;swimlaneFillColor=default;'; // CHANGE
+        'swimlane;strokeWidth=2;fontFamily=Permanent Marker;html=0;startSize=1;verticalAlign=bottom;spacingBottom=5;points=[];childLayout=stackLayout;stackBorder=0;stackSpacing=0;resizeLast=0;resizeParent=0;horizontalStack=0;collapsible=0;fillStyle=solid;swimlaneFillColor=default;'; // CHANGE
     const CARD_STYLE =
         'whiteSpace=wrap;html=1;strokeWidth=2;fillColor=swimlane;fontStyle=1;spacingTop=0;rounded=1;arcSize=9;points=[];fontFamily=Permanent Marker;hachureGap=8;fillWeight=1;';
     const BREAK_CARD_STYLE = CARD_STYLE + 'dashed=1;fillColor=#F3F4F6;strokeColor=#6B7280;'; // NEW
@@ -1333,6 +1340,8 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
     const BOARD_GEOM = { x: 40, y: 40, w: 2200, h: 760 };
     const LANE_W = DEFAULT_DAY_LANE_WIDTH, LANE_H = 680, LANE_GAP = 16; // CHANGE
     const BOARD_LANE_Y = 28, BOARD_BOTTOM_PADDING = 10, FULL_LANE_MIN_H = 126; // NEW: full-mode board resize math
+    const WEEK_BOARD_TOP_MARGIN = 20; // NEW: replaces schedule-lane stackBorder so hour origin and resize math match
+    const TASK_ACTION_OVERLAY_EXTRA_Y = 15; // CHANGE: nudges selected card/lane action overlays below handles
     const WORKFLOW_CARD_FILL = { TODO: '#F8CECC', DOING: '#FFF2CC', DONE: '#D5E8D4' }; // NEW
 
     const LINK_ATTR = 'linkedTo';
@@ -1515,6 +1524,66 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
         return true; // NEW
     } // NEW
 
+    function getBoardWeekWorkHourEditState(board) { // NEW
+        ensureBoardPlanningDefaults(board); // NEW
+        const weekStart = getSelectedWeekStart(board); // NEW
+        const defaults = normalizeWeekWorkHours(parseJsonObject(getAttr(board, TASK_WORK_HOURS_DEFAULTS_ATTR))); // NEW
+        const overridesRoot = parseJsonObject(getAttr(board, TASK_WORK_HOURS_WEEK_OVERRIDES_ATTR)) || { schemaVersion: 1, weeks: {} }; // NEW
+        const weeks = overridesRoot.weeks && typeof overridesRoot.weeks === 'object' ? overridesRoot.weeks : {}; // NEW
+        const week = normalizeWeekWorkHours(weeks[weekStart], defaults); // NEW
+        return { weekStart, defaults, weeks, week }; // NEW
+    } // NEW
+
+    function countVisibleLaneCards(lane) { // NEW
+        return snapshotLaneCards(lane).filter(card => !model.isVisible || model.isVisible(card) !== false).length; // NEW
+    } // NEW
+
+    function selectedWeekDayHasVisibleCards(lane) { // NEW
+        return countVisibleLaneCards(lane) > 0; // NEW
+    } // NEW
+
+    function persistSelectedWeekDayWorkWindow(board, dayIndex, dayWindow) { // NEW
+        if (!board || dayIndex < 0 || dayIndex >= WEEK_DAY_LANE_KEYS.length) return false; // NEW
+        const editState = getBoardWeekWorkHourEditState(board); // NEW
+        if (!parseTaskCalendarISO(editState.weekStart)) return false; // NEW
+        const nextWindow = normalizeWorkHourWindow(dayWindow); // NEW
+        const currentWindow = normalizeWorkHourWindow(editState.week[dayIndex]); // NEW
+        if (JSON.stringify(currentWindow) === JSON.stringify(nextWindow)) return false; // NEW
+        const nextWeek = editState.week.slice(); // NEW
+        nextWeek[dayIndex] = nextWindow; // NEW
+        const nextWeeks = Object.assign({}, editState.weeks); // NEW
+        nextWeeks[editState.weekStart] = { schemaVersion: 1, days: normalizeWeekWorkHours(nextWeek) }; // NEW
+        setAttrNoUndo(board, TASK_WORK_HOURS_DEFAULTS_ATTR, serializeWeekWorkHours(editState.defaults), true); // NEW
+        setAttrNoUndo(board, TASK_WORK_HOURS_WEEK_OVERRIDES_ATTR, JSON.stringify({ schemaVersion: 1, weeks: nextWeeks }), true); // NEW
+        return true; // NEW
+    } // NEW
+
+    function persistWeekDayLaneHourResize(board, laneKey, previousGeo, currentGeo) { // NEW
+        if (!board || !isWeekDayLane(laneKey) || !previousGeo || !currentGeo) return false; // NEW
+        const dayIndex = getWeekDayIndexForLaneKey(laneKey); // NEW
+        const editState = getBoardWeekWorkHourEditState(board); // NEW
+        const currentWindow = normalizeWorkHourWindow(editState.week[dayIndex]); // NEW
+        if (currentWindow.closed) return false; // NEW
+        const previousTop = roundedGeometryValue(previousGeo.y); // NEW
+        const currentTop = roundedGeometryValue(currentGeo.y); // NEW
+        const previousBottom = roundedGeometryValue(previousGeo.y) + roundedGeometryValue(previousGeo.height); // NEW
+        const currentBottom = roundedGeometryValue(currentGeo.y) + roundedGeometryValue(currentGeo.height); // NEW
+        const topDeltaMinutes = schedulePolicy.schedulePxDeltaToMinutes(currentTop - previousTop); // NEW
+        const bottomDeltaMinutes = schedulePolicy.schedulePxDeltaToMinutes(currentBottom - previousBottom); // NEW
+        if (!topDeltaMinutes && !bottomDeltaMinutes) return false; // NEW
+        let nextStart = currentWindow.startMinute; // NEW
+        let nextEnd = currentWindow.endMinute; // NEW
+        if (topDeltaMinutes) nextStart += topDeltaMinutes; // NEW
+        if (bottomDeltaMinutes) nextEnd += bottomDeltaMinutes; // NEW
+        nextStart = Math.max(0, Math.min(1440 - SCHEDULE_MINUTE_SNAP, snapScheduleMinutes(nextStart, currentWindow.startMinute))); // NEW
+        nextEnd = Math.max(SCHEDULE_MINUTE_SNAP, Math.min(1440, snapScheduleMinutes(nextEnd, currentWindow.endMinute))); // NEW
+        if (nextEnd <= nextStart) { // NEW
+            if (bottomDeltaMinutes && !topDeltaMinutes) nextEnd = Math.min(1440, nextStart + SCHEDULE_MINUTE_SNAP); // NEW
+            else nextStart = Math.max(0, nextEnd - SCHEDULE_MINUTE_SNAP); // NEW
+        } // NEW
+        return persistSelectedWeekDayWorkWindow(board, dayIndex, { closed: false, startMinute: nextStart, endMinute: nextEnd }); // NEW
+    } // NEW
+
     function getBoardWeekBoardHeights(board) { // NEW
         return schedulePolicy.normalizeWeekBoardHeights(getAttr(board, TASK_WEEK_BOARD_HEIGHTS_ATTR)); // NEW
     } // NEW
@@ -1688,6 +1757,7 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
         const laneYOffsets = {}; // NEW
         let maxLaneHeight = mode === 'WEEK' ? 0 : getBoardFullLaneHeight(board); // CHANGE
         let weekTimeScale = null; // NEW
+        const y = BOARD_LANE_Y + (mode === 'WEEK' ? WEEK_BOARD_TOP_MARGIN : 0); // CHANGE
         if (mode === 'WEEK') { // NEW
             const workHours = getBoardWeekWorkHours(board); // NEW
             weekTimeScale = schedulePolicy.buildWeekTimeScale(workHours); // NEW
@@ -1699,12 +1769,11 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
                 maxLaneHeight = Math.max(maxLaneHeight, laneYOffsets[laneKey] + laneHeights[laneKey]); // CHANGE
             }); // NEW
             const persistedBoardHeight = getPersistedWeekBoardHeight(board); // NEW
-            const requestedLaneHeight = persistedBoardHeight == null ? 0 : persistedBoardHeight - BOARD_LANE_Y - BOARD_BOTTOM_PADDING; // CHANGE
+            const requestedLaneHeight = persistedBoardHeight == null ? 0 : persistedBoardHeight - y - BOARD_BOTTOM_PADDING; // CHANGE
             laneHeights.TODO_STAGED = Math.max(SCHEDULE_MIN_CARD_HEIGHT, weekScaleHeight, maxLaneHeight, requestedLaneHeight); // CHANGE
             maxLaneHeight = Math.max(maxLaneHeight, laneHeights.TODO_STAGED); // NEW
         } // NEW
         let x = 10; // NEW
-        const y = BOARD_LANE_Y; // CHANGE
 
         visibleKeys.forEach(laneKey => { // NEW
             const lane = lanes[laneKey]; // NEW
@@ -3692,6 +3761,7 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
     let pendingRepairBoards = new Set(); // NEW
     let pendingInvalidKanbanPlacements = new Map(); // NEW
     let pendingWeekLaneWidthChanges = new Map(); // NEW
+    let pendingWeekLaneHourChanges = new Map(); // NEW
     let pendingFullLaneHeightChanges = new Map(); // NEW
     let pendingWeekBoardHeightChanges = new Map(); // NEW
     let repairTimer = null; // NEW
@@ -3705,10 +3775,11 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
         const boards = new Set(); // NEW
         const invalidPlacements = new Map(); // NEW
         const laneWidthChanges = new Map(); // NEW
+        const laneHourChanges = new Map(); // NEW
         const fullLaneHeightChanges = new Map(); // NEW
         const weekBoardHeightChanges = new Map(); // NEW
-        if (isKanbanViewReflowing()) return { cards: out, boards, invalidPlacements, laneWidthChanges, fullLaneHeightChanges, weekBoardHeightChanges }; // CHANGE
-        if (!edit || !edit.changes) return { cards: out, boards, invalidPlacements, laneWidthChanges, fullLaneHeightChanges, weekBoardHeightChanges }; // CHANGE
+        if (isKanbanViewReflowing()) return { cards: out, boards, invalidPlacements, laneWidthChanges, laneHourChanges, fullLaneHeightChanges, weekBoardHeightChanges }; // CHANGE
+        if (!edit || !edit.changes) return { cards: out, boards, invalidPlacements, laneWidthChanges, laneHourChanges, fullLaneHeightChanges, weekBoardHeightChanges }; // CHANGE
 
         for (const ch of edit.changes) {
             let cell = null;
@@ -3763,8 +3834,17 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
                     const previousWidth = roundedGeometryWidth(ch.previous); // NEW
                     const currentWidth = roundedGeometryWidth(geo); // NEW
                     const widthChanged = previousWidth == null || currentWidth == null || previousWidth !== currentWidth; // NEW
+                    const previousTop = ch.previous ? roundedGeometryValue(ch.previous.y) : null; // NEW
+                    const currentTop = geo ? roundedGeometryValue(geo.y) : null; // NEW
+                    const previousBottom = ch.previous ? roundedGeometryValue(ch.previous.y) + roundedGeometryValue(ch.previous.height) : null; // NEW
+                    const currentBottom = geo ? roundedGeometryValue(geo.y) + roundedGeometryValue(geo.height) : null; // NEW
+                    const hoursChanged = previousTop != null && currentTop != null && previousBottom != null && currentBottom != null && (previousTop !== currentTop || previousBottom !== currentBottom); // NEW
                     if (widthChanged) { // NEW
                         laneWidthChanges.set(cell.id || changedLaneKey, { board: currentParent, laneKey: changedLaneKey, width: geo ? geo.width : null }); // NEW
+                        boards.add(currentParent); // NEW
+                    } // NEW
+                    if (hoursChanged) { // NEW
+                        laneHourChanges.set(cell.id || changedLaneKey, { board: currentParent, laneKey: changedLaneKey, previousGeo: ch.previous, currentGeo: geo }); // NEW
                         boards.add(currentParent); // NEW
                     } // NEW
                     continue; // NEW
@@ -3793,22 +3873,24 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
             out.add(cell); // CHANGE
         }
 
-        return { cards: out, boards, invalidPlacements, laneWidthChanges, fullLaneHeightChanges, weekBoardHeightChanges }; // CHANGE
+        return { cards: out, boards, invalidPlacements, laneWidthChanges, laneHourChanges, fullLaneHeightChanges, weekBoardHeightChanges }; // CHANGE
     }
 
-    function scheduleKanbanRepair(cards, boards, invalidPlacements, laneWidthChanges, fullLaneHeightChanges, weekBoardHeightChanges) { // CHANGE
+    function scheduleKanbanRepair(cards, boards, invalidPlacements, laneWidthChanges, laneHourChanges, fullLaneHeightChanges, weekBoardHeightChanges) { // CHANGE
         const hasCards = cards && cards.size > 0; // NEW
         const hasBoards = boards && boards.size > 0; // NEW
         const hasInvalidPlacements = invalidPlacements && invalidPlacements.size > 0; // NEW
         const hasLaneWidthChanges = laneWidthChanges && laneWidthChanges.size > 0; // NEW
+        const hasLaneHourChanges = laneHourChanges && laneHourChanges.size > 0; // NEW
         const hasFullLaneHeightChanges = fullLaneHeightChanges && fullLaneHeightChanges.size > 0; // NEW
         const hasWeekBoardHeightChanges = weekBoardHeightChanges && weekBoardHeightChanges.size > 0; // NEW
-        if (!hasCards && !hasBoards && !hasInvalidPlacements && !hasLaneWidthChanges && !hasFullLaneHeightChanges && !hasWeekBoardHeightChanges) return; // CHANGE
+        if (!hasCards && !hasBoards && !hasInvalidPlacements && !hasLaneWidthChanges && !hasLaneHourChanges && !hasFullLaneHeightChanges && !hasWeekBoardHeightChanges) return; // CHANGE
 
         if (hasCards) cards.forEach(card => pendingRepairCards.add(card)); // CHANGE
         if (hasBoards) boards.forEach(board => pendingRepairBoards.add(board)); // NEW
         if (hasInvalidPlacements) invalidPlacements.forEach((entry, key) => pendingInvalidKanbanPlacements.set(key, entry)); // NEW
         if (hasLaneWidthChanges) laneWidthChanges.forEach((entry, key) => pendingWeekLaneWidthChanges.set(key, entry)); // NEW
+        if (hasLaneHourChanges) laneHourChanges.forEach((entry, key) => pendingWeekLaneHourChanges.set(key, entry)); // NEW
         if (hasFullLaneHeightChanges) fullLaneHeightChanges.forEach((entry, key) => pendingFullLaneHeightChanges.set(key, entry)); // NEW
         if (hasWeekBoardHeightChanges) weekBoardHeightChanges.forEach((entry, key) => pendingWeekBoardHeightChanges.set(key, entry)); // NEW
 
@@ -3821,21 +3903,23 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
             const boardsToRepair = Array.from(pendingRepairBoards); // NEW
             const invalidPlacementsToRepair = Array.from(pendingInvalidKanbanPlacements.values()); // NEW
             const laneWidthChangesToRepair = Array.from(pendingWeekLaneWidthChanges.values()); // NEW
+            const laneHourChangesToRepair = Array.from(pendingWeekLaneHourChanges.values()); // NEW
             const fullLaneHeightChangesToRepair = Array.from(pendingFullLaneHeightChanges.values()); // NEW
             const weekBoardHeightChangesToRepair = Array.from(pendingWeekBoardHeightChanges.values()); // NEW
             pendingRepairCards.clear();
             pendingRepairBoards.clear(); // NEW
             pendingInvalidKanbanPlacements.clear(); // NEW
             pendingWeekLaneWidthChanges.clear(); // NEW
+            pendingWeekLaneHourChanges.clear(); // NEW
             pendingFullLaneHeightChanges.clear(); // NEW
             pendingWeekBoardHeightChanges.clear(); // NEW
 
-            repairChangedCards(cardsToRepair, boardsToRepair, invalidPlacementsToRepair, laneWidthChangesToRepair, fullLaneHeightChangesToRepair, weekBoardHeightChangesToRepair); // CHANGE
+            repairChangedCards(cardsToRepair, boardsToRepair, invalidPlacementsToRepair, laneWidthChangesToRepair, laneHourChangesToRepair, fullLaneHeightChangesToRepair, weekBoardHeightChangesToRepair); // CHANGE
         }, 0);
     }
 
-    function repairChangedCards(cards, boards, invalidPlacements, laneWidthChanges, fullLaneHeightChanges, weekBoardHeightChanges) { // CHANGE
-        if ((!cards || cards.length === 0) && (!boards || boards.length === 0) && (!invalidPlacements || invalidPlacements.length === 0) && (!laneWidthChanges || laneWidthChanges.length === 0) && (!fullLaneHeightChanges || fullLaneHeightChanges.length === 0) && (!weekBoardHeightChanges || weekBoardHeightChanges.length === 0)) return; // CHANGE
+    function repairChangedCards(cards, boards, invalidPlacements, laneWidthChanges, laneHourChanges, fullLaneHeightChanges, weekBoardHeightChanges) { // CHANGE
+        if ((!cards || cards.length === 0) && (!boards || boards.length === 0) && (!invalidPlacements || invalidPlacements.length === 0) && (!laneWidthChanges || laneWidthChanges.length === 0) && (!laneHourChanges || laneHourChanges.length === 0) && (!fullLaneHeightChanges || fullLaneHeightChanges.length === 0) && (!weekBoardHeightChanges || weekBoardHeightChanges.length === 0)) return; // CHANGE
 
         const affectedBoards = new Map(); // NEW
         const touchedGroups = new Set();
@@ -3850,6 +3934,11 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
             (laneWidthChanges || []).forEach(entry => { // NEW
                 if (!entry || !entry.board) return; // NEW
                 if (persistWeekDayLaneWidth(entry.board, entry.laneKey, entry.width)) affectedBoards.set(entry.board.id || entry.laneKey, entry.board); // NEW
+            }); // NEW
+
+            (laneHourChanges || []).forEach(entry => { // NEW
+                if (!entry || !entry.board) return; // NEW
+                if (persistWeekDayLaneHourResize(entry.board, entry.laneKey, entry.previousGeo, entry.currentGeo)) affectedBoards.set(entry.board.id || entry.laneKey, entry.board); // NEW
             }); // NEW
 
             (fullLaneHeightChanges || []).forEach(entry => { // NEW
@@ -3904,7 +3993,7 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
     model.addListener(mxEvent.CHANGE, function (_sender, evt) {
         const edit = evt.getProperty('edit');
         const changes = collectChangedKanbanCards(edit); // CHANGE
-        scheduleKanbanRepair(changes.cards, changes.boards, changes.invalidPlacements, changes.laneWidthChanges, changes.fullLaneHeightChanges, changes.weekBoardHeightChanges); // CHANGE: defer mutation out of CHANGE event
+        scheduleKanbanRepair(changes.cards, changes.boards, changes.invalidPlacements, changes.laneWidthChanges, changes.laneHourChanges, changes.fullLaneHeightChanges, changes.weekBoardHeightChanges); // CHANGE: defer mutation out of CHANGE event
     });
 
 
@@ -4352,6 +4441,9 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
     function addBreakToSelectedDay(board) { // NEW
         const lane = selectedScheduleLaneForBoard(board); // NEW
         if (!board || !lane) return false; // NEW
+        const laneKey = getAttr(lane, 'lane_key'); // NEW
+        const dayWindow = isWeekDayLane(laneKey) ? getBoardWeekWorkHours(board)[getWeekDayIndexForLaneKey(laneKey)] : null; // NEW
+        if (dayWindow && dayWindow.closed) return false; // NEW
         model.beginUpdate(); // NEW
         try { // NEW
             createBreakCard(lane); // NEW
@@ -4360,6 +4452,29 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
             model.endUpdate(); // NEW
         } // NEW
         return true; // NEW
+    } // NEW
+
+    function saveSelectedWeekDayWorkHours(board, dayIndex, dayWindow) { // NEW
+        if (!board || dayIndex < 0 || dayIndex >= WEEK_DAY_LANE_KEYS.length) return false; // NEW
+        return taskTransactions.runModelUpdate({}, function () { // NEW
+            const changed = persistSelectedWeekDayWorkWindow(board, dayIndex, dayWindow); // NEW
+            if (changed) scanAndReflowBoard(board, { insideUpdate: true, scope: getTaskReflowScopeForCommand('editHours') }); // NEW
+            return changed; // NEW
+        }); // NEW
+    } // NEW
+
+    function openSelectedWeekDayFromDefaults(board, laneKey) { // NEW
+        if (!board || !isWeekDayLane(laneKey)) return false; // NEW
+        const dayIndex = getWeekDayIndexForLaneKey(laneKey); // NEW
+        const editState = getBoardWeekWorkHourEditState(board); // NEW
+        return saveSelectedWeekDayWorkHours(board, dayIndex, editState.defaults[dayIndex]); // NEW
+    } // NEW
+
+    function closeSelectedWeekDay(board, lane) { // NEW
+        if (!board || !lane || selectedWeekDayHasVisibleCards(lane)) return false; // NEW
+        const laneKey = getAttr(lane, 'lane_key'); // NEW
+        if (!isWeekDayLane(laneKey)) return false; // NEW
+        return saveSelectedWeekDayWorkHours(board, getWeekDayIndexForLaneKey(laneKey), { closed: true }); // NEW
     } // NEW
 
     function elevateTaskManagerDialogImpl() { // CHANGE
@@ -4481,6 +4596,67 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
         taskDialogs.showTaskManagerDialog(div, 660, 600, true, true); // CHANGE
     } // NEW
 
+    function showEditDayHoursDialogImpl(board, laneKey) { // NEW
+        if (!board || !isWeekDayLane(laneKey)) return; // NEW
+        const dayIndex = getWeekDayIndexForLaneKey(laneKey); // NEW
+        const editState = getBoardWeekWorkHourEditState(board); // NEW
+        const day = normalizeWorkHourWindow(editState.week[dayIndex]); // NEW
+        const div = document.createElement('div'); // NEW
+        div.className = 'trellis-task-day-hours-dialog'; // NEW
+        div.style.cssText = 'padding:12px;box-sizing:border-box;font:12px Arial,sans-serif;'; // NEW
+        const title = document.createElement('div'); // NEW
+        title.textContent = 'Change Hours - ' + KANBAN_LANE_DEFS[5 + dayIndex].label; // NEW
+        title.style.cssText = 'font-size:16px;font-weight:bold;margin-bottom:10px;'; // NEW
+        div.appendChild(title); // NEW
+        const row = document.createElement('div'); // NEW
+        row.style.cssText = 'display:grid;grid-template-columns:80px minmax(130px,1fr);gap:8px;align-items:center;margin-bottom:8px;'; // NEW
+        const closedLabel = document.createElement('label'); // NEW
+        closedLabel.textContent = 'Closed'; // NEW
+        const closed = document.createElement('input'); // NEW
+        closed.type = 'checkbox'; // NEW
+        closed.checked = !!day.closed; // NEW
+        row.appendChild(closedLabel); // NEW
+        row.appendChild(closed); // NEW
+        const startLabel = document.createElement('label'); // NEW
+        startLabel.textContent = 'Start'; // NEW
+        const start = document.createElement('input'); // NEW
+        start.type = 'time'; // NEW
+        start.step = String(SCHEDULE_MINUTE_SNAP * 60); // NEW
+        start.value = formatMinuteTimeInput(day.startMinute); // NEW
+        const endLabel = document.createElement('label'); // NEW
+        endLabel.textContent = 'End'; // NEW
+        const end = document.createElement('input'); // NEW
+        end.type = 'time'; // NEW
+        end.step = String(SCHEDULE_MINUTE_SNAP * 60); // NEW
+        end.value = formatMinuteTimeInput(day.endMinute); // NEW
+        [start, end].forEach(input => { input.style.cssText = 'width:100%;min-width:130px;box-sizing:border-box;font:12px Arial,sans-serif;'; }); // NEW
+        row.appendChild(startLabel); // NEW
+        row.appendChild(start); // NEW
+        row.appendChild(endLabel); // NEW
+        row.appendChild(end); // NEW
+        function updateClosedState() { // NEW
+            start.disabled = !!closed.checked; // NEW
+            end.disabled = !!closed.checked; // NEW
+            row.style.opacity = closed.checked ? '0.72' : '1'; // NEW
+        } // NEW
+        closed.addEventListener('change', updateClosedState); // NEW
+        updateClosedState(); // NEW
+        div.appendChild(row); // NEW
+        const buttons = document.createElement('div'); // NEW
+        buttons.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;margin-top:12px;'; // NEW
+        const cancel = mxUtils.button('Cancel', function () { ui.hideDialog(); }); // NEW
+        const save = mxUtils.button('Save', function () { // NEW
+            const startMinute = parseMinuteTimeInput(start.value, day.startMinute); // NEW
+            const endMinute = parseMinuteTimeInput(end.value, day.endMinute); // NEW
+            taskCommands.saveSelectedWeekDayWorkHours(board, dayIndex, normalizeWorkHourWindow({ closed: closed.checked, startMinute, endMinute })); // NEW
+            ui.hideDialog(); // NEW
+        }); // NEW
+        buttons.appendChild(cancel); // NEW
+        buttons.appendChild(save); // NEW
+        div.appendChild(buttons); // NEW
+        taskDialogs.showTaskManagerDialog(div, 360, 210, true, true); // NEW
+    } // NEW
+
     function saveBoardWeekWorkHours(board, weekStart, weeks, nextDefaults, nextWeek) { // CHANGE
         if (!board || !parseTaskCalendarISO(weekStart)) return false; // CHANGE
         return taskTransactions.runModelUpdate({}, function () { // CHANGE
@@ -4587,6 +4763,12 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
         const raw = getSelectionCellsList(); // NEW
         if (!cards || !cards.length || raw.length !== cards.length) return false; // NEW
         return cards.every(card => laneKeyOfCard(card) === 'TODO_STAGED'); // NEW
+    } // NEW
+
+    function selectionIsOnlyWeekDayLaneCards(cards) { // NEW
+        const raw = getSelectionCellsList(); // NEW
+        if (!cards || !cards.length || raw.length !== cards.length) return false; // NEW
+        return cards.every(card => isWeekDayLane(laneKeyOfCard(card))); // NEW
     } // NEW
 
     function applyStagedStartDateAllocation(cards) { // NEW
@@ -4715,6 +4897,9 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
             setRepeatSeriesExpanded, // CHANGE
             setBoardPlanningView, // CHANGE
             saveBoardWeekWorkHours, // CHANGE
+            saveSelectedWeekDayWorkHours, // NEW
+            openSelectedWeekDayFromDefaults, // NEW
+            closeSelectedWeekDay, // NEW
             endDay, // CHANGE
             endWeek, // CHANGE
             addBreakToSelectedDay, // CHANGE
@@ -4827,21 +5012,22 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
         return bounds ? { x: bounds.x, y: bounds.y, width: bounds.right - bounds.x, height: bounds.bottom - bounds.y } : null; // CHANGE
     } // NEW
 
-    function positionDomOverlayFromBounds(element, bounds, below, above) { // NEW
+    function positionDomOverlayFromBounds(element, bounds, below, above, extraY) { // CHANGE
         if (!element || !bounds || !element.parentNode) return false; // CHANGE
         const left = bounds.x; // CHANGE
         const topBase = bounds.y; // CHANGE
+        const yOffset = Number.isFinite(Number(extraY)) ? Number(extraY) : 0; // NEW
         element.style.left = Math.max(0, Math.round(left)) + 'px'; // NEW
-        if (below) element.style.top = Math.max(0, Math.round(topBase + bounds.height + 6)) + 'px'; // NEW
-        else if (above) element.style.top = Math.max(0, Math.round(topBase - element.offsetHeight - 6)) + 'px'; // NEW
-        else element.style.top = Math.max(0, Math.round(topBase)) + 'px'; // NEW
+        if (below) element.style.top = Math.max(0, Math.round(topBase + bounds.height + 6 + yOffset)) + 'px'; // CHANGE
+        else if (above) element.style.top = Math.max(0, Math.round(topBase - element.offsetHeight - 6 - yOffset)) + 'px'; // CHANGE
+        else element.style.top = Math.max(0, Math.round(topBase + yOffset)) + 'px'; // CHANGE
         return true; // NEW
     } // NEW
 
-    function positionDomOverlayFromCellState(element, cell, below, above) { // NEW
+    function positionDomOverlayFromCellState(element, cell, below, above, extraY) { // CHANGE
         const state = graph.view && graph.view.getState ? graph.view.getState(cell) : null; // NEW
         const hostBounds = getStateHostBounds(cell, state, element && element.parentNode); // NEW
-        return positionDomOverlayFromBounds(element, hostBounds, below, above); // CHANGE
+        return positionDomOverlayFromBounds(element, hostBounds, below, above, extraY); // CHANGE
     } // NEW
 
     function registerTaskOverlayGestureElement(element) { // NEW
@@ -5038,11 +5224,15 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
             todayBtn.style.display = mode === 'WEEK' ? '' : 'none'; // NEW
             endDayBtn.textContent = 'End Day (' + countEndDayCards(board) + ')'; // NEW
             endWeekBtn.textContent = 'End Week (' + countEndWeekCards(board) + ')'; // NEW
-            const hasSelectedScheduleLane = mode === 'WEEK' && !!selectedScheduleLaneForBoard(board); // CHANGE
+            const selectedScheduleLane = mode === 'WEEK' ? selectedScheduleLaneForBoard(board) : null; // NEW
+            const selectedScheduleLaneKey = selectedScheduleLane ? getAttr(selectedScheduleLane, 'lane_key') : null; // NEW
+            const selectedScheduleDayWindow = selectedScheduleLaneKey ? getBoardWeekWorkHours(board)[getWeekDayIndexForLaneKey(selectedScheduleLaneKey)] : null; // NEW
+            const hasSelectedScheduleLane = !!selectedScheduleLane; // CHANGE
+            const selectedScheduleDayOpen = hasSelectedScheduleLane && !(selectedScheduleDayWindow && selectedScheduleDayWindow.closed); // NEW
             endDayBtn.style.display = hasSelectedScheduleLane ? '' : 'none'; // CHANGE
             endWeekBtn.style.display = mode === 'WEEK' ? '' : 'none'; // NEW
             editHoursBtn.style.display = hasSelectedScheduleLane ? '' : 'none'; // NEW
-            addBreakBtn.style.display = hasSelectedScheduleLane ? '' : 'none'; // NEW
+            addBreakBtn.style.display = selectedScheduleDayOpen ? '' : 'none'; // CHANGE
             if (!positionDomOverlayFromCellState(bar, board, false, true)) bar.style.display = 'none'; // CHANGE
         } // NEW
 
@@ -5110,10 +5300,10 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
             const gridWidth = Math.max(0, ((Number(lastGeo.x) || 0) + (Number(lastGeo.width) || 0) - (Number(firstGeo.x) || 0)) * viewScale); // CHANGE
             const gridHeight = schedulePolicy.scheduleMinuteOffsetToPx(timeScale.durationMinutes) * viewScale; // CHANGE
             const overlayLeft = boardBounds.x + ((Number(firstGeo.x) || 0) * viewScale) - labelWidth - scaledGap; // CHANGE
-            const overlayTop = boardBounds.y + (BOARD_LANE_Y * viewScale); // CHANGE
+            const overlayTop = boardBounds.y + ((BOARD_LANE_Y + WEEK_BOARD_TOP_MARGIN) * viewScale); // CHANGE
             overlay.style.left = Math.round(overlayLeft) + 'px'; // NEW
             overlay.style.top = Math.round(overlayTop) + 'px'; // NEW
-            overlay.style.width = Math.round(labelWidth + LANE_GAP + gridWidth) + 'px'; // NEW
+            overlay.style.width = Math.round(labelWidth + scaledGap + gridWidth) + 'px'; // CHANGE
             overlay.style.height = Math.round(gridHeight + 16) + 'px'; // NEW
             overlay.style.display = 'block'; // NEW
             overlay.innerHTML = ''; // NEW
@@ -5243,6 +5433,7 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
         return Object.freeze({ // CHANGE
             showEditCardDialog: showEditCardDialogImpl, // CHANGE
             showEditHoursDialog: showEditHoursDialogImpl, // CHANGE
+            showEditDayHoursDialog: showEditDayHoursDialogImpl, // NEW
             showBulkEditCardsDialog: showBulkEditCardsDialogImpl, // CHANGE
             showTaskManagerDialog: showTaskManagerDialogImpl, // CHANGE
             elevateTaskManagerDialog: elevateTaskManagerDialogImpl // CHANGE
@@ -5258,9 +5449,77 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
 
     function showEditCardDialog(card) { return taskDialogs.showEditCardDialog(card); } // CHANGE
     function showEditHoursDialog(board) { return taskDialogs.showEditHoursDialog(board); } // CHANGE
+    function showEditDayHoursDialog(board, laneKey) { return taskDialogs.showEditDayHoursDialog(board, laneKey); } // NEW
     function showBulkEditCardsDialog(cards) { return taskDialogs.showBulkEditCardsDialog(cards); } // CHANGE
     function showTaskManagerDialog(node, width, height, modal, closable) { return taskDialogs.showTaskManagerDialog(node, width, height, modal, closable); } // CHANGE
     function elevateTaskManagerDialog() { return taskDialogs.elevateTaskManagerDialog(); } // CHANGE
+
+    function installSelectedDayLaneActionOverlay() { // NEW
+        if (graph.__trellisTaskDayLaneOverlayInstalled || !document || !document.createElement) return; // NEW
+        graph.__trellisTaskDayLaneOverlayInstalled = true; // NEW
+        const host = ensureTaskControlOverlayHost(); // NEW
+        if (!host) return; // NEW
+        const overlay = document.createElement('div'); // NEW
+        overlay.className = 'trellis-task-selected-day-lane-actions'; // NEW
+        overlay.style.cssText = 'position:absolute;display:none;flex-direction:column;align-items:stretch;gap:4px;background:#fff;border:1px solid #111;padding:4px;font:12px Arial,sans-serif;pointer-events:auto;'; // CHANGE
+        overlay.style.zIndex = String(GRAPH_OVERLAY_Z.CONTROL); // NEW
+        host.appendChild(overlay); // NEW
+        registerTaskOverlayGestureElement(overlay); // NEW
+        mxEvent.addListener(overlay, 'mousedown', evt => mxEvent.consume(evt)); // NEW
+        mxEvent.addListener(overlay, 'mouseup', evt => mxEvent.consume(evt)); // NEW
+
+        function selectedDayLaneContext() { // NEW
+            const cells = getSelectionCellsList(); // NEW
+            if (cells.length !== 1) return null; // NEW
+            const lane = cells[0]; // NEW
+            const laneKey = getAttr(lane, 'lane_key'); // NEW
+            if (!lane || !model.isVertex(lane) || !isWeekDayLane(laneKey)) return null; // NEW
+            const board = findBoardAncestor(lane); // NEW
+            if (!board || getBoardViewMode(board) !== 'WEEK') return null; // NEW
+            const dayIndex = getWeekDayIndexForLaneKey(laneKey); // NEW
+            const dayWindow = getBoardWeekWorkHours(board)[dayIndex]; // NEW
+            return { board, lane, laneKey, dayIndex, dayWindow: normalizeWorkHourWindow(dayWindow) }; // NEW
+        } // NEW
+
+        function add(label, fn) { // NEW
+            const btn = document.createElement('button'); // NEW
+            btn.type = 'button'; // NEW
+            btn.textContent = label; // NEW
+            btn.style.cssText = 'font:12px Arial,sans-serif;padding:3px 6px;'; // NEW
+            mxEvent.addListener(btn, 'click', function (evt) { // NEW
+                mxEvent.consume(evt); // NEW
+                const ctx = selectedDayLaneContext(); // NEW
+                if (ctx) fn(ctx); // NEW
+                requestRefresh(); // NEW
+            }); // NEW
+            overlay.appendChild(btn); // NEW
+            return btn; // NEW
+        } // NEW
+
+        const changeHoursBtn = add('Change Hours', ctx => taskDialogs.showEditDayHoursDialog(ctx.board, ctx.laneKey)); // NEW
+        const addBreakBtn = add('Add Break', ctx => taskCommands.addBreakToSelectedDay(ctx.board)); // NEW
+        const openDayBtn = add('Open Day', ctx => taskCommands.openSelectedWeekDayFromDefaults(ctx.board, ctx.laneKey)); // NEW
+        const closeDayBtn = add('Close Day', ctx => taskCommands.closeSelectedWeekDay(ctx.board, ctx.lane)); // NEW
+
+        function refresh() { // NEW
+            const ctx = selectedDayLaneContext(); // NEW
+            if (!ctx) { overlay.style.display = 'none'; return; } // NEW
+            ensureBoardPlanningDefaults(ctx.board); // NEW
+            const hasVisibleCards = selectedWeekDayHasVisibleCards(ctx.lane); // NEW
+            const isClosed = !!ctx.dayWindow.closed; // NEW
+            changeHoursBtn.style.display = ''; // NEW
+            addBreakBtn.style.display = isClosed ? 'none' : ''; // NEW
+            openDayBtn.style.display = hasVisibleCards || !isClosed ? 'none' : ''; // NEW
+            closeDayBtn.style.display = hasVisibleCards || isClosed ? 'none' : ''; // NEW
+            overlay.style.display = 'flex'; // NEW
+            if (!positionDomOverlayFromCellState(overlay, ctx.lane, true, false, TASK_ACTION_OVERLAY_EXTRA_Y)) overlay.style.display = 'none'; // CHANGE
+        } // NEW
+
+        const requestRefresh = createDeferredTaskOverlayRefresh(refresh); // NEW
+        graph.getSelectionModel().addListener(mxEvent.CHANGE, requestRefresh); // NEW
+        addGraphViewRefreshListener(requestRefresh); // NEW
+        requestRefresh(); // NEW
+    } // NEW
 
     function installSelectedCardActionOverlay() { // NEW
         if (graph.__trellisTaskCardOverlayInstalled || !document || !document.createElement) return; // NEW
@@ -5269,7 +5528,7 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
         if (!host) return; // CHANGE
         const overlay = document.createElement('div'); // NEW
         overlay.className = 'trellis-task-selected-card-actions'; // NEW
-        overlay.style.cssText = 'position:absolute;display:none;gap:4px;background:#fff;border:1px solid #111;padding:4px;font:12px Arial,sans-serif;pointer-events:auto;'; // CHANGE
+        overlay.style.cssText = 'position:absolute;display:none;flex-direction:column;align-items:stretch;gap:4px;background:#fff;border:1px solid #111;padding:4px;font:12px Arial,sans-serif;pointer-events:auto;'; // CHANGE
         overlay.style.zIndex = String(GRAPH_OVERLAY_Z.CONTROL); // NEW
         host.appendChild(overlay); // CHANGE
         registerTaskOverlayGestureElement(overlay); // NEW
@@ -5302,15 +5561,16 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
             const single = cards.length === 1; // NEW
             const card = cards[0]; // NEW
             const state = single ? getEffectiveWorkflowState(card.value, laneKeyOfCard(card)) : null; // CHANGE
+            const showWorkflowButtons = selectionIsOnlyWeekDayLaneCards(cards); // NEW
             overlay.style.display = 'flex'; // NEW
             editBtn.style.display = ''; // NEW
-            todoBtn.style.display = !single || state !== 'TODO' ? '' : 'none'; // CHANGE
-            doingBtn.style.display = !single || state !== 'DOING' ? '' : 'none'; // CHANGE
-            doneBtn.style.display = !single || state !== 'DONE' ? '' : 'none'; // CHANGE
+            todoBtn.style.display = showWorkflowButtons && (!single || state !== 'TODO') ? '' : 'none'; // CHANGE
+            doingBtn.style.display = showWorkflowButtons && (!single || state !== 'DOING') ? '' : 'none'; // CHANGE
+            doneBtn.style.display = showWorkflowButtons && (!single || state !== 'DONE') ? '' : 'none'; // CHANGE
             allocateBtn.style.display = selectionIsOnlyStagedWorkflowCards(cards) ? '' : 'none'; // NEW
             resetBtn.style.display = single ? (canEditCardDates(card) && hasCardDateOverride(card) ? '' : 'none') : (cards.some(hasCardDateOverride) ? '' : 'none'); // CHANGE
             clearBtn.style.display = single ? (getCardNote(card) ? '' : 'none') : (cards.some(getCardNote) ? '' : 'none'); // CHANGE
-            if (!positionDomOverlayFromBounds(overlay, bounds, true, false)) overlay.style.display = 'none'; // CHANGE
+            if (!positionDomOverlayFromBounds(overlay, bounds, true, false, TASK_ACTION_OVERLAY_EXTRA_Y)) overlay.style.display = 'none'; // CHANGE
         } // NEW
 
         const requestRefresh = createDeferredTaskOverlayRefresh(refresh); // CHANGE
@@ -5386,6 +5646,7 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
     installTaskOverlayGestureGate(); // NEW
     installBoardHeaderControls(); // NEW
     installWeekTimeScaleOverlay(); // NEW
+    installSelectedDayLaneActionOverlay(); // NEW
     installSelectedCardActionOverlay(); // NEW
 
     // -------------------- Event bridge installers -------------------- // CHANGE

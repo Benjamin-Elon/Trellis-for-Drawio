@@ -1049,12 +1049,10 @@ Draw.loadPlugin(function (ui) {
             return (aId < bId) ? (aId + '|' + bId) : (bId + '|' + aId);
         }
 
-        function getOverlayPane() {
-            const layeredPane = ensureGraphOverlaySvgLayer('connection'); // CHANGE
-            if (layeredPane) return layeredPane; // CHANGE
+        function getOverlayPane() { // CHANGE
             const view = graph.getView && graph.getView(); // CHANGE
             return view && view.getOverlayPane ? view.getOverlayPane() : null; // CHANGE
-        }
+        } // CHANGE
 
         function formatLinkOverlayBadgeLabel(label) { // CHANGE
             const text = stripHtmlAndPlaceholders(String(label || '')).trim(); // CHANGE
@@ -3161,6 +3159,7 @@ Draw.loadPlugin(function (ui) {
     function highlightLinked(cell) {
         const YELLOW = '#ffd400';
         const RED = '#ff0000';
+        const SAME_CROP_HIGHLIGHT = '#2563eb'; // NEW
 
         model.beginUpdate();
         try {
@@ -3224,7 +3223,7 @@ Draw.loadPlugin(function (ui) {
 
                 // Decide visibility using internal lane-based policy               
                 const shouldShow = shouldShowEdgeInternal(cell, other);
-                if (shouldShow && !taskOverlayActive) { // CHANGE
+                if (shouldShow) { // CHANGE
                     linkOverlays.setLinkOverlay(
                         cell, other, exitHint, edgeColor, label
                     );
@@ -3233,7 +3232,7 @@ Draw.loadPlugin(function (ui) {
 
             for (const otherCard of sameBoardLinkedCards) { // CHANGE
                 const otherIsPrimary = isPrimary(otherCard); // CHANGE
-                highlight(otherCard, otherIsPrimary ? YELLOW : RED, 1.5); // CHANGE
+                highlight(otherCard, otherIsPrimary ? YELLOW : SAME_CROP_HIGHLIGHT, 1.5); // CHANGE
             } // CHANGE
 
 

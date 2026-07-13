@@ -19,6 +19,14 @@ function readSource() { // NEW
     return fs.readFileSync(PLUGIN_PATH, "utf8"); // NEW
 } // NEW
 
+function sourceBetween(source, startMarker, endMarker) { // NEW
+    const startIndex = source.indexOf(startMarker); // NEW
+    assert.notEqual(startIndex, -1, "Missing start marker: " + startMarker); // NEW
+    const endIndex = source.indexOf(endMarker, startIndex); // NEW
+    assert.notEqual(endIndex, -1, "Missing end marker: " + endMarker); // NEW
+    return source.slice(startIndex, endIndex); // NEW
+} // NEW
+
 test("planting overlay has Cards, Schedule, and Occupancy modes", () => { // NEW
     const source = readSource(); // NEW
 
@@ -59,4 +67,37 @@ test("occupancy rows select and reveal their planting group", () => { // NEW
 
     assert.match(source, /function makeOccupancyRow\(entry, item\)[\s\S]*const cell = item && item\.cellId \? model\.getCell\(item\.cellId\) : null;/); // NEW
     assert.match(source, /if \(cell && model\.isVertex\(cell\)\) selectAndReveal\(cell\);/); // NEW
+}); // NEW
+
+test("same-crop sibling task highlights use blue without changing direct link red", () => { // NEW
+    const source = readSource(); // NEW
+
+    assert.match(source, /const RED = '#ff0000';/); // NEW
+    assert.match(source, /const SAME_CROP_HIGHLIGHT = '#2563eb';/); // NEW
+    assert.match(source, /for \(const otherCard of sameBoardLinkedCards\)[\s\S]*highlight\(otherCard, otherIsPrimary \? YELLOW : SAME_CROP_HIGHLIGHT, 1\.5\);/); // NEW
+}); // NEW
+
+test("standard link overlays use the native draw.io overlay pane", () => { // NEW
+    const source = readSource(); // NEW
+    const linkOverlaySource = sourceBetween(source, "const linkOverlays = (function () {", "function formatLinkOverlayBadgeLabel"); // NEW
+
+    assert.match(linkOverlaySource, /function getOverlayPane\(\) \{[\s\S]*const view = graph\.getView && graph\.getView\(\);[\s\S]*return view && view\.getOverlayPane \? view\.getOverlayPane\(\) : null;/); // NEW
+    assert.doesNotMatch(linkOverlaySource, /ensureGraphOverlaySvgLayer\('connection'\)/); // NEW
+}); // NEW
+
+test("task overlay guide lines keep the custom connection layer", () => { // NEW
+    const source = readSource(); // NEW
+    const taskOverlaySource = sourceBetween(source, "const taskScheduleOverlay = (function () {", "function getPanelHost"); // NEW
+
+    assert.match(taskOverlaySource, /ensureGraphOverlaySvgLayer\('connection'\)/); // NEW
+}); // NEW
+
+test("selected linked vertices draw direct connections even when task overlay is active", () => { // NEW
+    const source = readSource(); // NEW
+    const drawDecisionSource = sourceBetween(source, "// Decide visibility using internal lane-based policy", "for (const otherCard of sameBoardLinkedCards)"); // NEW
+
+    assert.match(drawDecisionSource, /const shouldShow = shouldShowEdgeInternal\(cell, other\);/); // NEW
+    assert.match(drawDecisionSource, /if \(shouldShow\) \{/); // NEW
+    assert.match(drawDecisionSource, /linkOverlays\.setLinkOverlay\(/); // NEW
+    assert.doesNotMatch(drawDecisionSource, /!taskOverlayActive/); // NEW
 }); // NEW

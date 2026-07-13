@@ -100,6 +100,11 @@ function saveSelectedWeekDayHours(h, dayIndex, startValue, endValue) { // NEW
     buttonByText(h.lastDialog, "Save").click(); // NEW
 } // NEW
 
+function selectedWeekOverrideDay(h, dayIndex) { // NEW
+    const overrides = JSON.parse(attr(h.board, "task_work_hours_week_overrides_json")); // NEW
+    return overrides.weeks["2026-07-12"].days[dayIndex]; // NEW
+} // NEW
+
 function addHarnessCard(h, lane, id, attrs = {}, height = 60) { // NEW
     const card = new TestCell(id, makeValue(h.document, Object.assign({ kanban_card: "1", title: id }, attrs)), new TestGeometry(30, 60 + (lane.children.length * 70), 120, height)); // NEW
     card.parent = lane; // NEW
@@ -476,8 +481,10 @@ test("task manager selection overlays render above graph and defer until states 
     const h = makeHarness();
     const boardOverlay = h.document.querySelector(".trellis-task-board-header-controls");
     const cardOverlay = h.document.querySelector(".trellis-task-selected-card-actions");
+    const dayLaneOverlay = h.document.querySelector(".trellis-task-selected-day-lane-actions"); // NEW
     assert.equal(boardOverlay.parentNode.className, "trellis-task-control-layer"); // CHANGE
     assert.equal(cardOverlay.parentNode.className, "trellis-task-control-layer"); // CHANGE
+    assert.equal(dayLaneOverlay.parentNode.className, "trellis-task-control-layer"); // NEW
     assert.equal(boardOverlay.parentNode.parentNode.id, "overlay"); // CHANGE
 
     h.graph.setSelectionCell(h.board);
@@ -488,6 +495,7 @@ test("task manager selection overlays render above graph and defer until states 
     assert.equal(boardOverlay.style.zIndex, "10020");
     assert.equal(boardOverlay.style.left, "10px");
     assert.equal(cardOverlay.style.display, "none");
+    assert.equal(dayLaneOverlay.style.display, "none"); // NEW
 
     h.graph.setSelectionCell(h.card1);
     h.setState(h.card1, { x: 30, y: 60, width: 120, height: 60 });
@@ -495,7 +503,9 @@ test("task manager selection overlays render above graph and defer until states 
 
     assert.equal(cardOverlay.style.display, "flex");
     assert.equal(cardOverlay.style.zIndex, "10020");
-    assert.equal(cardOverlay.style.top, "126px");
+    assert.equal(cardOverlay.style.top, "141px"); // CHANGE
+    assert.equal(cardOverlay.style.flexDirection, "column"); // NEW
+    assert.equal(cardOverlay.style.alignItems, "stretch"); // NEW
 
     h.graph.setSelectionCell(h.card2); // NEW
     await nextTick(); // NEW
@@ -507,8 +517,10 @@ test("task manager DOM overlays avoid SVG overlayPane hosts", async () => { // N
     const h = makeHarness({ svgOverlayPane: true }); // NEW
     const boardOverlay = h.document.querySelector(".trellis-task-board-header-controls"); // NEW
     const cardOverlay = h.document.querySelector(".trellis-task-selected-card-actions"); // NEW
+    const dayLaneOverlay = h.document.querySelector(".trellis-task-selected-day-lane-actions"); // NEW
     assert.equal(boardOverlay.parentNode.className, "trellis-task-control-layer"); // CHANGE
     assert.equal(cardOverlay.parentNode.className, "trellis-task-control-layer"); // CHANGE
+    assert.equal(dayLaneOverlay.parentNode.className, "trellis-task-control-layer"); // NEW
     assert.equal(boardOverlay.parentNode.parentNode.id, "graph"); // CHANGE
 
     h.graph.setSelectionCell(h.board); // NEW
@@ -636,13 +648,22 @@ test("task manager week scheduler lays out day heights and selected-lane control
     assert.equal(timeScaleOverlay.querySelectorAll(".trellis-task-week-time-label").length, 12); // NEW
     assert.equal(timeScaleOverlay.querySelector(".trellis-task-week-time-label").textContent, "8:00 AM"); // NEW
     assert.equal(timeScaleOverlay.style.left, "256px"); // NEW
+    assert.equal(timeScaleOverlay.style.top, "58px"); // CHANGE
     assert.equal(timeScaleOverlay.querySelector(".trellis-task-week-time-grid-line").style.left, "72px"); // NEW
-    assert.equal(h.weekSunLane.geometry.y, 28); // NEW
-    assert.equal(h.weekWedLane.geometry.y, 748); // NEW
+    assert.equal(h.weekSunLane.geometry.y, 48); // CHANGE
+    assert.equal(h.weekWedLane.geometry.y, 768); // CHANGE
+    assert.equal(parseInt(timeScaleOverlay.style.top, 10), 10 + h.weekSunLane.geometry.y); // NEW
     assert.equal(h.weekWedLane.geometry.height, 160); // CHANGE
     assert.equal(h.weekSunLane.geometry.height, 320); // NEW
     assert.equal(h.stagedLane.geometry.height, 880); // CHANGE
-    assert.equal(h.board.geometry.height, 918); // CHANGE
+    assert.equal(h.board.geometry.height, 938); // CHANGE
+    h.graph.view.scale = 2; // NEW
+    h.setState(h.board, { x: 20, y: 20, width: 1400, height: 520 }); // NEW
+    h.fireViewEvent("repaint"); // NEW
+    await nextTick(); // NEW
+    assert.equal(timeScaleOverlay.style.top, "116px"); // NEW
+    assert.equal(timeScaleOverlay.querySelector(".trellis-task-week-time-grid-line").style.left, "144px"); // NEW
+    h.graph.view.scale = 1; // NEW
 
     h.setState(h.weekWedLane, { x: 460, y: 40, width: 200, height: 960 }); // NEW
     h.graph.setSelectionCell(h.weekWedLane); // NEW
@@ -650,6 +671,141 @@ test("task manager week scheduler lays out day heights and selected-lane control
     assert.ok(buttonByText(boardOverlay, "Edit Hours")); // NEW
     assert.ok(buttonByText(boardOverlay, "Add Break")); // NEW
     assert.equal(attr(h.board, "task_selected_day"), "2026-07-15"); // NEW
+}); // NEW
+
+test("task manager day-lane overlay appears only for selected week day lanes", async () => { // NEW
+    const h = makeHarness(); // NEW
+    const overlay = h.document.querySelector(".trellis-task-selected-day-lane-actions"); // NEW
+    h.setState(h.weekSunLane, { x: 240, y: 28, width: 200, height: 320 }); // NEW
+    h.setState(h.weekLaneCard, { x: 470, y: 60, width: 120, height: 60 }); // NEW
+
+    h.graph.setSelectionCell(h.board); // NEW
+    await nextTick(); // NEW
+    assert.equal(overlay.style.display, "none"); // NEW
+
+    h.graph.setSelectionCell(h.weekLaneCard); // NEW
+    await nextTick(); // NEW
+    assert.equal(overlay.style.display, "none"); // NEW
+
+    h.graph.setSelectionCell(h.weekSunLane); // NEW
+    await nextTick(); // NEW
+    assert.equal(overlay.style.display, "flex"); // NEW
+    assert.equal(overlay.style.top, "369px"); // NEW
+    assert.equal(overlay.style.flexDirection, "column"); // NEW
+    assert.equal(overlay.style.alignItems, "stretch"); // NEW
+    assert.ok(buttonByText(overlay, "Change Hours")); // NEW
+    assert.ok(buttonByText(overlay, "Add Break")); // NEW
+    assert.equal(buttonByText(overlay, "Close Day").style.display, ""); // NEW
+    assert.equal(buttonByText(overlay, "Open Day").style.display, "none"); // NEW
+}); // NEW
+
+test("task manager day-lane overlay opens closes and adds breaks for selected day", async () => { // NEW
+    const h = makeHarness(); // NEW
+    const overlay = h.document.querySelector(".trellis-task-selected-day-lane-actions"); // NEW
+    h.setState(h.weekSunLane, { x: 240, y: 28, width: 200, height: 320 }); // NEW
+    h.graph.setSelectionCell(h.weekSunLane); // NEW
+    await nextTick(); // NEW
+
+    buttonByText(overlay, "Close Day").click(); // NEW
+    await nextTick(); // NEW
+    assert.equal(selectedWeekOverrideDay(h, 0).closed, true); // NEW
+    assert.equal(buttonByText(overlay, "Add Break").style.display, "none"); // NEW
+    assert.equal(buttonByText(overlay, "Open Day").style.display, ""); // NEW
+
+    buttonByText(overlay, "Open Day").click(); // NEW
+    await nextTick(); // NEW
+    assert.deepEqual(selectedWeekOverrideDay(h, 0), { closed: false, startMinute: 480, endMinute: 720 }); // NEW
+    assert.equal(buttonByText(overlay, "Add Break").style.display, ""); // NEW
+
+    buttonByText(overlay, "Add Break").click(); // NEW
+    await nextTick(); // NEW
+    assert.ok(h.weekSunLane.children.some(cell => attr(cell, "schedule_break") === "1")); // NEW
+    assert.equal(buttonByText(overlay, "Close Day").style.display, "none"); // NEW
+}); // NEW
+
+test("task manager day-lane overlay hides open close on non-empty days and hides add break when closed", async () => { // NEW
+    const h = makeHarness(); // NEW
+    const overlay = h.document.querySelector(".trellis-task-selected-day-lane-actions"); // NEW
+    h.setState(h.weekWedLane, { x: 460, y: 748, width: 200, height: 160 }); // NEW
+    h.graph.setSelectionCell(h.weekWedLane); // NEW
+    await nextTick(); // NEW
+
+    assert.equal(buttonByText(overlay, "Add Break").style.display, ""); // NEW
+    assert.equal(buttonByText(overlay, "Open Day").style.display, "none"); // NEW
+    assert.equal(buttonByText(overlay, "Close Day").style.display, "none"); // NEW
+
+    setAttr(h.board, "task_work_hours_week_overrides_json", JSON.stringify({ // NEW
+        weeks: { "2026-07-12": { days: [{}, {}, {}, { closed: true }, {}, {}, {}] } } // NEW
+    })); // NEW
+    h.fireModelChange(); // NEW
+    await nextTick(); // NEW
+
+    assert.equal(buttonByText(overlay, "Add Break").style.display, "none"); // NEW
+    assert.equal(buttonByText(overlay, "Open Day").style.display, "none"); // NEW
+    assert.equal(buttonByText(overlay, "Close Day").style.display, "none"); // NEW
+}); // NEW
+
+test("task manager day-lane change hours dialog saves only selected weekday override", async () => { // NEW
+    const h = makeHarness(); // NEW
+    const overlay = h.document.querySelector(".trellis-task-selected-day-lane-actions"); // NEW
+    h.setState(h.weekSunLane, { x: 240, y: 28, width: 200, height: 320 }); // NEW
+    h.graph.setSelectionCell(h.weekSunLane); // NEW
+    await nextTick(); // NEW
+
+    buttonByText(overlay, "Change Hours").click(); // NEW
+    const timeInputs = Array.from(h.lastDialog.querySelectorAll("input[type='time']")); // NEW
+    timeInputs[0].value = "07:00"; // NEW
+    timeInputs[1].value = "10:30"; // NEW
+    buttonByText(h.lastDialog, "Save").click(); // NEW
+    await nextTick(); // NEW
+
+    assert.deepEqual(selectedWeekOverrideDay(h, 0), { closed: false, startMinute: 420, endMinute: 630 }); // NEW
+    assert.equal(selectedWeekOverrideDay(h, 3).startMinute, 1020); // NEW
+    assert.equal(selectedWeekOverrideDay(h, 3).endMinute, 1140); // NEW
+}); // NEW
+
+test("task manager day-lane vertical resize edits selected-week hours by moved edge", async () => { // NEW
+    const h = makeHarness(); // NEW
+    h.graph.setSelectionCell(h.weekWedLane); // NEW
+    await nextTick(); // NEW
+
+    let previousGeometry = h.weekWedLane.geometry.clone(); // NEW
+    h.weekWedLane.geometry.height += 80; // NEW
+    h.fireModelChange({ changes: [h.geometryChange(h.weekWedLane, previousGeometry)] }); // NEW
+    await nextTick(); // NEW
+    assert.equal(selectedWeekOverrideDay(h, 3).startMinute, 1020); // NEW
+    assert.equal(selectedWeekOverrideDay(h, 3).endMinute, 1200); // NEW
+
+    previousGeometry = h.weekWedLane.geometry.clone(); // NEW
+    h.weekWedLane.geometry.y -= 40; // NEW
+    h.weekWedLane.geometry.height += 40; // NEW
+    h.fireModelChange({ changes: [h.geometryChange(h.weekWedLane, previousGeometry)] }); // NEW
+    await nextTick(); // NEW
+    assert.equal(selectedWeekOverrideDay(h, 3).startMinute, 990); // NEW
+    assert.equal(selectedWeekOverrideDay(h, 3).endMinute, 1200); // NEW
+
+    previousGeometry = h.weekWedLane.geometry.clone(); // NEW
+    h.weekWedLane.geometry.y -= 40; // NEW
+    h.weekWedLane.geometry.height += 80; // NEW
+    h.fireModelChange({ changes: [h.geometryChange(h.weekWedLane, previousGeometry)] }); // NEW
+    await nextTick(); // NEW
+    assert.equal(selectedWeekOverrideDay(h, 3).startMinute, 960); // NEW
+    assert.equal(selectedWeekOverrideDay(h, 3).endMinute, 1230); // NEW
+}); // NEW
+
+test("task manager shrinking day-lane hours keeps cards visible and marks overflow", async () => { // NEW
+    const h = makeHarness(); // NEW
+    h.graph.setSelectionCell(h.weekWedLane); // NEW
+    await nextTick(); // NEW
+
+    const previousGeometry = h.weekWedLane.geometry.clone(); // NEW
+    h.weekWedLane.geometry.height -= 120; // NEW
+    h.fireModelChange({ changes: [h.geometryChange(h.weekWedLane, previousGeometry)] }); // NEW
+    await nextTick(); // NEW
+
+    assert.equal(selectedWeekOverrideDay(h, 3).endMinute, 1050); // NEW
+    assert.equal(h.weekLaneCard.visible, true); // NEW
+    assert.match(h.weekLaneCard.style, /strokeColor=#B91C1C/); // NEW
 }); // NEW
 
 test("task manager week selection only reflows when active day changes", async () => { // NEW
@@ -960,16 +1116,16 @@ test("task manager direct day-lane resize persists selected weekday width", asyn
 
 test("task manager ignores week-lane layout geometry when width is unchanged", async () => { // NEW
     const h = makeHarness(); // NEW
+    await nextTick(); // NEW
     h.resetCounters(); // NEW
 
     const previousGeometry = h.weekWedLane.geometry.clone(); // NEW
     h.weekWedLane.geometry.x += 40; // NEW
-    h.weekWedLane.geometry.y += 12; // NEW
-    h.weekWedLane.geometry.height += 80; // NEW
     h.fireModelChange({ changes: [h.geometryChange(h.weekWedLane, previousGeometry)] }); // NEW
     await nextTick(); // NEW
 
     assert.equal(attr(h.board, "task_day_lane_widths_json"), null); // NEW
+    assert.equal(attr(h.board, "task_work_hours_week_overrides_json"), null); // NEW
     assert.equal(h.reflowCounters().layout, 0); // NEW
 }); // NEW
 
@@ -995,6 +1151,10 @@ test("task manager replaces legacy board layout ownership with canonical managed
         assert.match(lane.style, /(?:^|;)resizeParent=0(?:;|$)/); // NEW
         assert.doesNotMatch(lane.style, /(?:^|;)resizeParent=1(?:;|$)/); // NEW
     }); // NEW
+    assert.match(h.weekSunLane.style, /(?:^|;)collapsible=0(?:;|$)/); // NEW
+    assert.match(h.weekWedLane.style, /(?:^|;)collapsible=0(?:;|$)/); // NEW
+    assert.match(h.stagedLane.style, /(?:^|;)collapsible=1(?:;|$)/); // NEW
+    assert.match(h.todoLane.style, /(?:^|;)collapsible=1(?:;|$)/); // NEW
 }); // NEW
 
 test("task manager full-mode board resize persists lane height and refreshes paging", async () => { // NEW
@@ -1105,7 +1265,7 @@ test("task manager week-mode board resize expands staged lane only", async () =>
     assert.equal(heights["2026-07-12"], 1600); // NEW
     assert.equal(attr(h.board, "task_full_lane_height"), null); // NEW
     assert.equal(h.weekWedLane.geometry.height, expectedDayLaneHeight); // CHANGE
-    assert.equal(h.stagedLane.geometry.height, 1562); // NEW
+    assert.equal(h.stagedLane.geometry.height, 1542); // CHANGE
     assert.equal(h.board.geometry.height, 1600); // CHANGE
     assert.ok(counters.layout > 0); // NEW
     assert.ok(counters.boardLayout > 0); // NEW
@@ -1152,7 +1312,7 @@ test("task manager week-mode board height is restored per selected week", async 
     h.graph.setSelectionCell(h.board); // NEW
     await nextTick(); // NEW
     assert.equal(h.board.geometry.height, 1600); // NEW
-    assert.equal(h.stagedLane.geometry.height, 1562); // NEW
+    assert.equal(h.stagedLane.geometry.height, 1542); // CHANGE
 }); // NEW
 
 test("task manager restores persisted full-mode board height after week mode", async () => { // NEW
@@ -1204,12 +1364,12 @@ test("task manager all-closed week hides time scale and keeps day lanes compact"
 
     const timeScaleOverlay = h.document.querySelector(".trellis-task-week-time-scale"); // NEW
     assert.equal(timeScaleOverlay.style.display, "none"); // NEW
-    assert.equal(h.weekSunLane.geometry.y, 28); // NEW
-    assert.equal(h.weekWedLane.geometry.y, 28); // NEW
+    assert.equal(h.weekSunLane.geometry.y, 48); // CHANGE
+    assert.equal(h.weekWedLane.geometry.y, 48); // CHANGE
     assert.equal(h.weekSunLane.geometry.height, 20); // NEW
     assert.equal(h.weekWedLane.geometry.height, 20); // NEW
     assert.equal(h.stagedLane.geometry.height, 20); // NEW
-    assert.equal(h.board.geometry.height, 58); // NEW
+    assert.equal(h.board.geometry.height, 78); // CHANGE
 }); // NEW
 
 test("task manager edit hours shifts existing day stack and marks overflow", async () => { // NEW
@@ -1300,7 +1460,30 @@ test("task manager single DONE card still offers TODO and DOING actions", async 
     assert.equal(attr(h.weekLaneCard, "completed"), null); // NEW
 }); // NEW
 
-test("task manager multi-card overlay applies workflow, note, date, reset, and clear actions", async () => {
+test("task manager hides workflow actions for staged and mixed non-day selections", async () => { // NEW
+    const h = makeHarness(); // NEW
+    const overlay = h.document.querySelector(".trellis-task-selected-card-actions"); // NEW
+    h.setState(h.stagedCard, { x: 30, y: 60, width: 120, height: 60 }); // NEW
+    h.setState(h.weekLaneCard, { x: 470, y: 60, width: 120, height: 60 }); // NEW
+    h.setState(h.card1, { x: 30, y: 130, width: 120, height: 60 }); // NEW
+
+    h.graph.setSelectionCell(h.stagedCard); // NEW
+    await nextTick(); // NEW
+    assert.equal(overlay.style.display, "flex"); // NEW
+    assert.equal(buttonByText(overlay, "TODO").style.display, "none"); // NEW
+    assert.equal(buttonByText(overlay, "DOING").style.display, "none"); // NEW
+    assert.equal(buttonByText(overlay, "DONE").style.display, "none"); // NEW
+    assert.equal(buttonByText(overlay, "Allocate to Start Dates").style.display, ""); // NEW
+
+    h.graph.setSelectionCells([h.weekLaneCard, h.card1]); // NEW
+    await nextTick(); // NEW
+    assert.equal(overlay.style.display, "flex"); // NEW
+    assert.equal(buttonByText(overlay, "TODO").style.display, "none"); // NEW
+    assert.equal(buttonByText(overlay, "DOING").style.display, "none"); // NEW
+    assert.equal(buttonByText(overlay, "DONE").style.display, "none"); // NEW
+}); // NEW
+
+test("task manager multi-card overlay applies note, date, reset, and clear actions", async () => { // CHANGE
     const h = makeHarness();
     const overlay = h.document.querySelector(".trellis-task-selected-card-actions");
 
@@ -1311,7 +1494,10 @@ test("task manager multi-card overlay applies workflow, note, date, reset, and c
     await nextTick();
 
     assert.equal(overlay.style.display, "flex");
-    ["Edit", "TODO", "DOING", "DONE", "Reset Dates", "Clear Note"].forEach(label => assert.ok(buttonByText(overlay, label), label));
+    ["Edit", "Reset Dates", "Clear Note"].forEach(label => assert.ok(buttonByText(overlay, label))); // CHANGE
+    assert.equal(buttonByText(overlay, "TODO").style.display, "none"); // NEW
+    assert.equal(buttonByText(overlay, "DOING").style.display, "none"); // NEW
+    assert.equal(buttonByText(overlay, "DONE").style.display, "none"); // NEW
 
     buttonByText(overlay, "Edit").click();
     assert.ok(h.lastDialog);
@@ -1346,13 +1532,4 @@ test("task manager multi-card overlay applies workflow, note, date, reset, and c
     await nextTick();
     assert.equal(attr(h.card1, "card_note"), null);
     assert.equal(attr(h.card2, "card_note"), null);
-
-    h.resetCounters(); // NEW
-    buttonByText(overlay, "DOING").click();
-    await nextTick();
-    const workflowCounters = h.reflowCounters(); // NEW
-    assert.equal(attr(h.card1, "workflow_state"), "DOING");
-    assert.equal(attr(h.card2, "workflow_state"), "DOING");
-    assert.ok(workflowCounters.classification > 0); // NEW
-    assert.ok(workflowCounters.layout > 0); // NEW
-});
+}); // CHANGE
