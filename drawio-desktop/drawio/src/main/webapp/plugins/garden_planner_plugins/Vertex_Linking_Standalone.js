@@ -18,6 +18,7 @@ Draw.loadPlugin(function (ui) {
     const GRAPH_OVERLAY_LAYER_CLASS = Object.freeze({ annotation: 'trellis-graph-annotation-layer', connection: 'trellis-graph-connection-layer', control: 'trellis-graph-control-layer', controlTop: 'trellis-graph-control-top-layer' }); // NEW
     const GRAPH_OVERLAY_LAYER_Z = Object.freeze({ annotation: GRAPH_OVERLAY_Z.ANNOTATION, connection: GRAPH_OVERLAY_Z.CONNECTION, control: GRAPH_OVERLAY_Z.CONTROL, controlTop: GRAPH_OVERLAY_Z.CONTROL_TOP }); // NEW
     const LINK_ENDPOINT_CENTER_OFFSET_PX = 5; // NEW
+    const LINK_LABEL_STAGGER_PX = 15; // NEW
     graph.__ctrlToggleHandled = false;
 
     // -------------------- Helpers --------------------
@@ -1100,6 +1101,12 @@ Draw.loadPlugin(function (ui) {
             } // CHANGE
         } // CHANGE
 
+        function normalizeLabelOffset(offset) { // NEW
+            const x = offset && Number.isFinite(offset.x) ? offset.x : 0; // NEW
+            const y = offset && Number.isFinite(offset.y) ? offset.y : 0; // NEW
+            return { x, y }; // NEW
+        } // NEW
+
         // Compute line endpoints from current cell geometry + exitHint                    
         function computePointsFor(entry) {
             const m = model;
@@ -1158,8 +1165,11 @@ Draw.loadPlugin(function (ui) {
                 : 0.15);
             const lx = p0.x + r * (p1.x - p0.x);
             const ly = p0.y + r * (p1.y - p0.y);
+            const labelOffset = normalizeLabelOffset(entry.labelOffset); // NEW
+            const labelX = lx + labelOffset.x; // NEW
+            const labelY = ly + labelOffset.y; // NEW
 
-            if (!isFinite(lx) || !isFinite(ly)) {
+            if (!isFinite(labelX) || !isFinite(labelY)) { // CHANGE
                 return;
             }
 
@@ -1167,8 +1177,8 @@ Draw.loadPlugin(function (ui) {
                 entry.labelElt.node.parentNode === pane) {
                 // Update existing mxText
                 entry.labelElt.value = label;
-                entry.labelElt.bounds.x = lx;
-                entry.labelElt.bounds.y = ly;
+                entry.labelElt.bounds.x = labelX; // CHANGE
+                entry.labelElt.bounds.y = labelY; // CHANGE
                 applyLinkOverlayBadgeStyle(entry.labelElt, entry.color); // CHANGE
                 entry.labelElt.redraw();
             } else {
@@ -1178,7 +1188,7 @@ Draw.loadPlugin(function (ui) {
                 }
 
                 // --- CREATE NEW LABEL -------------------------------------------------------
-                const bounds = new mxRectangle(lx, ly, 1, 1);
+                const bounds = new mxRectangle(labelX, labelY, 1, 1); // CHANGE
 
                 const txt = new mxText(
                     label,
@@ -1293,8 +1303,9 @@ Draw.loadPlugin(function (ui) {
          * - exitHint: {side, t} from computeExitParamsForOrigin (may be null)
          * - color: stroke color
          * - label: plain text label
+         * - labelOffset: {x, y} screen-space stagger in pixels // NEW
          */
-        function setLinkOverlay(a, b, exitHint, color, label) {
+        function setLinkOverlay(a, b, exitHint, color, label, labelOffset) { // CHANGE
             if (!a || !b || a === b) return;
             const aId = a.id, bId = b.id;
             const key = pairKey(aId, bId);
@@ -1308,6 +1319,7 @@ Draw.loadPlugin(function (ui) {
                     exitHint: exitHint || null,
                     color: color || '#ff0000',
                     label: label || '',
+                    labelOffset: normalizeLabelOffset(labelOffset), // NEW
                     poly: null,
                     labelElt: null
                 };
@@ -1316,6 +1328,7 @@ Draw.loadPlugin(function (ui) {
                 entry.exitHint = exitHint || null;
                 entry.color = color || '#ff0000';
                 entry.label = label || '';
+                entry.labelOffset = normalizeLabelOffset(labelOffset); // NEW
             }
 
             createOrUpdatePolyline(entry);
@@ -3176,6 +3189,29 @@ Draw.loadPlugin(function (ui) {
         } // CHANGE
     } // CHANGE
 
+    function assignStandardLinkLabelOffsets(records) { // NEW
+        const groups = { left: [], right: [], top: [], bottom: [] }; // NEW
+        for (const record of records || []) { // NEW
+            record.labelOffset = { x: 0, y: 0 }; // NEW
+            const side = record.exitHint && record.exitHint.side; // NEW
+            if (groups[side]) groups[side].push(record); // NEW
+        } // NEW
+
+        for (const side of ['left', 'right', 'top', 'bottom']) { // NEW
+            groups[side].sort((a, b) => { // NEW
+                const at = a.exitHint && Number.isFinite(a.exitHint.t) ? a.exitHint.t : 0; // NEW
+                const bt = b.exitHint && Number.isFinite(b.exitHint.t) ? b.exitHint.t : 0; // NEW
+                return at - bt; // NEW
+            }); // NEW
+            for (let i = 0; i < groups[side].length; i++) { // NEW
+                const offsetPx = i * LINK_LABEL_STAGGER_PX; // NEW
+                groups[side][i].labelOffset = (side === 'left' || side === 'right') // NEW
+                    ? { x: 0, y: offsetPx } // NEW
+                    : { x: offsetPx, y: 0 }; // NEW
+            } // NEW
+        } // NEW
+    } // NEW
+
     // Config: whether a Primary vertex should be highlighted even without links
     const ALLOW_PRIMARY_WHEN_UNLINKED = true; // set to false to require links
 
@@ -3230,6 +3266,7 @@ Draw.loadPlugin(function (ui) {
             } // CHANGE
 
             const exitMap = computeExitParamsForOrigin(cell, targets);
+            const visibleLinkOverlayRecords = []; // NEW
 
             for (const other of targets) {
                 const otherIsPrimary = isPrimary(other);
@@ -3247,11 +3284,16 @@ Draw.loadPlugin(function (ui) {
                 // Decide visibility using internal lane-based policy               
                 const shouldShow = shouldShowEdgeInternal(cell, other);
                 if (shouldShow) { // CHANGE
-                    linkOverlays.setLinkOverlay(
-                        cell, other, exitHint, edgeColor, label
-                    );
+                    visibleLinkOverlayRecords.push({ other, exitHint, edgeColor, label, labelOffset: { x: 0, y: 0 } }); // NEW
                 }
             }
+
+            assignStandardLinkLabelOffsets(visibleLinkOverlayRecords); // NEW
+            for (const record of visibleLinkOverlayRecords) { // NEW
+                linkOverlays.setLinkOverlay( // CHANGE
+                    cell, record.other, record.exitHint, record.edgeColor, record.label, record.labelOffset // CHANGE
+                ); // CHANGE
+            } // NEW
 
             for (const otherCard of sameBoardLinkedCards) { // CHANGE
                 const otherIsPrimary = isPrimary(otherCard); // CHANGE

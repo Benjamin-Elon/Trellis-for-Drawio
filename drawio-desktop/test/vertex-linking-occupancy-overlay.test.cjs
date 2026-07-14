@@ -125,6 +125,30 @@ test("standard link endpoints use a five pixel center offset", () => { // NEW
     assert.doesNotMatch(computePointsSource, /anchorOnSide\(dstC, trgSide, 0\.5\)/); // NEW
 }); // NEW
 
+test("standard link labels stagger visible same-side labels by fifteen pixels", () => { // NEW
+    const source = readSource(); // NEW
+    const labelSource = sourceBetween(source, "function createOrUpdateLabel(entry, pts)", "function createOrUpdatePolyline(entry)"); // NEW
+    const setOverlaySource = sourceBetween(source, "function setLinkOverlay(a, b, exitHint, color, label, labelOffset)", "function clearAll()"); // NEW
+    const staggerSource = sourceBetween(source, "function assignStandardLinkLabelOffsets(records)", "// Config: whether a Primary vertex should be highlighted even without links"); // NEW
+    const drawSource = sourceBetween(source, "const exitMap = computeExitParamsForOrigin(cell, targets);", "for (const otherCard of sameBoardLinkedCards)"); // NEW
+
+    assert.match(source, /const LINK_LABEL_STAGGER_PX = 15;/); // NEW
+    assert.match(staggerSource, /const groups = \{ left: \[\], right: \[\], top: \[\], bottom: \[\] \};/); // NEW
+    assert.match(staggerSource, /const offsetPx = i \* LINK_LABEL_STAGGER_PX;/); // NEW
+    assert.match(staggerSource, /\? \{ x: 0, y: offsetPx \}/); // NEW
+    assert.match(staggerSource, /: \{ x: offsetPx, y: 0 \};/); // NEW
+    assert.match(drawSource, /const visibleLinkOverlayRecords = \[\];/); // NEW
+    assert.match(drawSource, /visibleLinkOverlayRecords\.push\(\{ other, exitHint, edgeColor, label, labelOffset: \{ x: 0, y: 0 \} \}\);/); // NEW
+    assert.match(drawSource, /assignStandardLinkLabelOffsets\(visibleLinkOverlayRecords\);/); // NEW
+    assert.match(drawSource, /cell, record\.other, record\.exitHint, record\.edgeColor, record\.label, record\.labelOffset/); // NEW
+    assert.match(setOverlaySource, /labelOffset: normalizeLabelOffset\(labelOffset\)/); // NEW
+    assert.match(setOverlaySource, /entry\.labelOffset = normalizeLabelOffset\(labelOffset\);/); // NEW
+    assert.match(labelSource, /const labelOffset = normalizeLabelOffset\(entry\.labelOffset\);/); // NEW
+    assert.match(labelSource, /entry\.labelElt\.bounds\.x = labelX;/); // NEW
+    assert.match(labelSource, /entry\.labelElt\.bounds\.y = labelY;/); // NEW
+    assert.match(labelSource, /new mxRectangle\(labelX, labelY, 1, 1\)/); // NEW
+}); // NEW
+
 test("task overlay guide lines keep centered anchors", () => { // NEW
     const source = readSource(); // NEW
     const taskLineSource = sourceBetween(source, "function createOrUpdateLine(entry, cardId, row)", "function refreshLines(entry)"); // NEW

@@ -38,9 +38,11 @@ const TASK_SCHEDULE_ORDER_DAY_ATTR = 'schedule_order_day'; // NEW: prevents stal
 const TASK_WORK_HOURS_DEFAULTS_ATTR = 'task_work_hours_defaults_json'; // NEW
 const TASK_WORK_HOURS_WEEK_OVERRIDES_ATTR = 'task_work_hours_week_overrides_json'; // NEW
 const TASK_DAY_LANE_WIDTHS_ATTR = 'task_day_lane_widths_json'; // NEW: user-resized per-weekday lane widths
+const TASK_NON_DAY_LANE_WIDTHS_ATTR = 'task_non_day_lane_widths_json'; // NEW: user-resized per-lane widths for non-day lanes
 const TASK_FULL_LANE_HEIGHT_ATTR = 'task_full_lane_height'; // NEW: user-resized full-mode lane height
 const TASK_WEEK_BOARD_HEIGHTS_ATTR = 'task_week_board_heights_json'; // NEW: user-resized week-mode board heights keyed by week start
 const TASK_ASSIGNEE_ROLE_IDS_ATTR = 'task_assignee_role_ids_json'; // NEW: canonical role-card ids assigned to a task
+const TASK_PAGE_ANCHOR_ATTR = 'task_page_anchor_card_id'; // NEW: authoritative persisted page position for non-day lanes
 const TASK_VIEW_MODES = ['FULL', 'WEEK']; // CHANGE: Day mode now normalizes to Week
 const TASK_WORKFLOW_STATES = ['STAGED', 'TODO', 'DOING', 'DONE']; // NEW
 const WEEK_DAY_LANE_KEYS = ['WEEK_SUN', 'WEEK_MON', 'WEEK_TUE', 'WEEK_WED', 'WEEK_THU', 'WEEK_FRI', 'WEEK_SAT']; // NEW
@@ -541,6 +543,27 @@ function normalizeWeekDayLaneWidths(value, fallbackWidth) { // NEW
 
 function serializeWeekDayLaneWidths(widths) { // NEW
     return JSON.stringify({ schemaVersion: 1, widths: normalizeWeekDayLaneWidths(widths, DEFAULT_DAY_LANE_WIDTH) }); // NEW
+} // NEW
+
+function normalizeNonDayLaneWidth(value, fallback) { // NEW
+    return normalizeWeekDayLaneWidth(value, fallback); // NEW: non-day lanes share the board lane width floor
+} // NEW
+
+function normalizeNonDayLaneWidths(value, fallbackWidth) { // NEW
+    const parsed = typeof value === 'string' ? parseJsonObject(value) : value; // NEW
+    const source = parsed && typeof parsed === 'object' ? parsed : {}; // NEW
+    const rawWidths = source.widths && typeof source.widths === 'object' ? source.widths : source; // NEW
+    const fallback = normalizeNonDayLaneWidth(fallbackWidth, DEFAULT_DAY_LANE_WIDTH); // NEW
+    const out = {}; // NEW
+    KANBAN_LANE_DEFS.forEach(lane => { // NEW
+        if (!lane || WEEK_DAY_LANE_KEYS.indexOf(String(lane.key || '')) >= 0) return; // CHANGE
+        out[lane.key] = normalizeNonDayLaneWidth(rawWidths[lane.key], fallback); // NEW
+    }); // NEW
+    return out; // NEW
+} // NEW
+
+function serializeNonDayLaneWidths(widths) { // NEW
+    return JSON.stringify({ schemaVersion: 1, widths: normalizeNonDayLaneWidths(widths, DEFAULT_DAY_LANE_WIDTH) }); // NEW
 } // NEW
 
 function normalizeWeekBoardHeight(value, fallback) { // NEW
@@ -1045,6 +1068,61 @@ function isCardVisibilityEligible(source) { // NEW: paging and lane counts share
         readAttributeValue(source, 'repeat_hidden') !== '1'; // NEW
 } // NEW
 
+const TASK_LANE_HEADER_HEIGHT = 40; // NEW: stable two-line title band for every non-day lane
+const TASK_LANE_STACK_BORDER = 20; // NEW: matches the canonical Draw.io stack layout inset
+const TASK_LANE_PAGER_MARGIN_TOP = 20; // NEW: reserves a 28px pager row without narrowing cards
+const TASK_LANE_STACK_SPACING = 20; // NEW: matches LANE_STYLE_BASE stackSpacing
+const TASK_LANE_MIN_CARD_HEIGHT = DEFAULT_TASK_CARD_HEIGHT; // CHANGE: full task cards must never be clamped below the standard 80px height
+const TASK_LANE_MIN_HEIGHT = 126; // NEW: shared full and week non-day lane minimum
+
+/**
+ * Builds deterministic contiguous pages from authored card heights. // NEW
+ * The returned heights are the only values that may be persisted as clamps. // NEW
+ */
+function buildTaskLanePagePlan(cardHeights, laneHeight) { // NEW
+    const normalizedLaneHeight = Math.max(TASK_LANE_MIN_HEIGHT, Math.round(Number(laneHeight) || TASK_LANE_MIN_HEIGHT)); // NEW
+    const inputHeights = Array.isArray(cardHeights) ? cardHeights : []; // NEW
+    const normalizedHeights = inputHeights.map(height => Math.max(TASK_LANE_MIN_CARD_HEIGHT, Math.round(Number(height) || DEFAULT_TASK_CARD_HEIGHT))); // NEW
+    const unpagedUsableHeight = Math.max(TASK_LANE_MIN_CARD_HEIGHT, normalizedLaneHeight - TASK_LANE_HEADER_HEIGHT - (TASK_LANE_STACK_BORDER * 2)); // NEW
+    const unpagedHeights = normalizedHeights.map(height => Math.min(height, unpagedUsableHeight)); // NEW
+    const stackHeight = heights => heights.reduce((total, height) => total + height, 0) + Math.max(0, heights.length - 1) * TASK_LANE_STACK_SPACING; // NEW
+
+    if (stackHeight(unpagedHeights) <= unpagedUsableHeight) { // NEW
+        return Object.freeze({ // NEW
+            paged: false, // NEW
+            heights: Object.freeze(unpagedHeights), // NEW
+            pages: Object.freeze([{ start: 0, end: unpagedHeights.length }]), // NEW
+            usableHeight: unpagedUsableHeight, // NEW
+            pagerMarginTop: 0 // NEW
+        }); // NEW
+    } // NEW
+
+    const pagedUsableHeight = Math.max(TASK_LANE_MIN_CARD_HEIGHT, unpagedUsableHeight - TASK_LANE_PAGER_MARGIN_TOP); // NEW
+    const pagedHeights = normalizedHeights.map(height => Math.min(height, pagedUsableHeight)); // NEW
+    const pages = []; // NEW
+    let pageStart = 0; // NEW
+    let pageHeight = 0; // NEW
+    pagedHeights.forEach((height, index) => { // NEW
+        const nextHeight = pageHeight === 0 ? height : pageHeight + TASK_LANE_STACK_SPACING + height; // NEW
+        if (pageHeight > 0 && nextHeight > pagedUsableHeight) { // NEW
+            pages.push(Object.freeze({ start: pageStart, end: index })); // NEW
+            pageStart = index; // NEW
+            pageHeight = height; // NEW
+        } else { // NEW
+            pageHeight = nextHeight; // NEW
+        } // NEW
+    }); // NEW
+    pages.push(Object.freeze({ start: pageStart, end: pagedHeights.length })); // NEW
+
+    return Object.freeze({ // NEW
+        paged: true, // NEW
+        heights: Object.freeze(pagedHeights), // NEW
+        pages: Object.freeze(pages), // NEW
+        usableHeight: pagedUsableHeight, // NEW
+        pagerMarginTop: TASK_LANE_PAGER_MARGIN_TOP // NEW
+    }); // NEW
+} // NEW
+
 function planRepeatSeriesVisibility(records) { // NEW: pure planner keeps board mutation orchestration small
     const input = Array.isArray(records) ? records : []; // NEW
     const plannedById = new Map(); // NEW
@@ -1130,6 +1208,7 @@ const TASK_REFLOW_COMMAND_SCOPES = Object.freeze({ // NEW: pure command-to-scope
     dayLaneResize: 'layout', // NEW
     boardResize: 'layout', // NEW
     selection: 'badges', // NEW
+    selectedPeriodStagedPaging: 'lanes', // NEW
     stagedBadgeRefresh: 'badges', // NEW
     noteEdit: 'badges' // NEW
 }); // NEW
@@ -1204,6 +1283,9 @@ const SchedulePolicyCore = Object.freeze({ // CHANGE
     normalizeWeekDayLaneWidth, // CHANGE
     normalizeWeekDayLaneWidths, // CHANGE
     serializeWeekDayLaneWidths, // CHANGE
+    normalizeNonDayLaneWidth, // NEW
+    normalizeNonDayLaneWidths, // NEW
+    serializeNonDayLaneWidths, // NEW
     normalizeWeekBoardHeight, // NEW
     normalizeWeekBoardHeights, // NEW
     serializeWeekBoardHeights, // NEW
@@ -1334,6 +1416,7 @@ if (typeof globalThis !== 'undefined' && globalThis.__TRELLIS_TASK_MANAGER_TEST_
         buildRepeatSeriesKey, // NEW
         compareRepeatOccurrenceRecords, // NEW
         isCardVisibilityEligible, // NEW
+        buildTaskLanePagePlan, // NEW
         planRepeatSeriesVisibility, // CHANGE
         getKanbanCellType, // NEW
         canParentKanbanCell // NEW
@@ -1359,7 +1442,7 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
     const BOARD_STYLE = // CHANGE: task layout owns board-child geometry instead of Draw.io stack fill
         'swimlane;fontStyle=2;horizontal=1;startSize=28;collapsible=1;swimlaneFillColor=#F8FAFC;fontFamily=Permanent Marker;fontSize=16;points=[];verticalAlign=top;resizable=1;strokeWidth=2;disableMultiStroke=1;'; // CHANGE: opaque body remains visible below shorter week lanes
     const LANE_STYLE_BASE =
-        'swimlane;strokeWidth=2;fontFamily=Permanent Marker;html=0;startSize=1;verticalAlign=bottom;spacingBottom=5;points=[];childLayout=stackLayout;stackBorder=20;stackSpacing=20;resizeLast=0;resizeParent=0;horizontalStack=0;collapsible=1;fillStyle=solid;swimlaneFillColor=default;'; // CHANGE
+        'swimlane;strokeWidth=2;fontFamily=Permanent Marker;fontSize=12;html=0;startSize=40;align=center;verticalAlign=middle;whiteSpace=wrap;spacingBottom=5;points=[];childLayout=stackLayout;stackBorder=20;stackSpacing=20;marginTop=0;resizeLast=0;resizeParent=0;horizontalStack=0;collapsible=1;fillStyle=solid;swimlaneFillColor=default;'; // CHANGE: real title band plus pager-safe vertical margin
     const SCHEDULE_LANE_STYLE_BASE = // NEW: plugin-owned schedule geometry prevents Draw.io stack layout from expanding day lanes
         'swimlane;strokeWidth=2;fontFamily=Permanent Marker;html=0;startSize=1;verticalAlign=bottom;spacingBottom=5;points=[];resizeLast=0;resizeParent=0;horizontalStack=0;collapsible=0;fillStyle=solid;swimlaneFillColor=default;'; // CHANGE
     const CARD_STYLE =
@@ -1391,7 +1474,7 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
 
     const BOARD_GEOM = { x: 40, y: 40, w: 2200, h: 760 };
     const LANE_W = DEFAULT_DAY_LANE_WIDTH, LANE_H = 680, LANE_GAP = 16; // CHANGE
-    const BOARD_LANE_Y = 28, BOARD_BOTTOM_PADDING = 10, FULL_LANE_MIN_H = 126; // NEW: full-mode board resize math
+    const BOARD_LANE_Y = 28, BOARD_BOTTOM_PADDING = 10, FULL_LANE_MIN_H = TASK_LANE_MIN_HEIGHT; // CHANGE: one minimum for every non-day lane
     const WEEK_BOARD_TOP_MARGIN = 20; // NEW: replaces schedule-lane stackBorder so hour origin and resize math match
     const TASK_ACTION_OVERLAY_EXTRA_Y = 3; // CHANGE: nudges selected card/lane action overlays below handles
     const SCHEDULE_CARD_HORIZONTAL_INSET = 10; // CHANGE: day lanes own card x and width with fixed side gutters
@@ -1403,21 +1486,9 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
     const REPEAT_BADGE_ATTR = 'repeat_badge'; // NEW
 
     const LANES = KANBAN_LANE_DEFS; // CHANGE: template and policy use the same canonical lane list
-
-    // -------------------- Paging icons --------------------                                       
-    const ICON_PAGE_UP = 'data:image/svg+xml;utf8,' +
-        encodeURIComponent(
-            '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14">' +
-            '<polygon points="7,3 3,9 11,9" stroke="#000" fill="none" stroke-width="1.4"/>' +
-            '</svg>'
-        );
-
-    const ICON_PAGE_DOWN = 'data:image/svg+xml;utf8,' +
-        encodeURIComponent(
-            '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14">' +
-            '<polygon points="3,5 11,5 7,11" stroke="#000" fill="none" stroke-width="1.4"/>' +
-            '</svg>'
-        );
+    const lanePagingStates = new Map(); // NEW: current plans drive DOM rendering without a public API
+    let requestLanePagerOverlayRefresh = function () {}; // NEW: installed after the shared overlay host exists
+    let taskPagingSelectionGuard = false; // NEW: prevents selection repair and reveal loops
 
 
     // -------------------- Draw.io adapter factory: values, cells, and model writes -------------------- // CHANGE
@@ -1667,6 +1738,29 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
         return true; // NEW
     } // NEW
 
+    function getBoardNonDayLaneWidths(board) { // NEW
+        return schedulePolicy.normalizeNonDayLaneWidths(getAttr(board, TASK_NON_DAY_LANE_WIDTHS_ATTR), LANE_W); // NEW
+    } // NEW
+
+    function getNonDayLaneWidth(board, laneKey) { // NEW
+        if (isWeekDayLane(laneKey)) return LANE_W; // NEW
+        return getBoardNonDayLaneWidths(board)[laneKey] || LANE_W; // NEW
+    } // NEW
+
+    function getBoardLayoutLaneWidth(board, laneKey) { // NEW
+        return isWeekDayLane(laneKey) ? getWeekDayLaneWidth(board, laneKey) : getNonDayLaneWidth(board, laneKey); // NEW
+    } // NEW
+
+    function persistNonDayLaneWidth(board, laneKey, width) { // NEW
+        if (!board || !laneKey || isWeekDayLane(laneKey)) return false; // NEW
+        const widths = getBoardNonDayLaneWidths(board); // NEW
+        const nextWidth = schedulePolicy.normalizeNonDayLaneWidth(width, LANE_W); // NEW
+        if (widths[laneKey] === nextWidth) return false; // NEW
+        widths[laneKey] = nextWidth; // NEW
+        setAttrNoUndo(board, TASK_NON_DAY_LANE_WIDTHS_ATTR, schedulePolicy.serializeNonDayLaneWidths(widths), true); // NEW
+        return true; // NEW
+    } // NEW
+
     function getBoardWeekWorkHourEditState(board) { // NEW
         ensureBoardPlanningDefaults(board); // NEW
         const weekStart = getSelectedWeekStart(board); // NEW
@@ -1862,11 +1956,12 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
         return Math.max(SCHEDULE_MIN_CARD_HEIGHT, schedulePolicy.scheduleMinutesToPx(schedulePolicy.workWindowDurationMinutes(dayWindow))); // CHANGE
     } // NEW
 
-    function getCanonicalLaneStyle(laneKey, emphasized) { // NEW: retain card stacking without allowing it to own lane geometry
+    function getCanonicalLaneStyle(laneKey, emphasized, paged) { // CHANGE: retain card stacking while reserving pager height only
         const laneIndex = LANES.findIndex(lane => lane.key === laneKey); // NEW
         const fillIndex = laneIndex >= 0 ? laneIndex % LANE_FILL.length : 0; // NEW
         const styleBase = isWeekDayLane(laneKey) ? SCHEDULE_LANE_STYLE_BASE : LANE_STYLE_BASE; // NEW
-        const style = styleBase + 'fillColor=' + LANE_FILL[fillIndex] + ';strokeColor=' + LANE_FILL[fillIndex] + ';'; // NEW
+        let style = styleBase + 'fillColor=' + LANE_FILL[fillIndex] + ';strokeColor=' + LANE_FILL[fillIndex] + ';'; // CHANGE
+        if (!isWeekDayLane(laneKey)) style = setStyleKey(style, 'marginTop', paged ? String(TASK_LANE_PAGER_MARGIN_TOP) : '0'); // NEW
         return setStyleKey(style, 'strokeWidth', emphasized ? '3' : '2'); // NEW
     } // NEW
 
@@ -1880,7 +1975,7 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
         Object.keys(lanes || {}).forEach(laneKey => { // NEW
             const lane = lanes[laneKey]; // NEW
             if (!lane) return; // NEW
-            const style = getCanonicalLaneStyle(laneKey, laneKey === selectedWeekLaneKey); // NEW
+            const style = getCanonicalLaneStyle(laneKey, laneKey === selectedWeekLaneKey, !!getAttr(lane, TASK_PAGE_ANCHOR_ATTR)); // CHANGE
             if (lane.getStyle() !== style) lane.setStyle(style); // NEW
         }); // NEW
     } // NEW
@@ -1911,7 +2006,7 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
             }); // NEW
             const persistedBoardHeight = getPersistedWeekBoardHeight(board); // NEW
             const requestedLaneHeight = persistedBoardHeight == null ? 0 : persistedBoardHeight - y - BOARD_BOTTOM_PADDING; // CHANGE
-            laneHeights.TODO_STAGED = Math.max(SCHEDULE_MIN_CARD_HEIGHT, weekScaleHeight, maxLaneHeight, requestedLaneHeight); // CHANGE
+            laneHeights.TODO_STAGED = Math.max(TASK_LANE_MIN_HEIGHT, weekScaleHeight, maxLaneHeight, requestedLaneHeight); // CHANGE: real header remains usable when all days are closed
             maxLaneHeight = Math.max(maxLaneHeight, laneHeights.TODO_STAGED); // NEW
         } // NEW
         let x = 10; // NEW
@@ -1920,7 +2015,7 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
             const lane = lanes[laneKey]; // NEW
             if (!lane) return; // NEW
             if (mode === 'WEEK' && laneKey === WEEK_DAY_LANE_KEYS[0]) x += WEEK_TIME_RULER_WIDTH + LANE_GAP; // NEW
-            const laneWidth = mode === 'WEEK' && isWeekDayLane(laneKey) ? getWeekDayLaneWidth(board, laneKey) : LANE_W; // NEW
+            const laneWidth = getBoardLayoutLaneWidth(board, laneKey); // CHANGE: non-day lanes persist widths by lane key; day lanes keep existing behavior
             const geo = lane.getGeometry() ? lane.getGeometry().clone() : new mxGeometry(x, y, LANE_W, LANE_H); // NEW
             geo.x = x; // NEW
             geo.y = y + (mode === 'WEEK' && isWeekDayLane(laneKey) ? (laneYOffsets[laneKey] || 0) : 0); // CHANGE
@@ -2498,149 +2593,161 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
 
     // -------------------- Lane paging commands -------------------- // CHANGE
 
-    function measureAverageCardHeight(lane) {
-        let total = 0;
-        let count = 0;
-        const n = model.getChildCount(lane);
-        for (let i = 0; i < n; i++) {
-            const c = model.getChildAt(lane, i);
-            if (!model.isVertex(c)) continue;
-            if (!isRenderableKanbanCard(c)) continue;                                         // CHANGE
-            const geo = c.getGeometry();
-            if (!geo) continue;
-            total += geo.height;
-            count++;
-        }
-        return count > 0 ? (total / count) : 80;  // fallback to 80px if no cards                
-    }
+    function taskCellId(cell) { // NEW
+        return String(cell && (cell.id || (cell.getId && cell.getId())) || ''); // NEW
+    } // NEW
 
-    function computeLanePageSize(lane) {
-        const geo = lane.getGeometry();
-        if (!geo) return 10;
+    function setCellVisibleNoUndo(cell, visible) { // NEW: cached page visibility persists without creating an undo edit
+        const next = !!visible; // NEW
+        const current = !model.isVisible || model.isVisible(cell); // NEW
+        if (current === next) return false; // NEW
+        if (cell && typeof cell.setVisible === 'function') cell.setVisible(next); // NEW
+        else if (cell) cell.visible = next; // NEW
+        return true; // NEW
+    } // NEW
 
-        // Style-derived constants: startSize=1, stackBorder=20, spacingBottom=5                 
-        const headerHeight = 1;
-        const topPadding = 20;
-        const bottomPadding = 5;
-        const reserved = headerHeight + topPadding + bottomPadding;  // 26px                     
+    function setCellGeometryNoUndo(cell, geometry) { // NEW: paging is view state even when it restacks the visible page
+        const current = cell && (cell.getGeometry ? cell.getGeometry() : cell.geometry); // NEW
+        if (!cell || !geometry || geometryMatchesRounded(current, geometry)) return false; // NEW
+        if (typeof cell.setGeometry === 'function') cell.setGeometry(geometry); // NEW
+        else cell.geometry = geometry; // NEW
+        return true; // NEW
+    } // NEW
 
-        const laneHeight = geo.height;
-        const availableHeight = Math.max(0, laneHeight - reserved);
+    function setLanePageLabelNoUndo(lane, pageIndex, pageCount) { // NEW
+        const value = ensureXmlValue(lane); // NEW
+        const baseLabel = String(getAttr(lane, 'status') || ''); // NEW
+        const nextLabel = pageCount > 1 ? `${baseLabel}\nPage ${pageIndex + 1} of ${pageCount}` : baseLabel; // NEW
+        if ((value.getAttribute('label') || '') === nextLabel) return false; // NEW
+        value.setAttribute('label', nextLabel); // NEW
+        return true; // NEW
+    } // NEW
 
-        const avgCardHeight = measureAverageCardHeight(lane);
-        const STACK_SPACING = 20;  // from LANE_STYLE_BASE                                       
-        const unitHeight = avgCardHeight + STACK_SPACING;
+    function findPageIndexForCardIndex(pages, cardIndex) { // NEW
+        const index = (pages || []).findIndex(page => cardIndex >= page.start && cardIndex < page.end); // NEW
+        return index >= 0 ? index : 0; // NEW
+    } // NEW
 
-        if (unitHeight <= 0 || availableHeight <= 0) return 1;
-        const pageSize = Math.floor(availableHeight / unitHeight);
-        return Math.max(1, pageSize);
-    }
+    function applyPersistedHeightClamps(cards, plan) { // NEW
+        let changed = false; // NEW
+        (cards || []).forEach((card, index) => { // NEW
+            const geo = card && (card.getGeometry ? card.getGeometry() : card.geometry); // NEW
+            const nextHeight = plan.heights[index]; // NEW
+            if (!geo || nextHeight == null || Math.round(Number(geo.height) || 0) === nextHeight) return; // NEW
+            const nextGeo = geo.clone ? geo.clone() : new mxGeometry(geo.x || 0, geo.y || 0, geo.width || 160, geo.height || nextHeight); // NEW
+            nextGeo.height = nextHeight; // NEW
+            changed = setCellGeometryNoUndo(card, nextGeo) || changed; // NEW
+            persistFullCardHeight(card, nextHeight); // NEW: destructive clamp is intentionally persisted without undo
+        }); // NEW
+        return changed; // NEW
+    } // NEW
 
-    function getLanePageIndex(lane) {
-        const raw = getAttr(lane, 'page_index');
-        if (raw == null || raw === '') return 0;
-        const n = parseInt(raw, 10);
-        return Number.isNaN(n) ? 0 : n;
-    }
-
-    function setLanePageIndex(lane, idx) {
-        if (getLanePageIndex(lane) === (parseInt(idx, 10) || 0)) return; // NEW
-        setAttrNoUndo(lane, 'page_index', String(idx));
-    }
-
-    function clampLanePageIndex(pageIndex, totalCards, pageSize) {
-        if (totalCards <= 0) return 0;
-        const maxPageIndex = Math.max(0, Math.ceil(totalCards / pageSize) - 1);
-        if (pageIndex < 0) return 0;
-        if (pageIndex > maxPageIndex) return maxPageIndex;
-        return pageIndex;
-    }
-
-    function countRenderable(cards) {                                                  // NEW
-        let n = 0;                                                                     // NEW
-        for (const c of (cards || [])) if (isRenderableKanbanCard(c)) n++;             // CHANGE
-        return n;                                                                       // NEW
-    }
-
-    function applyLanePaging(lane, laneKey, sortedCards) {
-        if (isWeekDayLane(laneKey)) { // NEW: schedule lanes are never paged
-            setLanePageIndex(lane, 0); // NEW
-            (sortedCards || []).forEach(card => { if (model.isVisible && model.isVisible(card) === false) model.setVisible(card, true); }); // NEW
-            return; // NEW
+    function layoutVisibleLanePageNoUndo(lane, cards, plan, page) { // NEW: mirrors mxStackLayout without generating geometry edits
+        const laneGeo = lane && (lane.getGeometry ? lane.getGeometry() : lane.geometry); // NEW
+        if (!laneGeo || !page) return false; // NEW
+        const x = TASK_LANE_STACK_BORDER; // NEW
+        const width = Math.max(TASK_LANE_MIN_CARD_HEIGHT, Math.round(Number(laneGeo.width) || LANE_W) - (TASK_LANE_STACK_BORDER * 2)); // NEW
+        let y = TASK_LANE_HEADER_HEIGHT + TASK_LANE_STACK_BORDER + plan.pagerMarginTop; // NEW
+        let changed = false; // NEW
+        for (let index = page.start; index < page.end; index++) { // NEW
+            const card = cards[index]; // NEW
+            const geo = card && (card.getGeometry ? card.getGeometry() : card.geometry); // NEW
+            if (!geo) continue; // NEW
+            const nextGeo = geo.clone ? geo.clone() : new mxGeometry(geo.x || 0, geo.y || 0, geo.width || width, geo.height || plan.heights[index]); // NEW
+            nextGeo.x = x; // NEW
+            nextGeo.y = y; // NEW
+            nextGeo.width = width; // NEW
+            nextGeo.height = plan.heights[index]; // NEW
+            changed = setCellGeometryNoUndo(card, nextGeo) || changed; // NEW
+            y += nextGeo.height + TASK_LANE_STACK_SPACING; // NEW
         } // NEW
-        const total = sortedCards ? sortedCards.length : 0;
-        const renderableTotal = countRenderable(sortedCards);                          // NEW
+        return changed; // NEW
+    } // NEW
 
-        let anyVisibilityChanged = false;
-        let labelChanged = false;
+    function setPagingSelectionCell(cell) { // NEW
+        if (!cell || !graph.setSelectionCell) return; // NEW
+        taskPagingSelectionGuard = true; // NEW
+        try { graph.setSelectionCell(cell); } finally { taskPagingSelectionGuard = false; } // NEW
+    } // NEW
 
-        if (renderableTotal === 0) {
-            setLanePageIndex(lane, 0);
-            const baseLabel = getAttr(lane, 'status') || lane.value || '';
-            const v = ensureXmlValue(lane);
-            const oldLabel = v.getAttribute('label') || '';
-            const newLabel = String(baseLabel);
-            if (oldLabel !== newLabel) {
-                v.setAttribute('label', newLabel);
-                labelChanged = true;
-            }
-            if (labelChanged) {
-                graph.refresh(lane);
-            }
-            return;
-        }
+    function applyLanePaging(lane, laneKey, sortedCards, opts) { // CHANGE: task manager owns height planning, visibility, anchor, and selection repair
+        if (!lane) return null; // NEW
+        const options = opts || {}; // NEW
+        const renderableCards = (sortedCards || []).filter(isRenderableKanbanCard); // CHANGE
+        const allLaneCards = []; // NEW: rebuild the complete persisted visibility cache, including excluded occurrences
+        for (let childIndex = 0; childIndex < model.getChildCount(lane); childIndex++) { // NEW
+            const child = model.getChildAt(lane, childIndex); // NEW
+            if (child && model.isVertex(child) && isKanbanCard(child)) allLaneCards.push(child); // NEW
+        } // NEW
+        allLaneCards.filter(card => renderableCards.indexOf(card) < 0).forEach(card => setCellVisibleNoUndo(card, false)); // NEW
+        setAttrNoUndo(lane, 'page_index', null, true); // CHANGE: legacy numeric state always resets during migration
 
-        const pageSize = computeLanePageSize(lane);
-        let pageIndex = getLanePageIndex(lane);
-        pageIndex = clampLanePageIndex(pageIndex, renderableTotal, pageSize);
-        setLanePageIndex(lane, pageIndex);
+        if (isWeekDayLane(laneKey)) { // NEW: time-based schedule lanes are never paged
+            setAttrNoUndo(lane, TASK_PAGE_ANCHOR_ATTR, null, true); // NEW
+            renderableCards.forEach(card => setCellVisibleNoUndo(card, true)); // CHANGE
+            lanePagingStates.delete(taskCellId(lane)); // NEW
+            requestLanePagerOverlayRefresh(); // NEW
+            return null; // NEW
+        } // NEW
 
-        const start = pageIndex * pageSize;
-        const end = Math.min(start + pageSize, renderableTotal);
-        let pageIdx = 0;                                                                   // NEW
+        const laneGeo = lane.getGeometry ? lane.getGeometry() : lane.geometry; // NEW
+        const plan = buildTaskLanePagePlan(renderableCards.map(card => { // NEW
+            const geo = card && (card.getGeometry ? card.getGeometry() : card.geometry); // NEW
+            return geo ? geo.height : DEFAULT_TASK_CARD_HEIGHT; // NEW
+        }), laneGeo ? laneGeo.height : TASK_LANE_MIN_HEIGHT); // NEW
+        let changed = applyPersistedHeightClamps(renderableCards, plan); // NEW
+        let pageIndex = 0; // NEW
 
-        for (let i = 0; i < total; i++) {
-            const card = sortedCards[i];
+        if (plan.paged) { // NEW
+            if (Number.isFinite(Number(options.targetPageIndex))) { // NEW
+                pageIndex = Math.max(0, Math.min(plan.pages.length - 1, Math.trunc(Number(options.targetPageIndex)))); // NEW
+            } else { // NEW
+                const anchorId = options.anchorCardId == null ? getAttr(lane, TASK_PAGE_ANCHOR_ATTR) : String(options.anchorCardId); // NEW
+                const anchorIndex = renderableCards.findIndex(card => taskCellId(card) === String(anchorId || '')); // NEW
+                pageIndex = anchorIndex >= 0 ? findPageIndexForCardIndex(plan.pages, anchorIndex) : 0; // NEW: missing anchors reset to page one
+            } // NEW
+            const anchorCard = renderableCards[plan.pages[pageIndex].start]; // NEW
+            setAttrNoUndo(lane, TASK_PAGE_ANCHOR_ATTR, taskCellId(anchorCard), true); // NEW: canonical page-first rebasing
+        } else { // NEW
+            setAttrNoUndo(lane, TASK_PAGE_ANCHOR_ATTR, null, true); // NEW
+        } // NEW
 
-            if (!isRenderableKanbanCard(card)) continue;                                   // CHANGE: derived hidden cards never consume page slots
+        const page = plan.pages[pageIndex] || { start: 0, end: 0 }; // NEW
+        renderableCards.forEach((card, index) => { // NEW
+            changed = setCellVisibleNoUndo(card, index >= page.start && index < page.end) || changed; // NEW
+        }); // NEW
+        if (plan.paged) changed = layoutVisibleLanePageNoUndo(lane, renderableCards, plan, page) || changed; // CHANGE: leave authored geometry untouched when no pager is needed
+        const nextStyle = setStyleKey(getCellStyleText(lane), 'marginTop', String(plan.pagerMarginTop)); // NEW
+        if (lane.getStyle() !== nextStyle) { lane.setStyle(nextStyle); changed = true; } // NEW
+        changed = setLanePageLabelNoUndo(lane, pageIndex, plan.pages.length) || changed; // NEW
 
-            const visible = (pageIdx >= start && pageIdx < end);                           // CHANGE
-            pageIdx++;
+        const state = { lane, laneKey, board: findBoardAncestor(lane), cards: renderableCards, plan, pageIndex }; // NEW
+        lanePagingStates.set(taskCellId(lane), state); // NEW
+        if (changed) { // NEW
+            if (graph.view && graph.view.invalidate) graph.view.invalidate(lane, true, true); // NEW
+            graph.refresh(lane); // CHANGE
+        } // NEW
 
-            const curVisible = model.isVisible ? model.isVisible(card) : true;
-            if (curVisible !== visible) {
-                model.setVisible(card, visible);
-                anyVisibilityChanged = true;
-            }
-        }
+        if (options.explicitNavigation) { // NEW
+            setPagingSelectionCell(lane); // NEW: every real page change falls back to its lane
+        } // NEW
+        requestLanePagerOverlayRefresh(); // NEW
+        return state; // NEW
+    } // CHANGE
 
-        const maxPageIndex = Math.max(0, Math.ceil(renderableTotal / pageSize) - 1);
-        const baseLabel = getAttr(lane, 'status') || lane.value || '';
-        const pageInfo = (maxPageIndex > 0)
-            ? ` (Page ${pageIndex + 1} / ${maxPageIndex + 1})`
-            : '';
-        const v = ensureXmlValue(lane);
-        const oldLabel = v.getAttribute('label') || '';
-        const newLabel = String(baseLabel) + pageInfo;
-        if (oldLabel !== newLabel) {
-            v.setAttribute('label', newLabel);
-            labelChanged = true;
-        }
+    function navigateLaneToPage(lane, laneKey, targetPageIndex) { // NEW
+        const current = lanePagingStates.get(taskCellId(lane)); // NEW
+        const currentIndex = current ? current.pageIndex : 0; // NEW
+        const targetIndex = Math.trunc(Number(targetPageIndex)); // NEW
+        if (!Number.isFinite(targetIndex) || targetIndex === currentIndex) return current; // NEW
+        return applyLanePaging(lane, laneKey, getLaneCardsInOrder(lane), { targetPageIndex: targetIndex, explicitNavigation: true }); // NEW
+    } // NEW
 
-        if (anyVisibilityChanged || labelChanged) {
-            graph.refresh(lane);
-        }
-    }
-
-    function changeLanePage(lane, laneKey, delta) {
-        if (!lane) return;
-        const current = getLanePageIndex(lane);
-        setLanePageIndex(lane, current + delta);
-
-        const cards = getLaneCardsInOrder(lane);
-        applyLanePaging(lane, laneKey, cards);
-        ensureLanePagingControls(lane, laneKey, countRenderable(cards)); // CHANGE
-    }
+    function changeLanePage(lane, laneKey, delta) { // CHANGE
+        if (!lane) return null; // CHANGE
+        const current = lanePagingStates.get(taskCellId(lane)) || applyLanePaging(lane, laneKey, getLaneCardsInOrder(lane), { skipSelectionRepair: true }); // NEW
+        return navigateLaneToPage(lane, laneKey, (current ? current.pageIndex : 0) + delta); // CHANGE
+    } // CHANGE
 
 
     function getLaneCardsInOrder(lane) {
@@ -2666,13 +2773,11 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
             const board = (opts && opts.board) || findBoardAncestor(lane); // NEW
             const cards = getScheduleLaneCardsInOrder(board, lane, laneKey); // CHANGE
             applyLanePaging(lane, laneKey, cards); // NEW
-            if (graph.removeCellOverlays) graph.removeCellOverlays(lane); // NEW
             applySchedulePlanToDayLane(board, lane, laneKey, { refresh: false }); // CHANGE
             return; // NEW
         } // NEW
         const sortedCards = sortLaneCards(lane, laneKey, opts) || [];
         applyLanePaging(lane, laneKey, sortedCards);
-        ensureLanePagingControls(lane, laneKey, countRenderable(sortedCards)); // CHANGE
     }
 
     function refreshSelectedPeriodStagedBadges(board, opts) { // NEW
@@ -2693,56 +2798,6 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
         if (changed) graph.refresh(lane); // NEW
         return changed; // NEW
     } // NEW
-
-
-    // Paging controls (overlays) for each lane                                                  
-    function ensureLanePagingControls(lane, laneKey, renderableTotal) { // CHANGE
-        if (!lane || renderableTotal == null) return;
-        if (isWeekDayLane(laneKey)) { graph.removeCellOverlays(lane); setLanePageIndex(lane, 0); return; } // NEW
-
-        const pageSize = computeLanePageSize(lane);
-        if (renderableTotal <= pageSize) { // CHANGE
-            graph.removeCellOverlays(lane);
-            setLanePageIndex(lane, 0);
-            return;
-        }
-
-        let pageIndex = getLanePageIndex(lane);
-        const maxPageIndex = Math.max(0, Math.ceil(renderableTotal / pageSize) - 1); // CHANGE
-        pageIndex = clampLanePageIndex(pageIndex, renderableTotal, pageSize); // CHANGE
-        setLanePageIndex(lane, pageIndex);
-
-        graph.removeCellOverlays(lane);
-
-        if (pageIndex > 0) {
-            const upImage = new mxImage(ICON_PAGE_UP, 14, 14);
-            const upOverlay = new mxCellOverlay(upImage, 'Page Up');
-            upOverlay.align = mxConstants.ALIGN_RIGHT;
-            upOverlay.verticalAlign = mxConstants.ALIGN_TOP;
-            upOverlay.offset = new mxPoint(-4, 4);
-            upOverlay.cursor = 'pointer';
-            upOverlay.addListener(mxEvent.CLICK, function (_sender, evt) {
-                changeLanePage(lane, laneKey, -1);
-                if (evt && evt.consume) evt.consume();
-            });
-            graph.addCellOverlay(lane, upOverlay);
-        }
-
-        if (pageIndex < maxPageIndex) {
-            const downImage = new mxImage(ICON_PAGE_DOWN, 14, 14);
-            const downOverlay = new mxCellOverlay(downImage, 'Page Down');
-            downOverlay.align = mxConstants.ALIGN_RIGHT;
-            downOverlay.verticalAlign = mxConstants.ALIGN_BOTTOM;
-            downOverlay.offset = new mxPoint(-4, -4);
-            downOverlay.cursor = 'pointer';
-            downOverlay.addListener(mxEvent.CLICK, function (_sender, evt) {
-                changeLanePage(lane, laneKey, +1);
-                if (evt && evt.consume) evt.consume();
-            });
-            graph.addCellOverlay(lane, downOverlay);
-        }
-    }
-
 
     // -------------------- Card label rendering -------------------- // CHANGE
     function refreshCardLabel(card, suppressRefresh) {
@@ -3595,8 +3650,7 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
     function renderBoardLanes(board, lanes, dirtyLanes, sortContext, opts) { // NEW: lane sorting, schedule packing, paging, and optional board geometry
         bumpTaskReflowTestCounter('lanes'); // NEW
         const laneKeyFilter = normalizeReflowLaneKeySet(opts); // NEW
-        const layoutBeforeLanes = !!(opts && opts.applyLayoutBeforeLanes && opts.applyLayout !== false); // CHANGE
-        if (layoutBeforeLanes) applyBoardViewLayout(board, lanes); // NEW
+        if (!opts || opts.applyLayout !== false) applyBoardViewLayout(board, lanes); // CHANGE: paging must measure the final lane height
         for (const { lane, laneKey } of dirtyLanes.values()) { // CHANGE
             if (laneKeyFilter && !laneKeyFilter.has(laneKey)) continue; // NEW
             resortAndPageLane(lane, laneKey, Object.assign({ insideUpdate: true }, sortContext)); // CHANGE
@@ -3621,10 +3675,8 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
 
             const cards = getLaneCardsInOrder(lane); // CHANGE
             applyLanePaging(lane, laneKey, cards); // CHANGE
-            ensureLanePagingControls(lane, laneKey, countRenderable(cards)); // CHANGE
         } // CHANGE
-
-        if ((!opts || opts.applyLayout !== false) && !layoutBeforeLanes) applyBoardViewLayout(board, lanes); // CHANGE
+        repairSelectionAfterAutomaticPaging(); // NEW: repair once after every lane has its final visibility
     } // NEW
 
     function reflowBoard(board, opts) { // NEW: scoped reflow orchestrator behind scanAndReflowBoard compatibility API
@@ -3686,6 +3738,19 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
             if (!insideUpdate) model.endUpdate();
         }
     }
+
+    function initializeLanePagingFromModel() { // NEW: load-time cache reconstruction avoids trusting stale serialized visibility
+        (function walk(cell) { // NEW
+            if (!cell) return; // NEW
+            if (isBoardCell(cell)) { // NEW
+                const lanes = boardLanes(cell); // NEW
+                Object.keys(lanes).forEach(laneKey => applyLanePaging(lanes[laneKey], laneKey, getLaneCardsInOrder(lanes[laneKey]), { skipSelectionRepair: true })); // NEW
+                return; // NEW
+            } // NEW
+            for (let index = 0; index < model.getChildCount(cell); index++) walk(model.getChildAt(cell, index)); // NEW
+        })(model.getRoot()); // NEW
+        repairSelectionAfterAutomaticPaging(); // NEW
+    } // NEW
 
     // -------------------- Kanban placement and group helpers -------------------- // CHANGE
     function isKanbanCard(cell) { return getAttr(cell, 'kanban_card') === '1'; }
@@ -4129,6 +4194,23 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
                     continue; // NEW
                 } // NEW
                 const changedLaneKey = getAttr(cell, 'lane_key'); // NEW
+                if (changedLaneKey && currentParent && isBoardCell(currentParent) && !isWeekDayLane(changedLaneKey)) { // NEW
+                    const geo = model.getGeometry(cell); // NEW
+                    const previousWidth = roundedGeometryWidth(ch.previous); // NEW
+                    const currentWidth = roundedGeometryWidth(geo); // NEW
+                    const widthChanged = previousWidth == null || currentWidth == null || previousWidth !== currentWidth; // NEW
+                    const previousHeight = roundedGeometryHeight(ch.previous); // NEW
+                    const currentHeight = roundedGeometryHeight(geo); // NEW
+                    const heightChanged = previousHeight == null || currentHeight == null || previousHeight !== currentHeight; // NEW
+                    if (widthChanged && (!model.isVisible || model.isVisible(cell) !== false)) { // NEW
+                        laneWidthChanges.set(cell.id || changedLaneKey, { board: currentParent, laneKey: changedLaneKey, width: currentWidth, nonDay: true }); // NEW
+                    } // NEW
+                    if (heightChanged && getBoardViewMode(currentParent) === 'FULL' && (!model.isVisible || model.isVisible(cell) !== false)) { // NEW
+                        fullLaneHeightChanges.set(cell.id || changedLaneKey, { board: currentParent, height: normalizeFullLaneHeight(currentHeight, getBoardFullLaneHeight(currentParent)) }); // NEW
+                    } // NEW
+                    if (heightChanged || widthChanged) boards.add(currentParent); // CHANGE: week staged height remains board-owned; every non-day width reflows layout
+                    continue; // NEW
+                } // NEW
                 if (isWeekDayLane(changedLaneKey) && currentParent && isBoardCell(currentParent)) { // NEW
                     const geo = model.getGeometry(cell); // NEW
                     const previousWidth = roundedGeometryWidth(ch.previous); // NEW
@@ -4234,7 +4316,8 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
 
             (laneWidthChanges || []).forEach(entry => { // NEW
                 if (!entry || !entry.board) return; // NEW
-                if (persistWeekDayLaneWidth(entry.board, entry.laneKey, entry.width)) affectedBoards.set(entry.board.id || entry.laneKey, entry.board); // NEW
+                const changed = entry.nonDay ? persistNonDayLaneWidth(entry.board, entry.laneKey, entry.width) : persistWeekDayLaneWidth(entry.board, entry.laneKey, entry.width); // CHANGE
+                if (changed) affectedBoards.set(entry.board.id || entry.laneKey, entry.board); // CHANGE
             }); // NEW
 
             (laneHourChanges || []).forEach(entry => { // NEW
@@ -4278,7 +4361,7 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
             const hasWeekBoardHeightRepair = !!(weekBoardHeightChanges && weekBoardHeightChanges.length); // NEW
             const hasCardRepair = !!((cards && cards.length) || (invalidPlacements && invalidPlacements.length)); // NEW
             const scope = hasCardRepair ? getTaskReflowScopeForCommand('workflow') : ((hasFullLaneHeightRepair || hasWeekBoardHeightRepair) ? getTaskReflowScopeForCommand('boardResize') : getTaskReflowScopeForCommand('dayLaneResize')); // CHANGE
-            affectedBoards.forEach(board => scanAndReflowBoard(board, { insideUpdate: true, scope, applyLayoutBeforeLanes: hasFullLaneHeightRepair || hasWeekBoardHeightRepair })); // CHANGE
+            affectedBoards.forEach(board => scanAndReflowBoard(board, { insideUpdate: true, scope })); // CHANGE: lane rendering now always measures after requested layout
 
             touchedGroups.forEach(id => {
                 const group = model.getCell(id);
@@ -4483,11 +4566,12 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
         }
         const board = findBoardAncestor(sel); // NEW
         const selectedDayLane = board && weekDayLaneAncestorForCell(sel, board); // NEW
+        let stagedRefreshCommand = 'selection'; // NEW
         if (board && selectedDayLane && getBoardViewMode(board) === 'WEEK') { // NEW
             const day = getDateForWeekLaneKey(getAttr(selectedDayLane, 'lane_key'), getSelectedWeekStart(board)); // NEW
-            if (day && day !== getSelectedDay(board)) taskCommands.setBoardPlanningView(board, 'WEEK', { [TASK_SELECTED_DAY_ATTR]: day }); // CHANGE
+            if (day && day !== getSelectedDay(board)) { taskCommands.setBoardPlanningView(board, 'WEEK', { [TASK_SELECTED_DAY_ATTR]: day }); stagedRefreshCommand = 'selectedPeriodStagedPaging'; } // CHANGE: selected-period changes need staged lane paging parity
         } // NEW
-        taskCommands.scanAndReflowBoard(board, { scope: getTaskReflowScopeForCommand('selection'), laneKeys: ['TODO_STAGED'] }); // CHANGE
+        taskCommands.scanAndReflowBoard(board, { scope: getTaskReflowScopeForCommand(stagedRefreshCommand), laneKeys: ['TODO_STAGED'] }); // CHANGE
     });
 
     function findBoardsIn(parent) {
@@ -5388,13 +5472,22 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
         taskOverlayGestureElements.push(element); // NEW
     } // NEW
 
+    function unregisterTaskOverlayGestureElement(element) { // NEW
+        const index = taskOverlayGestureElements.indexOf(element); // NEW
+        if (index >= 0) taskOverlayGestureElements.splice(index, 1); // NEW
+    } // NEW
+
     function hideTaskOverlayGestureElements() { // NEW
         taskOverlayGestureElements.forEach(element => { if (element && element.style) element.style.display = 'none'; }); // NEW
     } // NEW
 
-    function selectedOrTargetHasKanbanCard(targetCell) { // NEW
-        if (targetCell && model.isVertex(targetCell) && isKanbanCard(targetCell)) return true; // NEW
-        return getSelectionCellsList().some(cell => cell && model.isVertex(cell) && isKanbanCard(cell)); // NEW
+    function isTaskOverlayGestureCell(cell) { // NEW
+        return !!(cell && model.isVertex(cell) && isKanbanCard(cell)); // CHANGE: preserve existing non-card overlay behavior while card drags hide the pager
+    } // NEW
+
+    function selectedOrTargetHasTaskCell(targetCell) { // CHANGE
+        if (isTaskOverlayGestureCell(targetCell)) return true; // CHANGE
+        return getSelectionCellsList().some(isTaskOverlayGestureCell); // CHANGE
     } // NEW
 
     function taskOverlayMouseEventCell(me) { // NEW
@@ -5428,7 +5521,7 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
         graph.__trellisTaskOverlayGestureGateInstalled = true; // NEW
         if (graph.addMouseListener) { // NEW
             graph.addMouseListener({ // NEW
-                mouseDown(_sender, me) { if (selectedOrTargetHasKanbanCard(taskOverlayMouseEventCell(me))) beginTaskOverlayGesture(); }, // NEW
+                mouseDown(_sender, me) { if (selectedOrTargetHasTaskCell(taskOverlayMouseEventCell(me))) beginTaskOverlayGesture(); }, // CHANGE
                 mouseMove() {}, // NEW
                 mouseUp() { endTaskOverlayGesture(); } // NEW
             }); // NEW
@@ -5436,6 +5529,10 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
         if (graph.addListener) { // NEW
             graph.addListener(mxEvent.CELLS_MOVED || 'cellsMoved', endTaskOverlayGesture); // NEW
             graph.addListener(mxEvent.CELLS_RESIZED || 'cellsResized', endTaskOverlayGesture); // NEW
+        } // NEW
+        if (graph.panningHandler && graph.panningHandler.addListener) { // NEW
+            graph.panningHandler.addListener(mxEvent.PAN_START || 'panStart', beginTaskOverlayGesture); // NEW
+            graph.panningHandler.addListener(mxEvent.PAN_END || 'panEnd', endTaskOverlayGesture); // NEW
         } // NEW
         const mouseUpTarget = window && window.addEventListener ? window : (document && document.addEventListener ? document : null); // NEW
         if (mouseUpTarget) mouseUpTarget.addEventListener('mouseup', endTaskOverlayGesture, true); // NEW
@@ -5469,6 +5566,214 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
         } // NEW
         if (model.addListener) model.addListener(mxEvent.CHANGE, refresh); // CHANGE
         if (graph.container && graph.container.addEventListener) graph.container.addEventListener('scroll', refresh, { passive: true }); // CHANGE
+    } // NEW
+
+    function setPagingSelectionCells(cells) { // NEW
+        const next = (cells || []).filter(Boolean); // NEW
+        if (!next.length) return; // NEW
+        taskPagingSelectionGuard = true; // NEW
+        try { // NEW
+            if (next.length > 1 && graph.setSelectionCells) graph.setSelectionCells(next); // NEW
+            else if (graph.setSelectionCell) graph.setSelectionCell(next[0]); // NEW
+        } finally { taskPagingSelectionGuard = false; } // NEW
+    } // NEW
+
+    function selectedTaskBoard() { // NEW
+        const boards = new Set(); // NEW
+        getSelectionCellsList().forEach(cell => { // NEW
+            const board = isBoardCell(cell) ? cell : findBoardAncestor(cell); // NEW
+            if (board) boards.add(board); // NEW
+        }); // NEW
+        return boards.size === 1 ? Array.from(boards)[0] : null; // NEW
+    } // NEW
+
+    function selectedRenderableTaskCards() { // NEW
+        return getSelectionCellsList().filter(cell => cell && model.isVertex(cell) && isRenderableKanbanCard(cell)); // NEW
+    } // NEW
+
+    function isCellModelVisible(cell) { // NEW
+        return !model.isVisible || model.isVisible(cell) !== false; // NEW
+    } // NEW
+
+    function repairSelectionAfterAutomaticPaging() { // NEW: automatic reflow never moves pages merely to retain selection
+        if (taskPagingSelectionGuard) return; // NEW
+        const selectedCards = selectedRenderableTaskCards(); // NEW
+        if (!selectedCards.some(card => !isCellModelVisible(card))) return; // NEW
+        const boards = new Set(selectedCards.map(findBoardAncestor).filter(Boolean)); // NEW
+        if (boards.size !== 1) return; // NEW: cross-board selection remains untouched
+        const lanes = new Set(selectedCards.map(card => model.getParent(card)).filter(Boolean)); // NEW
+        if (lanes.size > 1) setPagingSelectionCell(Array.from(boards)[0]); // NEW
+        else if (lanes.size === 1) setPagingSelectionCell(Array.from(lanes)[0]); // NEW
+    } // NEW
+
+    function revealExternallySelectedPage() { // NEW: user selection is authoritative and may reveal one hidden lane page
+        if (taskPagingSelectionGuard) return; // NEW
+        const selectedCards = selectedRenderableTaskCards(); // NEW
+        if (!selectedCards.some(card => !isCellModelVisible(card))) return; // NEW
+        const boards = new Set(selectedCards.map(findBoardAncestor).filter(Boolean)); // NEW
+        if (boards.size !== 1) return; // NEW: do not rewrite cross-board selection
+        const lanes = new Set(selectedCards.map(card => model.getParent(card)).filter(Boolean)); // NEW
+        if (lanes.size !== 1) { setPagingSelectionCell(Array.from(boards)[0]); return; } // NEW
+        const lane = Array.from(lanes)[0]; // NEW
+        const laneKey = getAttr(lane, 'lane_key'); // NEW
+        const firstSelectedCard = selectedCards[0]; // NEW
+        applyLanePaging(lane, laneKey, getLaneCardsInOrder(lane), { anchorCardId: taskCellId(firstSelectedCard), skipSelectionRepair: true }); // NEW
+        setPagingSelectionCells(selectedCards.filter(isCellModelVisible)); // NEW: hidden siblings outside the revealed page are dropped
+    } // NEW
+
+    function installLanePagerStyles() { // NEW
+        const styleId = 'trellis-task-lane-pager-styles'; // NEW
+        if (!document || !document.createElement || document.getElementById(styleId)) return; // NEW
+        const style = document.createElement('style'); // NEW
+        style.id = styleId; // NEW
+        style.textContent = [ // NEW
+            '.trellis-task-lane-pager{position:absolute;display:flex;align-items:center;justify-content:center;gap:6px;pointer-events:auto;z-index:' + GRAPH_OVERLAY_Z.CONTROL_TOP + ';font:12px Arial,sans-serif;white-space:nowrap}', // NEW
+            '.trellis-task-lane-pager__button{box-sizing:border-box;width:28px;height:28px;min-width:28px;border:1px solid #D1D5DB;border-radius:999px;padding:0;display:inline-flex;align-items:center;justify-content:center;background:#FFF;color:#2563EB;box-shadow:0 1px 2px rgba(0,0,0,.12);cursor:pointer}', // NEW
+            '.trellis-task-lane-pager__button:hover:not(:disabled){background:#EFF6FF;border-color:#93C5FD}', // NEW
+            '.trellis-task-lane-pager__button:focus-visible,.trellis-task-lane-pager__select:focus-visible{outline:2px solid #2563EB;outline-offset:2px}', // NEW
+            '.trellis-task-lane-pager__button:disabled{opacity:.38;cursor:default}', // NEW
+            '.trellis-task-lane-pager__select{box-sizing:border-box;height:28px;max-width:100px;border:1px solid #D1D5DB;border-radius:4px;padding:0 22px 0 7px;background:#FFF;color:#111;font:12px Arial,sans-serif;cursor:pointer}' // NEW
+        ].join(''); // NEW
+        (document.head || document.body || document.documentElement).appendChild(style); // NEW
+    } // NEW
+
+    function createLanePagerChevron(direction) { // NEW
+        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); // NEW
+        svg.setAttribute('viewBox', '0 0 20 20'); // NEW
+        svg.setAttribute('width', '16'); // NEW
+        svg.setAttribute('height', '16'); // NEW
+        svg.setAttribute('aria-hidden', 'true'); // NEW
+        svg.setAttribute('focusable', 'false'); // NEW
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path'); // NEW
+        path.setAttribute('d', direction < 0 ? 'M12.5 4.5 7 10l5.5 5.5' : 'M7.5 4.5 13 10l-5.5 5.5'); // NEW
+        path.setAttribute('fill', 'none'); // NEW
+        path.setAttribute('stroke', 'currentColor'); // NEW
+        path.setAttribute('stroke-width', '2.25'); // NEW
+        path.setAttribute('stroke-linecap', 'round'); // NEW
+        path.setAttribute('stroke-linejoin', 'round'); // NEW
+        svg.appendChild(path); // NEW
+        return svg; // NEW
+    } // NEW
+
+    function stopDomPropagation(evt) { // NEW: native selects must keep their default opening behavior
+        if (evt && evt.stopPropagation) evt.stopPropagation(); // NEW
+    } // NEW
+
+    function createLanePagerNode(host, lane, laneKey) { // NEW
+        const element = document.createElement('div'); // NEW
+        element.className = 'trellis-task-lane-pager'; // NEW
+        element.setAttribute('data-lane-id', taskCellId(lane)); // NEW: stable key supports retained-node inspection and diagnostics
+        element.setAttribute('data-lane-key', String(laneKey || '')); // NEW
+        const previous = document.createElement('button'); // NEW
+        previous.type = 'button'; // NEW
+        previous.className = 'trellis-task-lane-pager__button trellis-task-lane-pager__previous'; // NEW
+        previous.title = 'Previous page'; // NEW
+        previous.setAttribute('aria-label', 'Previous page'); // NEW
+        previous.appendChild(createLanePagerChevron(-1)); // NEW
+        const selector = document.createElement('select'); // NEW
+        selector.className = 'trellis-task-lane-pager__select'; // NEW
+        const next = document.createElement('button'); // NEW
+        next.type = 'button'; // NEW
+        next.className = 'trellis-task-lane-pager__button trellis-task-lane-pager__next'; // NEW
+        next.title = 'Next page'; // NEW
+        next.setAttribute('aria-label', 'Next page'); // NEW
+        next.appendChild(createLanePagerChevron(1)); // NEW
+        [previous, selector, next].forEach(control => { // NEW
+            control.addEventListener('mousedown', stopDomPropagation); // NEW
+            control.addEventListener('mouseup', stopDomPropagation); // NEW
+        }); // NEW
+        previous.addEventListener('click', function (evt) { consumeDomEvent(evt); changeLanePage(lane, laneKey, -1); }); // NEW
+        next.addEventListener('click', function (evt) { consumeDomEvent(evt); changeLanePage(lane, laneKey, 1); }); // NEW
+        selector.addEventListener('change', function (evt) { stopDomPropagation(evt); navigateLaneToPage(lane, laneKey, Number(selector.value)); }); // NEW
+        element.appendChild(previous); // NEW
+        element.appendChild(selector); // NEW
+        element.appendChild(next); // NEW
+        host.appendChild(element); // NEW
+        registerTaskOverlayGestureElement(element); // NEW
+        return { element, previous, selector, next, lane, laneKey, pageCount: 0 }; // NEW
+    } // NEW
+
+    function updateLanePagerOptions(node, state) { // NEW
+        if (node.pageCount !== state.plan.pages.length) { // NEW
+            node.selector.innerHTML = ''; // NEW
+            state.plan.pages.forEach((_page, index) => { // NEW
+                const option = document.createElement('option'); // NEW
+                option.value = String(index); // NEW
+                option.textContent = String(index + 1); // CHANGE: dropdown choices show only page numbers
+                node.selector.appendChild(option); // NEW
+            }); // NEW
+            node.pageCount = state.plan.pages.length; // NEW
+        } // NEW
+        node.selector.value = String(state.pageIndex); // NEW
+        node.selector.setAttribute('aria-label', `${getAttr(state.lane, 'status') || 'Lane'} page, ${state.pageIndex + 1} of ${state.plan.pages.length}`); // NEW
+        node.previous.disabled = state.pageIndex <= 0; // NEW
+        node.next.disabled = state.pageIndex >= state.plan.pages.length - 1; // NEW
+    } // NEW
+
+    function positionLanePager(node, state, host) { // NEW
+        const bounds = getCellVisualBounds(state.lane, host); // NEW
+        const geo = state.lane && (state.lane.getGeometry ? state.lane.getGeometry() : state.lane.geometry); // NEW
+        if (!bounds || !geo || bounds.width <= 0 || bounds.height <= 0) return false; // NEW
+        const effectiveScale = Math.min(bounds.width / Math.max(1, Number(geo.width) || bounds.width), bounds.height / Math.max(1, Number(geo.height) || bounds.height)); // NEW
+        const measured = node.element.getBoundingClientRect ? node.element.getBoundingClientRect() : null; // NEW
+        const pagerWidth = Math.max(1, Math.round(Number(node.element.offsetWidth) || (measured && measured.width) || 168)); // NEW
+        const pagerHeight = Math.max(1, Math.round(Number(node.element.offsetHeight) || (measured && measured.height) || 28)); // NEW
+        const fitScale = Math.max(0.001, Math.min(1, Math.max(0, (bounds.width - 8) / pagerWidth), Math.max(0, (bounds.height - 4) / pagerHeight))); // CHANGE: low zoom scales the retained controls instead of hiding them
+        const scaledWidth = pagerWidth * fitScale; // NEW
+        const scaledHeight = pagerHeight * fitScale; // NEW
+        const minLeft = bounds.x + (scaledWidth / 2) + 2; // NEW
+        const maxLeft = bounds.x + bounds.width - (scaledWidth / 2) - 2; // NEW
+        const idealLeft = bounds.x + (bounds.width / 2); // NEW
+        const minTop = bounds.y + 2; // NEW
+        const maxTop = bounds.y + bounds.height - scaledHeight - 2; // NEW
+        const idealTop = bounds.y + (TASK_LANE_HEADER_HEIGHT * effectiveScale) + 4; // NEW
+        node.element.style.left = Math.round(maxLeft >= minLeft ? Math.max(minLeft, Math.min(maxLeft, idealLeft)) : idealLeft) + 'px'; // CHANGE
+        node.element.style.top = Math.round(maxTop >= minTop ? Math.max(minTop, Math.min(maxTop, idealTop)) : bounds.y + 2) + 'px'; // CHANGE
+        node.element.style.transformOrigin = 'top center'; // NEW
+        node.element.style.transform = 'translateX(-50%) scale(' + fitScale.toFixed(3) + ')'; // CHANGE
+        return true; // NEW
+    } // NEW
+
+    function installLanePagerOverlay() { // NEW
+        if (graph.__trellisTaskLanePagerInstalled || !document || !document.createElement) return; // NEW
+        graph.__trellisTaskLanePagerInstalled = true; // NEW
+        installLanePagerStyles(); // NEW
+        const host = ensureTaskControlOverlayHost(); // NEW
+        if (!host) return; // NEW
+        const nodes = new Map(); // NEW: keyed nodes retain focus and identity across refreshes
+
+        function removeObsoleteNodes() { // NEW
+            nodes.forEach((node, laneId) => { // NEW
+                const state = lanePagingStates.get(laneId); // NEW
+                const modelLane = model.getCell ? model.getCell(laneId) : (state && state.lane); // NEW
+                if (state && state.plan.paged && modelLane) return; // NEW
+                unregisterTaskOverlayGestureElement(node.element); // NEW
+                if (node.element.parentNode) node.element.parentNode.removeChild(node.element); // NEW
+                nodes.delete(laneId); // NEW
+                if (!modelLane) lanePagingStates.delete(laneId); // NEW
+            }); // NEW
+        } // NEW
+
+        function refresh() { // NEW
+            removeObsoleteNodes(); // NEW
+            const board = selectedTaskBoard(); // NEW
+            nodes.forEach(node => { node.element.style.display = 'none'; }); // NEW
+            if (!board || taskOverlayGestureActive) return; // NEW
+            lanePagingStates.forEach((state, laneId) => { // NEW
+                if (!state || state.board !== board || !state.plan.paged || isWeekDayLane(state.laneKey)) return; // NEW
+                if (!isCellModelVisible(state.lane) || (graph.isCellCollapsed && graph.isCellCollapsed(state.lane))) return; // NEW
+                let node = nodes.get(laneId); // NEW
+                if (!node) { node = createLanePagerNode(host, state.lane, state.laneKey); nodes.set(laneId, node); } // NEW
+                updateLanePagerOptions(node, state); // NEW
+                node.element.style.display = positionLanePager(node, state, host) ? 'flex' : 'none'; // NEW
+            }); // NEW
+        } // NEW
+
+        requestLanePagerOverlayRefresh = createDeferredTaskOverlayRefresh(refresh); // CHANGE
+        const selectionModel = graph.getSelectionModel && graph.getSelectionModel(); // NEW
+        if (selectionModel && selectionModel.addListener) selectionModel.addListener(mxEvent.CHANGE, function () { revealExternallySelectedPage(); requestLanePagerOverlayRefresh(); }); // NEW
+        addGraphViewRefreshListener(requestLanePagerOverlayRefresh); // NEW
+        requestLanePagerOverlayRefresh(); // NEW
     } // NEW
 
     function roleInitials(name) { // NEW
@@ -6365,6 +6670,8 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
 
     // -------------------- Boot sequence -------------------- // NEW
     installTaskOverlayGestureGate(); // NEW
+    installLanePagerOverlay(); // NEW
+    initializeLanePagingFromModel(); // NEW
     installWeekAssigneeBadgeLayer(); // NEW
     installBoardHeaderControls(); // NEW
     installWeekTimeScaleOverlay(); // NEW

@@ -170,15 +170,14 @@ function makeHarness(options = {}) { // CHANGE
     const viewListeners = [];
     const mouseListeners = []; // NEW
     const graphListeners = new Map(); // NEW
-    const panningListeners = new Map(); // NEW: models Draw.io PAN_START/PAN_END lifecycle events
-    let panningActive = false; // NEW
     let selectedCells = [];
     let lastDialog = null;
     let currentUi = null; // NEW
+    const initialNonDayLaneHeight = Number(options.initialNonDayLaneHeight) || 200; // NEW
 
     const root = new TestCell("root", makeValue(document), new TestGeometry(0, 0, 0, 0));
     const board = new TestCell("board", makeValue(document, { board_key: "KANBAN_BOARD", board_role: "main", task_view_mode: "WEEK", task_selected_week_start: "2026-07-12", task_selected_day: "2026-07-12", task_work_hours_defaults_json: TEST_REALISTIC_WEEK_WORK_HOURS_JSON }), new TestGeometry(10, 10, 700, 260), TEST_LEGACY_BOARD_STYLE); // CHANGE
-    const stagedLane = new TestCell("staged", makeValue(document, { lane_key: "TODO_STAGED", status: "TODO (staged)" }), new TestGeometry(20, 40, 200, 200)); // NEW
+    const stagedLane = new TestCell("staged", makeValue(document, { lane_key: "TODO_STAGED", status: "TODO (staged)" }), new TestGeometry(20, 40, 200, initialNonDayLaneHeight)); // CHANGE
     const weekSunLane = new TestCell("weekSun", makeValue(document, { lane_key: "WEEK_SUN", status: "Sunday" }), new TestGeometry(240, 40, 200, 200)); // NEW
     const weekMonLane = new TestCell("weekMon", makeValue(document, { lane_key: "WEEK_MON", status: "Monday" }), new TestGeometry(460, 40, 200, 200)); // NEW
     const weekTueLane = new TestCell("weekTue", makeValue(document, { lane_key: "WEEK_TUE", status: "Tuesday" }), new TestGeometry(680, 40, 200, 200)); // NEW
@@ -186,8 +185,8 @@ function makeHarness(options = {}) { // CHANGE
     const weekThuLane = new TestCell("weekThu", makeValue(document, { lane_key: "WEEK_THU", status: "Thursday" }), new TestGeometry(1120, 40, 200, 200)); // NEW
     const weekFriLane = new TestCell("weekFri", makeValue(document, { lane_key: "WEEK_FRI", status: "Friday" }), new TestGeometry(1340, 40, 200, 200)); // NEW
     const weekSatLane = new TestCell("weekSat", makeValue(document, { lane_key: "WEEK_SAT", status: "Saturday" }), new TestGeometry(1560, 40, 200, 200)); // NEW
-    const todoLane = new TestCell("todo", makeValue(document, { lane_key: "TODO", status: "TODO" }), new TestGeometry(20, 40, 200, 200));
-    const doingLane = new TestCell("doing", makeValue(document, { lane_key: "DOING", status: "DOING" }), new TestGeometry(240, 40, 200, 200));
+    const todoLane = new TestCell("todo", makeValue(document, { lane_key: "TODO", status: "TODO", task_page_anchor_card_id: options.initialTodoAnchor, page_index: options.initialTodoPageIndex }), new TestGeometry(20, 40, 200, initialNonDayLaneHeight)); // CHANGE
+    const doingLane = new TestCell("doing", makeValue(document, { lane_key: "DOING", status: "DOING" }), new TestGeometry(240, 40, 200, initialNonDayLaneHeight)); // CHANGE
     const secondaryBoard = options.secondaryBoard ? new TestCell("secondaryBoard", makeValue(document, { board_key: "KANBAN_BOARD", board_role: "secondary", task_view_mode: "WEEK", task_selected_week_start: "2026-07-12", task_selected_day: "2026-07-15", task_work_hours_defaults_json: TEST_REALISTIC_WEEK_WORK_HOURS_JSON }), new TestGeometry(2500, 10, 700, 260), TEST_LEGACY_BOARD_STYLE) : null; // NEW
     const secondaryWeekWedLane = secondaryBoard ? new TestCell("secondaryWeekWed", makeValue(document, { lane_key: "WEEK_WED", status: "Wednesday" }), new TestGeometry(460, 40, 200, 200)) : null; // NEW
     const secondaryWeekWedCard = secondaryWeekWedLane ? new TestCell("secondaryWeekWedCard", makeValue(document, { kanban_card: "1", title: "Secondary Wednesday task", workflow_state: "TODO", assigned_day: "2026-07-15", start: "2026-07-15", end: "2026-07-15" }), new TestGeometry(470, 60, 120, 60)) : null; // NEW
@@ -346,20 +345,10 @@ function makeHarness(options = {}) { // CHANGE
         addListener(event, listener) { selectionListeners.push(listener); }
     };
 
-    const panningHandler = { // NEW
-        addListener(event, listener) { // NEW
-            if (!panningListeners.has(event)) panningListeners.set(event, []); // NEW
-            panningListeners.get(event).push(listener); // NEW
-        }, // NEW
-        isActive() { return panningActive; } // NEW
-    }; // NEW
-
     const graph = {
         container,
-        panningHandler, // NEW
         view: {
             overlayPane,
-            scale: 1, // NEW: pager visibility uses rendered footer dimensions
             getState(cell) { return states.get(cell) || null; },
             addListener(event, listener) { viewListeners.push({ event, listener }); }
         },
@@ -384,7 +373,6 @@ function makeHarness(options = {}) { // CHANGE
         fireEvent() {},
         getEdges() { return []; },
         scrollCellToVisible() {},
-        isCellCollapsed() { return false; }, // NEW
         isCellVisible(cell) { return !cell || cell.visible !== false; },
         isValidDropTarget() { return true; },
         resizeCells(cells) { return cells; }, // NEW
@@ -410,7 +398,6 @@ function makeHarness(options = {}) { // CHANGE
         globalThis: { __TRELLIS_TASK_MANAGER_TEST__: true }, // NEW
         window: dom.window,
         document,
-        Editor: { isDarkMode() { return !!options.darkMode; } }, // NEW: exercise theme-aware pager colors without Draw.io globals
         Draw: {
             loadPlugin(registerPlugin) {
                 const ui = { // CHANGE
@@ -454,19 +441,15 @@ function makeHarness(options = {}) { // CHANGE
             TRANSLATE: "translate",
             SCALE_AND_TRANSLATE: "scaleAndTranslate",
             REPAINT: "repaint",
-            PAN_START: "panStart", // NEW
-            PAN_END: "panEnd", // NEW
             CLICK: "click",
             CELLS_MOVED: "cellsMoved", // NEW
             CELLS_RESIZED: "cellsResized", // NEW
             addListener(node, event, listener) { node.addEventListener(event, listener); },
             consume(evt) { if (evt && evt.preventDefault) evt.preventDefault(); },
-            getClientX(evt) { return evt && evt.clientX; }, // NEW
-            getClientY(evt) { return evt && evt.clientY; }, // NEW
-            isControlDown(evt) { return !!(evt && evt.ctrlKey); }, // CHANGE
-            isMetaDown(evt) { return !!(evt && evt.metaKey); }, // CHANGE
-            isShiftDown(evt) { return !!(evt && evt.shiftKey); }, // CHANGE
-            isPopupTrigger(evt) { return !!(evt && evt.button === 2); } // CHANGE
+            isControlDown() { return false; },
+            isMetaDown() { return false; },
+            isShiftDown() { return false; },
+            isPopupTrigger() { return false; }
         },
         mxCell: class extends TestCell { // CHANGE: plugin code calls mxCell(value, geometry, style)
             constructor(value, geometry, style) { // NEW
@@ -487,22 +470,6 @@ function makeHarness(options = {}) { // CHANGE
 
     vm.runInContext(fs.readFileSync(TASK_MANAGER_PATH, "utf8"), context, { filename: TASK_MANAGER_PATH });
     const taskHooks = context.globalThis.__TRELLIS_TASK_MANAGER_TEST_HOOKS__; // NEW
-
-    function fireGraphMousePhase(phase, cell, options = {}) { // NEW
-        const evt = { // NEW
-            button: options.button == null ? 0 : options.button, // NEW
-            detail: options.detail == null ? 1 : options.detail, // NEW
-            clientX: options.clientX == null ? 0 : options.clientX, // NEW
-            clientY: options.clientY == null ? 0 : options.clientY, // NEW
-            ctrlKey: !!options.ctrlKey, // NEW
-            metaKey: !!options.metaKey, // NEW
-            shiftKey: !!options.shiftKey, // NEW
-            altKey: !!options.altKey, // NEW
-            preventDefault() {} // NEW
-        }; // NEW
-        const me = { getCell() { return cell; }, getEvent() { return evt; } }; // CHANGE
-        mouseListeners.forEach(listener => { if (listener[phase]) listener[phase](graph, me); }); // NEW
-    } // NEW
 
     return {
         document,
@@ -548,25 +515,17 @@ function makeHarness(options = {}) { // CHANGE
             const evt = { getProperty(key) { return Object.prototype.hasOwnProperty.call(props, key) ? props[key] : null; } }; // NEW
             (graphListeners.get(eventName) || []).forEach(listener => listener(graph, evt)); // NEW
         }, // NEW
-        firePanEvent(eventName) { // NEW
-            if (eventName === "panStart") panningActive = true; // NEW
-            (panningListeners.get(eventName) || []).forEach(listener => listener(panningHandler, {})); // NEW
-            if (eventName === "panEnd") panningActive = false; // NEW
-        }, // NEW
-        abandonPan() { panningActive = false; }, // NEW: simulates mxPanningHandler reset without PAN_END
         fireModelChange(edit = null) { // CHANGE
             const evt = { getProperty(key) { return key === "edit" ? edit : null; } }; // NEW
             modelListeners.filter(entry => entry.event === "change").forEach(entry => entry.listener(null, evt)); // CHANGE
         },
-        mouseDown(cell = null, options = {}) { fireGraphMousePhase("mouseDown", cell, options); }, // CHANGE
-        mouseUp(cell = null, options = {}) { fireGraphMousePhase("mouseUp", cell, options); }, // CHANGE
-        clickCell(cell, options = {}) { // NEW
-            fireGraphMousePhase("mouseDown", cell, options); // NEW
-            if (options.select !== false) graph.setSelectionCell(cell); // NEW
-            fireGraphMousePhase("mouseUp", cell, Object.assign({}, options, { // NEW
-                clientX: options.upClientX == null ? options.clientX : options.upClientX, // NEW
-                clientY: options.upClientY == null ? options.clientY : options.upClientY // NEW
-            })); // NEW
+        mouseDown(cell = null) { // NEW
+            const me = { getCell() { return cell; }, getEvent() { return {}; } }; // NEW
+            mouseListeners.forEach(listener => { if (listener.mouseDown) listener.mouseDown(graph, me); }); // NEW
+        }, // NEW
+        mouseUp(cell = null) { // NEW
+            const me = { getCell() { return cell; }, getEvent() { return {}; } }; // NEW
+            mouseListeners.forEach(listener => { if (listener.mouseUp) listener.mouseUp(graph, me); }); // NEW
         }, // NEW
         resetCounters() { geometrySetCount = 0; labelSetCount = 0; modelBeginUpdateCount = 0; refreshCalls.length = 0; taskHooks.resetTaskReflowTestCounters(); } // CHANGE
     };
@@ -588,26 +547,8 @@ test("task manager reflow scope policy maps command categories", () => { // NEW
     assert.equal(hooks.getTaskReflowScopeForCommand("editHours"), "layout"); // NEW
     assert.equal(hooks.getTaskReflowScopeForCommand("boardResize"), "layout"); // NEW
     assert.equal(hooks.getTaskReflowScopeForCommand("selection"), "badges"); // NEW
+    assert.equal(hooks.getTaskReflowScopeForCommand("selectedPeriodStagedPaging"), "lanes"); // NEW
     assert.equal(hooks.getTaskReflowScopeForCommand("unknown-command"), "full"); // NEW
-}); // NEW
-
-test("task manager page planning uses actual card heights and reserves a conditional footer", () => { // NEW
-    const hooks = loadTaskManagerHooks(); // NEW
-    const plain = value => JSON.parse(JSON.stringify(value)); // NEW
-    const singlePage = plain(hooks.buildTaskLanePagePlan([100, 100], 680)); // NEW
-    assert.equal(singlePage.paged, false); // NEW
-    assert.deepEqual(singlePage.pages, [{ start: 0, end: 2 }]); // NEW
-    assert.equal(singlePage.footerHeight, 0); // NEW
-
-    const mixed = plain(hooks.buildTaskLanePagePlan([40, 103, 40], 250)); // NEW
-    assert.equal(mixed.paged, true); // NEW
-    assert.equal(mixed.footerHeight, 64); // NEW
-    assert.equal(mixed.usableHeight, 165); // NEW
-    assert.deepEqual(mixed.pages, [{ start: 0, end: 2 }, { start: 2, end: 3 }]); // NEW
-
-    const oversized = plain(hooks.buildTaskLanePagePlan([900], 680)); // NEW
-    assert.equal(oversized.paged, false); // NEW
-    assert.deepEqual(oversized.heights, [654]); // NEW: one tall card is clamped to the non-paged content window
 }); // NEW
 
 test("task manager normalizes canonical assignee ids and treats assignments as user touches", () => { // NEW
@@ -638,6 +579,37 @@ test("task manager preserves assignments only across unique scheduler keys and r
     const differential = plain(hooks.planDifferentialTaskSync([assigned], [])); // NEW
     assert.equal(differential.removes.length, 0); // NEW
     assert.equal(differential.missing.length, 1); // NEW
+}); // NEW
+
+test("task manager builds greedy height-aware pages and clamps full cards to standard minimum", () => { // CHANGE
+    const hooks = loadTaskManagerHooks(); // NEW
+    const plain = value => JSON.parse(JSON.stringify(value)); // NEW
+    const paged = plain(hooks.buildTaskLanePagePlan([50, 70, 90], 240)); // NEW
+    assert.equal(paged.paged, true); // NEW
+    assert.deepEqual(paged.pages, [{ start: 0, end: 1 }, { start: 1, end: 2 }, { start: 2, end: 3 }]); // CHANGE
+    assert.deepEqual(paged.heights, [80, 80, 90]); // CHANGE
+    assert.equal(paged.usableHeight, 140); // NEW
+    assert.equal(paged.pagerMarginTop, 20); // NEW
+
+    const oversized = plain(hooks.buildTaskLanePagePlan([400], 200)); // NEW
+    assert.equal(oversized.paged, false); // NEW: one clamped card does not create a one-page pager
+    assert.deepEqual(oversized.heights, [120]); // NEW
+    assert.deepEqual(oversized.pages, [{ start: 0, end: 1 }]); // NEW
+
+    const compact = plain(hooks.buildTaskLanePagePlan([20, 20], 126)); // NEW
+    assert.equal(compact.paged, true); // NEW
+    assert.deepEqual(compact.pages, [{ start: 0, end: 1 }, { start: 1, end: 2 }]); // NEW
+}); // NEW
+
+test("task manager rebuilds paging cache on load and migrates invalid numeric state without undo edits", () => { // NEW
+    const h = makeHarness({ initialTodoAnchor: "missing-card", initialTodoPageIndex: "8" }); // NEW
+    assert.equal(attr(h.todoLane, "page_index"), null); // NEW
+    assert.equal(attr(h.todoLane, "task_page_anchor_card_id"), h.card1.id); // NEW
+    assert.equal(attr(h.todoLane, "label"), "TODO\nPage 1 of 2"); // NEW
+    assert.equal(h.card1.visible, true); // NEW
+    assert.equal(h.card2.visible, false); // NEW
+    assert.equal(h.modelBeginUpdateCount, 0); // NEW
+    assert.equal(h.geometrySetCount, 0); // NEW
 }); // NEW
 
 test("task manager selection overlays render above graph and defer until states are available", async () => {
@@ -675,62 +647,6 @@ test("task manager selection overlays render above graph and defer until states 
 
     assert.equal(cardOverlay.style.display, "none"); // NEW
 });
-
-test("task manager lane pager supports buttons, keyboard, direct page choice, selection repair, and zoom gating", async () => { // NEW
-    const h = makeHarness(); // NEW
-    setAttr(h.board, "task_view_mode", "FULL"); // NEW
-    for (let i = 0; i < 8; i++) addHarnessCard(h, h.todoLane, `pagedTodo${i}`, { workflow_state: "TODO", start: `2026-07-${10 + i}` }); // NEW
-    h.setState(h.todoLane, { x: 20, y: 40, width: 220, height: 680 }); // NEW
-    h.graph.setSelectionCell(h.board); // NEW: board navigation performs the full lane reflow
-    await nextTick(); // NEW
-    await nextTick(); // NEW: pager rendering is coalesced after the reflow
-
-    let pager = h.document.querySelector(".trellis-task-lane-pager"); // NEW
-    assert.ok(pager); // NEW
-    const previous = pager.querySelector(".trellis-task-lane-page-previous"); // NEW
-    const next = pager.querySelector(".trellis-task-lane-page-next"); // NEW
-    const count = pager.querySelector(".trellis-task-lane-page-count"); // NEW
-    const select = pager.querySelector(".trellis-task-lane-page-select"); // NEW
-    const pageCount = Number(count.textContent.split("/")[1].trim()); // NEW
-    assert.ok(pageCount > 1); // NEW
-    assert.equal(count.textContent, `1 / ${pageCount}`); // NEW
-    assert.equal(previous.disabled, true); // NEW
-    assert.equal(next.disabled, false); // NEW
-    assert.equal(pager.style.getPropertyValue("--trellis-pager-accent"), "#2563EB"); // NEW
-
-    h.graph.setSelectionCell(h.card1); // NEW
-    next.click(); // NEW
-    await nextTick(); // NEW
-    assert.equal(attr(h.todoLane, "page_index"), "1"); // NEW
-    assert.equal(h.graph.getSelectionCell(), h.todoLane); // NEW: the only selected card became hidden
-    assert.equal(count.textContent, `2 / ${pageCount}`); // NEW
-    assert.equal(next.disabled, pageCount === 2); // NEW
-
-    count.click(); // NEW
-    assert.equal(count.style.display, "none"); // NEW
-    assert.equal(select.style.display, ""); // NEW
-    assert.deepEqual(Array.from(select.options).map(option => option.textContent), Array.from({ length: pageCount }, (_, index) => `Page ${index + 1}`)); // NEW
-    select.value = "0"; // NEW
-    select.dispatchEvent(new h.document.defaultView.Event("change", { bubbles: true })); // NEW
-    await nextTick(); // NEW
-    assert.equal(attr(h.todoLane, "page_index"), "0"); // NEW
-    assert.equal(h.document.activeElement, count); // NEW: the direct chooser restores stable pager focus
-
-    count.dispatchEvent(new h.document.defaultView.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })); // NEW
-    await nextTick(); // NEW
-    assert.equal(attr(h.todoLane, "page_index"), "1"); // NEW
-    assert.equal(count.textContent, `2 / ${pageCount}`); // NEW
-
-    h.graph.view.scale = 0.5; // NEW
-    h.fireViewEvent("repaint"); // NEW
-    await nextTick(); // NEW
-    assert.equal(h.document.querySelector(".trellis-task-lane-pager"), null); // NEW: fixed controls do not render too small to use
-    h.graph.view.scale = 1; // NEW
-    h.fireViewEvent("repaint"); // NEW
-    await nextTick(); // NEW
-    pager = h.document.querySelector(".trellis-task-lane-pager"); // NEW
-    assert.ok(pager); // NEW
-}); // NEW
 
 test("task manager DOM overlays avoid SVG overlayPane hosts", async () => { // NEW
     const h = makeHarness({ svgOverlayPane: true }); // NEW
@@ -949,83 +865,6 @@ test("task manager day-lane overlay appears only for selected week day lanes", a
     assert.ok(buttonByText(overlay, "Add Break")); // NEW
     assert.equal(buttonByText(overlay, "Close Day").style.display, ""); // NEW
     assert.equal(buttonByText(overlay, "Open Day").style.display, "none"); // NEW
-}); // NEW
-
-test("task manager pointer-selected day lane anchors actions below and right of the click", async () => { // NEW
-    const h = makeHarness(); // NEW
-    const overlay = h.document.querySelector(".trellis-task-selected-day-lane-actions"); // NEW
-    h.graph.setSelectionCell(h.board); // NEW
-    await nextTick(); // NEW
-
-    h.mouseDown(h.weekSunLane, { clientX: 120, clientY: 160 }); // NEW
-    h.graph.setSelectionCell(h.weekSunLane); // NEW
-    assert.equal(overlay.style.display, "none"); // NEW: gesture suppression prevents a below-lane placement flash
-    h.mouseUp(h.weekSunLane, { clientX: 120, clientY: 160 }); // NEW
-    await nextTick(); // NEW
-
-    assert.equal(overlay.style.display, "flex"); // NEW
-    assert.equal(overlay.style.left, "128px"); // NEW
-    assert.equal(overlay.style.top, "168px"); // NEW
-    h.fireViewEvent("scale"); // NEW
-    h.fireViewEvent("translate"); // NEW
-    h.fireViewEvent("repaint"); // NEW
-    h.graph.container.dispatchEvent(new h.document.defaultView.Event("scroll")); // NEW
-    await nextTick(); // NEW
-    assert.equal(overlay.style.left, "128px"); // NEW
-    assert.equal(overlay.style.top, "168px"); // NEW
-}); // NEW
-
-test("task manager repeated day-lane clicks dismiss reopen and replace cursor anchors", async () => { // NEW
-    const h = makeHarness(); // NEW
-    const overlay = h.document.querySelector(".trellis-task-selected-day-lane-actions"); // NEW
-    h.clickCell(h.weekSunLane, { clientX: 100, clientY: 120 }); // NEW
-    await nextTick(); // NEW
-    assert.equal(overlay.style.display, "flex"); // NEW
-
-    h.clickCell(h.weekSunLane, { clientX: 150, clientY: 170 }); // NEW
-    await nextTick(); // NEW
-    assert.equal(overlay.style.display, "none"); // NEW
-
-    h.clickCell(h.weekSunLane, { clientX: 180, clientY: 200 }); // NEW
-    await nextTick(); // NEW
-    assert.equal(overlay.style.display, "flex"); // NEW
-    assert.equal(overlay.style.left, "188px"); // NEW
-    assert.equal(overlay.style.top, "208px"); // NEW
-
-    h.clickCell(h.weekTueLane, { clientX: 990, clientY: 790 }); // NEW
-    await nextTick(); // NEW
-    assert.equal(overlay.style.display, "flex"); // NEW
-    assert.equal(overlay.style.left, "998px"); // NEW: right-edge clipping is intentional
-    assert.equal(overlay.style.top, "798px"); // NEW: bottom-edge clipping is intentional
-}); // NEW
-
-test("task manager ignores non-simple day-lane gestures for cursor anchoring and toggling", async () => { // NEW
-    const h = makeHarness(); // NEW
-    const overlay = h.document.querySelector(".trellis-task-selected-day-lane-actions"); // NEW
-    h.clickCell(h.weekSunLane, { clientX: 100, clientY: 120 }); // NEW
-    await nextTick(); // NEW
-    const expected = { left: overlay.style.left, top: overlay.style.top }; // NEW
-
-    const assertAnchorUnchanged = async () => { // NEW
-        await nextTick(); // NEW
-        assert.equal(overlay.style.display, "flex"); // NEW
-        assert.equal(overlay.style.left, expected.left); // NEW
-        assert.equal(overlay.style.top, expected.top); // NEW
-    }; // NEW
-
-    h.clickCell(h.weekSunLane, { clientX: 100, clientY: 120, upClientX: 110, upClientY: 120 }); // NEW
-    await assertAnchorUnchanged(); // NEW
-    h.clickCell(h.weekSunLane, { clientX: 100, clientY: 120, button: 2 }); // NEW
-    await assertAnchorUnchanged(); // NEW
-    h.clickCell(h.weekSunLane, { clientX: 100, clientY: 120, ctrlKey: true }); // NEW
-    await assertAnchorUnchanged(); // NEW
-    h.clickCell(h.weekSunLane, { clientX: 100, clientY: 120, detail: 1 }); // CHANGE: first half of a real browser double-click sequence
-    h.clickCell(h.weekSunLane, { clientX: 100, clientY: 120, detail: 2 }); // CHANGE: second half restores the pre-double-click state
-    await assertAnchorUnchanged(); // NEW
-    h.mouseDown(h.weekSunLane, { clientX: 100, clientY: 120 }); // NEW
-    h.fireGraphEvent("cellsResized", { cells: [h.weekSunLane] }); // NEW
-    h.mouseUp(h.weekSunLane, { clientX: 100, clientY: 120 }); // NEW
-    await assertAnchorUnchanged(); // NEW
 }); // NEW
 
 test("task manager day-lane overlay opens closes and adds breaks for selected day", async () => { // NEW
@@ -1573,7 +1412,7 @@ test("task manager migrates existing undated breaks to the visible lane date", a
 }); // NEW
 
 test("task manager allocates selected staged cards to clamped start dates", async () => { // NEW
-    const h = makeHarness(); // NEW
+    const h = makeHarness({ initialNonDayLaneHeight: 500 }); // CHANGE: keep bulk-operation fixtures on one page
     const overlay = h.document.querySelector(".trellis-task-selected-card-actions"); // NEW
     [h.stagedCard, h.stagedBeforeCard, h.stagedAfterCard, h.stagedInvalidCard].forEach((card, index) => { // NEW
         h.setState(card, { x: 30, y: 60 + (index * 70), width: 120, height: 60 }); // NEW
@@ -1716,12 +1555,229 @@ test("task manager full-mode board resize persists lane height and refreshes pag
     assert.equal(h.todoLane.geometry.height, 286); // NEW
     assert.equal(h.doingLane.geometry.height, 286); // NEW
     assert.equal(h.board.geometry.height, 324); // NEW
-    assert.equal(attr(h.todoLane, "page_index"), "4"); // CHANGE: actual-height footer packing clamps the preserved numeric page
-    assert.equal(visibleTodoCards.length, 1); // CHANGE: the preserved final page contains one actual-height card
+    assert.equal(attr(h.todoLane, "page_index"), null); // CHANGE: legacy numeric paging state is retired
+    assert.equal(attr(h.todoLane, "task_page_anchor_card_id"), visibleTodoCards[0].id); // CHANGE
+    assert.equal(visibleTodoCards.length, 2); // CHANGE: actual card heights define the greedy page
+    assert.equal(attr(h.todoLane, "label"), "TODO\nPage 1 of 5"); // NEW
+    assert.match(h.todoLane.style, /(?:^|;)marginTop=20(?:;|$)/); // NEW
     assert.equal(counters.classification, 0); // NEW
     assert.ok(counters.layout > 0); // NEW
     assert.ok(counters.lanes > 0); // NEW
     assert.ok(counters.boardLayout > 0); // NEW
+}); // NEW
+
+test("task manager direct full-mode lane resize snaps shared lane and board height", async () => { // NEW
+    const h = makeHarness(); // NEW
+    setAttr(h.board, "task_view_mode", "FULL"); // NEW
+    h.graph.setSelectionCell(h.board); // NEW
+    await nextTick(); // NEW
+    h.resetCounters(); // NEW
+
+    const previousGeometry = h.todoLane.geometry.clone(); // NEW
+    h.todoLane.geometry.height = 420; // NEW
+    h.fireModelChange({ changes: [h.geometryChange(h.todoLane, previousGeometry)] }); // NEW
+    await nextTick(); // NEW
+
+    assert.equal(attr(h.board, "task_full_lane_height"), "420"); // NEW
+    assert.equal(h.stagedLane.geometry.height, 420); // NEW
+    assert.equal(h.todoLane.geometry.height, 420); // NEW
+    assert.equal(h.doingLane.geometry.height, 420); // NEW
+    assert.equal(h.board.geometry.height, 458); // NEW: BOARD_LANE_Y + lane height + BOARD_BOTTOM_PADDING
+    assert.ok(h.reflowCounters().boardLayout > 0); // NEW
+}); // NEW
+
+test("task manager direct full-mode lane width resize persists per non-day lane and grows board", async () => { // NEW
+    const h = makeHarness(); // NEW
+    setAttr(h.board, "task_view_mode", "FULL"); // NEW
+    h.graph.setSelectionCell(h.board); // NEW
+    await nextTick(); // NEW
+    h.resetCounters(); // NEW
+
+    const previousGeometry = h.todoLane.geometry.clone(); // NEW
+    h.todoLane.geometry.width = 1800; // CHANGE: exceed the default board width once all full-view lanes are laid out
+    h.fireModelChange({ changes: [h.geometryChange(h.todoLane, previousGeometry)] }); // NEW
+    await nextTick(); // NEW
+
+    const widths = JSON.parse(attr(h.board, "task_non_day_lane_widths_json")).widths; // NEW
+    assert.equal(widths.TODO, 1800); // CHANGE
+    assert.equal(attr(h.board, "task_day_lane_widths_json"), null); // NEW
+    assert.equal(h.stagedLane.geometry.width, 220); // NEW
+    assert.equal(h.todoLane.geometry.width, 1800); // CHANGE
+    assert.equal(h.doingLane.geometry.x, 2062); // CHANGE
+    assert.equal(h.board.geometry.width, 2292); // CHANGE
+    assert.ok(h.reflowCounters().boardLayout > 0); // NEW
+}); // NEW
+
+test("task manager narrower non-day lane widths persist without shrinking board below default", async () => { // NEW
+    const h = makeHarness(); // NEW
+    setAttr(h.board, "task_view_mode", "FULL"); // NEW
+    h.graph.setSelectionCell(h.board); // NEW
+    await nextTick(); // NEW
+
+    const previousGeometry = h.todoLane.geometry.clone(); // NEW
+    h.todoLane.geometry.width = 160; // NEW
+    h.fireModelChange({ changes: [h.geometryChange(h.todoLane, previousGeometry)] }); // NEW
+    await nextTick(); // NEW
+
+    const widths = JSON.parse(attr(h.board, "task_non_day_lane_widths_json")).widths; // NEW
+    assert.equal(widths.TODO, 160); // NEW
+    assert.equal(h.todoLane.geometry.width, 160); // NEW
+    assert.equal(h.doingLane.geometry.x, 422); // NEW
+    assert.equal(h.board.geometry.width, 2200); // NEW: existing board-width minimum remains in effect
+}); // NEW
+
+test("task manager renders retained Trellis pager controls and repairs hidden-card selection", async () => { // NEW
+    const h = makeHarness(); // NEW
+    setAttr(h.board, "task_view_mode", "FULL"); // NEW
+    for (let i = 0; i < 4; i++) addHarnessCard(h, h.todoLane, `pagerExtra${i}`, { workflow_state: "TODO", start: `2026-07-${10 + i}` }); // NEW
+    h.graph.setSelectionCell(h.board); // NEW
+    const previousGeometry = h.board.geometry.clone(); // NEW
+    h.board.geometry.height = 324; // NEW
+    h.fireModelChange({ changes: [h.geometryChange(h.board, previousGeometry)] }); // NEW
+    await nextTick(); // NEW
+    await nextTick(); // NEW: model repair and retained DOM refresh are independently deferred
+
+    const pager = h.document.querySelector(".trellis-task-lane-pager[data-lane-id='todo']"); // CHANGE: multiple lanes may independently need paging
+    const previous = pager.querySelector(".trellis-task-lane-pager__previous"); // NEW
+    const selector = pager.querySelector("select.trellis-task-lane-pager__select"); // NEW
+    const next = pager.querySelector(".trellis-task-lane-pager__next"); // NEW
+    assert.equal(pager.style.display, "flex"); // NEW
+    assert.equal(selector.options.length, 5); // CHANGE
+    assert.equal(selector.options[0].textContent, "1"); // CHANGE
+    assert.equal(previous.disabled, true); // NEW
+    assert.equal(next.disabled, false); // NEW
+    assert.match(h.document.getElementById("trellis-task-lane-pager-styles").textContent, /#2563EB/); // NEW
+    assert.ok(previous.querySelector("svg")); // NEW
+    assert.ok(next.querySelector("svg")); // NEW
+
+    next.focus(); // NEW
+    next.click(); // NEW
+    await nextTick(); // NEW
+    assert.equal(h.document.activeElement, next); // NEW: retained nodes preserve the originating control's focus
+    assert.equal(selector.value, "1"); // NEW
+    assert.equal(previous.disabled, false); // NEW
+    assert.equal(h.graph.getSelectionCell(), h.todoLane); // NEW: explicit navigation falls back to the lane
+    assert.equal(attr(h.todoLane, "label"), "TODO\nPage 2 of 5"); // CHANGE
+
+    const hiddenCard = h.todoLane.children.find(cell => attr(cell, "kanban_card") === "1" && cell.visible === false); // NEW
+    h.graph.setSelectionCell(hiddenCard); // NEW
+    await nextTick(); // NEW
+    assert.equal(hiddenCard.visible, true); // NEW: external selection reveals its canonical page
+    assert.equal(h.graph.getSelectionCell(), hiddenCard); // NEW
+    const anchor = h.model.getCell(attr(h.todoLane, "task_page_anchor_card_id")); // NEW
+    assert.ok(anchor && anchor.visible); // NEW: anchors always rebase to the first visible card
+
+    h.graph.setSelectionCell(h.root); // NEW
+    await nextTick(); // NEW
+    assert.equal(pager.style.display, "none"); // NEW: only the selected board owns visible controls
+}); // NEW
+
+test("task manager scales and clamps retained pager controls at low zoom", async () => { // NEW
+    const h = makeHarness(); // NEW
+    setAttr(h.board, "task_view_mode", "FULL"); // NEW
+    for (let i = 0; i < 4; i++) addHarnessCard(h, h.todoLane, `zoomPagerExtra${i}`, { workflow_state: "TODO", start: `2026-07-${10 + i}` }); // NEW
+    h.graph.setSelectionCell(h.board); // NEW
+    const previousGeometry = h.board.geometry.clone(); // NEW
+    h.board.geometry.height = 324; // NEW
+    h.fireModelChange({ changes: [h.geometryChange(h.board, previousGeometry)] }); // NEW
+    await nextTick(); // NEW
+    await nextTick(); // NEW
+
+    const pager = h.document.querySelector(".trellis-task-lane-pager[data-lane-id='todo']"); // NEW
+    h.setState(h.todoLane, { x: 20, y: 40, width: 60, height: 24 }); // NEW
+    h.fireViewEvent("repaint"); // NEW
+    await nextTick(); // NEW
+
+    const left = Number.parseInt(pager.style.left, 10); // NEW
+    const top = Number.parseInt(pager.style.top, 10); // NEW
+    assert.equal(pager.style.display, "flex"); // NEW
+    assert.match(pager.style.transform, /scale\(0\./); // NEW
+    assert.ok(left >= 20 && left <= 80); // NEW
+    assert.ok(top >= 40 && top <= 64); // NEW
+}); // NEW
+
+test("task manager pages week-view staged lane with retained Trellis controls", async () => { // NEW
+    const h = makeHarness(); // NEW
+    for (let i = 0; i < 10; i++) addHarnessCard(h, h.stagedLane, `weekStagedPagerExtra${i}`, { workflow_state: "STAGED" }); // NEW
+    h.graph.setSelectionCell(h.board); // NEW
+    h.fireModelChange(); // NEW
+    await nextTick(); // NEW
+    await nextTick(); // NEW
+
+    const pager = h.document.querySelector(".trellis-task-lane-pager[data-lane-id='staged']"); // NEW
+    const selector = pager.querySelector("select.trellis-task-lane-pager__select"); // NEW
+    assert.equal(pager.style.display, "flex"); // NEW
+    assert.ok(selector.options.length > 1); // NEW
+    assert.equal(selector.options[0].textContent, "1"); // NEW
+    assert.ok(pager.querySelector(".trellis-task-lane-pager__previous svg")); // NEW
+    assert.ok(pager.querySelector(".trellis-task-lane-pager__next svg")); // NEW
+    assert.match(attr(h.stagedLane, "label"), /^TODO \(staged\)\nPage 1 of /); // NEW
+}); // NEW
+
+test("task manager refreshes week-view staged paging after selected-period context changes", async () => { // NEW
+    const h = makeHarness(); // NEW
+    const wedCard = addHarnessCard(h, h.stagedLane, "periodWedStaged", { workflow_state: "STAGED", start: "2026-07-15", end: "2026-07-15", title: "Wednesday staged target" }); // NEW
+    for (let i = 0; i < 20; i++) addHarnessCard(h, h.stagedLane, `periodSunStaged${i}`, { workflow_state: "STAGED", start: "2026-07-12", end: "2026-07-12", title: `Sunday staged ${String(i).padStart(2, "0")}` }); // NEW
+    h.graph.setSelectionCell(h.board); // NEW
+    h.fireModelChange(); // NEW
+    await nextTick(); // NEW
+    await nextTick(); // NEW
+
+    const initialPageCount = h.document.querySelector(".trellis-task-lane-pager[data-lane-id='staged'] select.trellis-task-lane-pager__select").options.length; // NEW
+    assert.equal(wedCard.visible, false); // NEW: Sunday context fills page one before the Wednesday card
+    assert.notEqual(attr(h.stagedLane, "task_page_anchor_card_id"), wedCard.id); // NEW
+
+    h.resetCounters(); // NEW
+    setAttr(h.board, "task_selected_day", "2026-07-15"); // NEW: simulate a selected-period context change before the selected lane refresh path runs
+    h.graph.setSelectionCell(h.stagedLane); // NEW
+    await nextTick(); // NEW
+    await nextTick(); // NEW
+
+    const pager = h.document.querySelector(".trellis-task-lane-pager[data-lane-id='staged']"); // NEW
+    const selector = pager.querySelector("select.trellis-task-lane-pager__select"); // NEW
+    assert.ok(h.reflowCounters().lanes > 0); // NEW: staged selected-period refresh must use the lane render path, not badge-only refresh
+    assert.equal(wedCard.visible, true); // NEW
+    assert.equal(attr(h.stagedLane, "task_page_anchor_card_id"), wedCard.id); // NEW
+    assert.match(attr(h.stagedLane, "label"), /^TODO \(staged\)\nPage 1 of /); // NEW
+    assert.equal(pager.style.display, "flex"); // NEW
+    assert.equal(selector.value, "0"); // NEW
+    assert.equal(selector.options.length, initialPageCount); // NEW
+    assert.equal(attr(h.weekWedLane, "task_page_anchor_card_id"), null); // NEW: weekday schedule lanes remain unpaged
+}); // NEW
+
+test("task manager week-view staged width persists separately from weekday widths", async () => { // NEW
+    const h = makeHarness(); // NEW
+    h.graph.setSelectionCell(h.board); // NEW
+    await nextTick(); // NEW
+
+    const previousGeometry = h.stagedLane.geometry.clone(); // NEW
+    h.stagedLane.geometry.width = 520; // NEW
+    h.fireModelChange({ changes: [h.geometryChange(h.stagedLane, previousGeometry)] }); // NEW
+    await nextTick(); // NEW
+
+    const widths = JSON.parse(attr(h.board, "task_non_day_lane_widths_json")).widths; // NEW
+    assert.equal(widths.TODO_STAGED, 520); // NEW
+    assert.equal(attr(h.board, "task_day_lane_widths_json"), null); // NEW
+    assert.equal(h.stagedLane.geometry.width, 520); // NEW
+    assert.equal(h.weekSunLane.geometry.width, 220); // NEW
+    assert.equal(h.weekSunLane.geometry.x, 618); // CHANGE
+}); // NEW
+
+test("task manager repairs same-lane and same-board hidden selections but preserves cross-board selection", () => { // NEW
+    const sameBoard = makeHarness(); // NEW
+    assert.equal(sameBoard.card2.visible, false); // NEW
+    sameBoard.graph.setSelectionCells([sameBoard.card1, sameBoard.card2]); // NEW
+    assert.deepEqual(sameBoard.graph.getSelectionCells(), [sameBoard.card1]); // NEW: first selected card chooses the page and hidden siblings are dropped
+
+    const hiddenStagedCard = sameBoard.stagedLane.children.find(cell => attr(cell, "kanban_card") === "1" && cell.visible === false); // NEW
+    sameBoard.graph.setSelectionCells([sameBoard.card2, hiddenStagedCard]); // NEW
+    assert.equal(sameBoard.graph.getSelectionCell(), sameBoard.board); // NEW: hidden selection spanning lanes falls back to the common board
+
+    const crossBoard = makeHarness({ secondaryBoard: true }); // NEW
+    const originalSelection = [crossBoard.card2, crossBoard.secondaryWeekWedCard]; // NEW
+    crossBoard.graph.setSelectionCells(originalSelection); // NEW
+    assert.deepEqual(crossBoard.graph.getSelectionCells(), originalSelection); // NEW
+    assert.equal(crossBoard.card2.visible, false); // NEW: cross-board selection is never rewritten to reveal a page
 }); // NEW
 
 test("task manager keeps week schedule height separate from full-view card height", async () => { // NEW
@@ -1808,6 +1864,26 @@ test("task manager week-mode board resize expands staged lane only", async () =>
     assert.ok(counters.layout > 0); // NEW
     assert.ok(counters.boardLayout > 0); // NEW
 }); // CHANGE
+
+test("task manager repairs direct week-view staged lane resize to board-owned height", async () => { // NEW
+    const h = makeHarness(); // NEW
+    h.graph.setSelectionCell(h.board); // NEW
+    await nextTick(); // NEW
+    const expectedBoardHeight = h.board.geometry.height; // NEW
+    const expectedStagedHeight = h.stagedLane.geometry.height; // NEW
+    h.resetCounters(); // NEW
+
+    const previousGeometry = h.stagedLane.geometry.clone(); // NEW
+    h.stagedLane.geometry.height = expectedStagedHeight + 200; // NEW
+    h.fireModelChange({ changes: [h.geometryChange(h.stagedLane, previousGeometry)] }); // NEW
+    await nextTick(); // NEW
+
+    assert.equal(attr(h.board, "task_full_lane_height"), null); // NEW
+    assert.equal(attr(h.board, "task_week_board_heights_json"), null); // NEW
+    assert.equal(h.stagedLane.geometry.height, expectedStagedHeight); // NEW
+    assert.equal(h.board.geometry.height, expectedBoardHeight); // NEW
+    assert.ok(h.reflowCounters().boardLayout > 0); // NEW
+}); // NEW
 
 test("task manager week-mode board resize clamps below tallest day lane", async () => { // NEW
     const h = makeHarness(); // NEW
@@ -1914,8 +1990,8 @@ test("task manager all-closed week hides time scale and keeps day lanes compact"
     assert.equal(h.weekWedLane.geometry.y, 48); // CHANGE
     assert.equal(h.weekSunLane.geometry.height, 20); // NEW
     assert.equal(h.weekWedLane.geometry.height, 20); // NEW
-    assert.equal(h.stagedLane.geometry.height, 20); // NEW
-    assert.equal(h.board.geometry.height, 78); // CHANGE
+    assert.equal(h.stagedLane.geometry.height, 126); // CHANGE: non-day lanes retain a usable title and pager band
+    assert.equal(h.board.geometry.height, 184); // CHANGE
 }); // NEW
 
 test("task manager edit hours shifts existing day stack and marks overflow", async () => { // NEW
@@ -2030,8 +2106,11 @@ test("task manager hides workflow actions for staged and mixed non-day selection
 }); // NEW
 
 test("task manager multi-card overlay applies note, date, reset, and clear actions", async () => { // CHANGE
-    const h = makeHarness();
+    const h = makeHarness({ initialNonDayLaneHeight: 500 }); // CHANGE: keep bulk-operation fixtures on one page
     const overlay = h.document.querySelector(".trellis-task-selected-card-actions");
+    setAttr(h.board, "task_view_mode", "FULL"); // NEW: keep both cards on one unpaged lane for bulk-edit coverage
+    setAttr(h.board, "task_full_lane_height", "400"); // NEW
+    h.board.geometry.height = 438; // NEW
 
     h.setState(h.board, { x: 10, y: 10, width: 700, height: 260 });
     h.setState(h.card1, { x: 30, y: 60, width: 120, height: 60 });
@@ -2067,16 +2146,28 @@ test("task manager multi-card overlay applies note, date, reset, and clear actio
     assert.ok(dateCounters.classification > 0); // NEW
     assert.ok(dateCounters.layout > 0); // NEW
 
-    buttonByText(overlay, "Reset Dates").click();
+    h.graph.setSelectionCell(h.card1); // NEW: automatic paging intentionally discards hidden cross-page bulk selections
+    await nextTick(); // NEW
+    buttonByText(overlay, "Reset Dates").click(); // CHANGE
     await nextTick();
     assert.equal(attr(h.card1, "start"), "2026-07-01");
     assert.equal(attr(h.card1, "date_override"), null);
+    h.graph.setSelectionCell(h.card2); // NEW
+    await nextTick(); // NEW
+    buttonByText(overlay, "Reset Dates").click(); // NEW
+    await nextTick(); // NEW
     assert.equal(attr(h.card2, "start"), "2026-07-05");
     assert.equal(attr(h.card2, "date_override"), null);
 
-    buttonByText(overlay, "Clear Note").click();
+    h.graph.setSelectionCell(h.card1); // NEW
+    await nextTick(); // NEW
+    buttonByText(overlay, "Clear Note").click(); // CHANGE
     await nextTick();
     assert.equal(attr(h.card1, "card_note"), null);
+    h.graph.setSelectionCell(h.card2); // NEW
+    await nextTick(); // NEW
+    buttonByText(overlay, "Clear Note").click(); // NEW
+    await nextTick(); // NEW
     assert.equal(attr(h.card2, "card_note"), null);
 }); // CHANGE
 
@@ -2123,16 +2214,8 @@ test("task manager assignment picker groups linked roles, searches, and applies 
     const assign = buttonStartingWith(overlay, "Assign to"); // NEW
     assert.equal(assign.disabled, false); // NEW
     assign.click(); // NEW
-    let picker = h.document.querySelector(".trellis-task-assignee-picker"); // CHANGE
+    const picker = h.document.querySelector(".trellis-task-assignee-picker"); // NEW
     assert.ok(picker); // NEW
-    assert.equal(overlay.style.display, "none"); // CHANGE: the assignment picker replaces the card actions
-    assert.equal(picker.style.left, overlay.style.left); // CHANGE
-    assert.equal(picker.style.top, overlay.style.top); // CHANGE
-    buttonByText(picker, "Cancel").click(); // CHANGE
-    await nextTick(); // CHANGE
-    assert.equal(overlay.style.display, "flex"); // CHANGE: closing the replacement restores the card actions
-    assign.click(); // CHANGE
-    picker = h.document.querySelector(".trellis-task-assignee-picker"); // CHANGE
     assert.match(picker.textContent, /Garden Lead/); // CHANGE: Group labels collapse internal whitespace while preserving a representative display case.
     assert.match(picker.textContent, /Unnamed person/); // NEW
     assert.match(picker.textContent, /Unspecified role/); // NEW
@@ -2220,145 +2303,7 @@ test("task manager bulk assignment uses reversible Existing and All cards contro
     assert.equal(attr(h.weekTueCard2, "task_assignee_role_ids_json"), null); // NEW
 }); // NEW
 
-test("task manager retains assignee badge nodes across viewport refreshes and hides them for the complete pan", async () => { // NEW
-    const h = makeHarness(); // NEW
-    const roles = [ // NEW
-        addRoleFixture(h, { id: "role-stable-1", name: "Stable One", roleTitle: "Lead", image: "data:image/png;base64,stable" }).role, // NEW
-        addRoleFixture(h, { id: "role-stable-2", name: "Stable Two", roleTitle: "Water" }).role, // NEW
-        addRoleFixture(h, { id: "role-stable-3", name: "Stable Three", roleTitle: "Harvest" }).role // NEW
-    ]; // NEW
-    setAttr(h.weekTueCard, "task_assignee_role_ids_json", JSON.stringify(roles.map(role => role.id))); // NEW
-    h.setState(h.weekTueCard, { x: 690, y: 60, width: 120, height: 60 }); // NEW
-    h.fireModelChange(); // NEW
-    await nextTick(); // NEW
-    const layer = h.document.querySelector(".trellis-task-assignee-badge-layer"); // NEW
-    const stack = layer.querySelector(".trellis-task-assignee-stack"); // NEW
-    const avatars = Array.from(stack.querySelectorAll(".trellis-task-assignee-avatar")); // NEW
-    assert.equal(stack.style.left, "806px"); // NEW
-
-    h.setState(h.weekTueCard, { x: 760, y: 90, width: 120, height: 60 }); // NEW
-    h.fireViewEvent("translate"); // NEW
-    h.fireViewEvent("repaint"); // NEW
-    h.graph.container.dispatchEvent(new h.document.defaultView.Event("scroll")); // NEW
-    await nextTick(); // NEW
-    assert.strictEqual(layer.querySelector(".trellis-task-assignee-stack"), stack); // NEW
-    assert.deepEqual(Array.from(stack.querySelectorAll(".trellis-task-assignee-avatar")), avatars); // NEW
-    assert.equal(stack.style.left, "876px"); // NEW
-    assert.equal(stack.style.top, "92px"); // NEW
-
-    h.firePanEvent("panStart"); // NEW
-    assert.equal(layer.style.display, "none"); // NEW
-    h.setState(h.weekTueCard, { x: 820, y: 120, width: 120, height: 60 }); // NEW
-    h.fireViewEvent("translate"); // NEW
-    h.fireViewEvent("repaint"); // NEW
-    h.fireModelChange(); // NEW
-    await nextTick(); // NEW
-    assert.equal(layer.style.display, "none"); // NEW
-    assert.strictEqual(layer.querySelector(".trellis-task-assignee-stack"), stack); // NEW
-    assert.equal(stack.style.left, "876px"); // NEW: reconciliation remains suppressed during the pan
-
-    h.firePanEvent("panEnd"); // NEW
-    await nextTick(); // NEW
-    assert.equal(layer.style.display, "block"); // NEW
-    assert.strictEqual(layer.querySelector(".trellis-task-assignee-stack"), stack); // NEW
-    assert.deepEqual(Array.from(stack.querySelectorAll(".trellis-task-assignee-avatar")), avatars); // NEW
-    assert.equal(stack.style.left, "936px"); // NEW
-    assert.equal(stack.style.top, "122px"); // NEW
-}); // NEW
-
-test("task manager recovers assignee badges when a pan exits without PAN_END", async () => { // NEW
-    const h = makeHarness(); // NEW
-    const role = addRoleFixture(h, { id: "role-pan-recovery", name: "Recovery", roleTitle: "Lead" }).role; // NEW
-    setAttr(h.weekTueCard, "task_assignee_role_ids_json", JSON.stringify([role.id])); // NEW
-    h.setState(h.weekTueCard, { x: 690, y: 60, width: 120, height: 60 }); // NEW
-    h.fireModelChange(); // NEW
-    await nextTick(); // NEW
-    const layer = h.document.querySelector(".trellis-task-assignee-badge-layer"); // NEW
-
-    h.firePanEvent("panStart"); // NEW
-    h.abandonPan(); // NEW
-    h.document.dispatchEvent(new h.document.defaultView.MouseEvent("mouseup", { bubbles: true })); // NEW
-    await nextTick(); await nextTick(); // NEW
-    assert.equal(layer.style.display, "block"); // NEW
-
-    h.firePanEvent("panStart"); // NEW
-    h.abandonPan(); // NEW
-    h.document.dispatchEvent(new h.document.defaultView.MouseEvent("mouseleave", { bubbles: true })); // NEW
-    await nextTick(); await nextTick(); // NEW
-    assert.equal(layer.style.display, "block"); // NEW
-
-    h.firePanEvent("panStart"); // NEW
-    h.document.defaultView.dispatchEvent(new h.document.defaultView.Event("blur")); // NEW
-    await nextTick(); await nextTick(); // NEW
-    h.abandonPan(); // NEW
-    assert.equal(layer.style.display, "block"); // NEW
-}); // NEW
-
-test("task manager wrapped assignee expansion persists and resets at its defined boundaries", async () => { // NEW
-    const h = makeHarness(); // NEW
-    const roles = Array.from({ length: 7 }, (_value, index) => addRoleFixture(h, { // NEW
-        id: "role-wrap-" + (index + 1), name: "Person " + (index + 1), roleTitle: "Role " + (index + 1) // NEW
-    }).role); // NEW
-    setAttr(h.weekTueCard, "task_assignee_role_ids_json", JSON.stringify(roles.map(role => role.id))); // NEW
-    h.setState(h.weekTueCard, { x: 690, y: 60, width: 120, height: 60 }); // NEW
-    h.fireModelChange(); // NEW
-    await nextTick(); // NEW
-    const layer = h.document.querySelector(".trellis-task-assignee-badge-layer"); // NEW
-    const stack = layer.querySelector(".trellis-task-assignee-stack"); // NEW
-    assert.equal(stack.querySelectorAll(".trellis-task-assignee-avatar").length, 3); // NEW
-    stack.querySelector(".trellis-task-assignee-overflow").click(); // NEW
-    const grid = stack.querySelector(".trellis-task-assignee-expanded-grid"); // NEW
-    const collapse = stack.querySelector(".trellis-task-assignee-collapse"); // NEW
-    const retainedAvatar = grid.querySelector(".trellis-task-assignee-avatar"); // NEW
-    assert.equal(grid.style.display, "grid"); // NEW
-    assert.equal(grid.style.gridTemplateColumns, "repeat(3,12px)"); // NEW
-    assert.equal(grid.querySelectorAll(".trellis-task-assignee-avatar").length, 7); // NEW
-    assert.equal(stack.querySelector(".trellis-task-assignee-collapse-row").style.justifyContent, "flex-end"); // NEW
-    assert.equal(collapse.getAttribute("aria-label"), "Collapse assignees"); // NEW
-
-    h.firePanEvent("panStart"); // NEW
-    h.firePanEvent("panEnd"); // NEW
-    await nextTick(); // NEW
-    assert.strictEqual(layer.querySelector(".trellis-task-assignee-stack"), stack); // NEW
-    assert.strictEqual(stack.querySelector(".trellis-task-assignee-avatar"), retainedAvatar); // NEW
-    assert.equal(grid.style.display, "grid"); // NEW
-
-    setAttr(h.weekTueCard, "task_assignee_role_ids_json", JSON.stringify(roles.slice(0, 6).map(role => role.id))); // NEW
-    h.fireModelChange(); // NEW
-    await nextTick(); // NEW
-    assert.strictEqual(layer.querySelector(".trellis-task-assignee-stack"), stack); // NEW
-    assert.equal(grid.style.display, "grid"); // NEW
-    assert.equal(grid.querySelectorAll(".trellis-task-assignee-avatar").length, 6); // NEW
-
-    setAttr(h.weekTueCard, "task_assignee_role_ids_json", JSON.stringify(roles.slice(0, 3).map(role => role.id))); // NEW
-    h.fireModelChange(); // NEW
-    await nextTick(); // NEW
-    assert.equal(grid.style.display, "none"); // NEW
-    assert.equal(stack.querySelector(".trellis-task-assignee-collapse"), null); // NEW
-    assert.equal(stack.querySelectorAll(".trellis-task-assignee-avatar").length, 3); // NEW
-
-    setAttr(h.weekTueCard, "task_assignee_role_ids_json", JSON.stringify(roles.slice(0, 4).map(role => role.id))); // NEW
-    h.fireModelChange(); // NEW
-    await nextTick(); // NEW
-    assert.equal(grid.style.display, "none"); // NEW
-    assert.equal(stack.querySelector(".trellis-task-assignee-overflow").textContent, "+1"); // NEW
-
-    setAttr(h.board, "task_view_mode", "FULL"); // NEW
-    h.fireModelChange(); // NEW
-    await nextTick(); // NEW
-    assert.equal(layer.querySelector(".trellis-task-assignee-stack"), null); // NEW
-    setAttr(h.board, "task_view_mode", "WEEK"); // NEW
-    h.fireModelChange(); // NEW
-    await nextTick(); // NEW
-    const restoredStack = layer.querySelector(".trellis-task-assignee-stack"); // NEW
-    assert.notStrictEqual(restoredStack, stack); // NEW
-    assert.equal(restoredStack.querySelector(".trellis-task-assignee-expanded-grid").style.display, "none"); // NEW
-    restoredStack.querySelector(".trellis-task-assignee-overflow").click(); // NEW
-    restoredStack.querySelector(".trellis-task-assignee-collapse").click(); // NEW
-    assert.equal(restoredStack.querySelector(".trellis-task-assignee-expanded-grid").style.display, "none"); // NEW
-}); // NEW
-
-test("task manager assignee badges expand all avatars, navigate, and clear deleted roles", async () => { // CHANGE
+test("task manager assignee badges cap avatars, show all names, navigate, and clear deleted roles", async () => { // NEW
     const h = makeHarness(); // NEW
     const roles = [ // NEW
         addRoleFixture(h, { id: "role-1", name: "A One", roleTitle: "Alpha" }).role, // NEW
@@ -2376,10 +2321,9 @@ test("task manager assignee badges expand all avatars, navigate, and clear delet
     const overflow = stack.querySelector(".trellis-task-assignee-overflow"); // NEW
     assert.equal(overflow.textContent, "+1"); // NEW
     overflow.click(); // NEW
-    assert.equal(stack.querySelectorAll(".trellis-task-assignee-avatar").length, roles.length); // CHANGE: +N expands to the complete badge list
-    assert.equal(stack.querySelector(".trellis-task-assignee-overflow"), null); // CHANGE
-    overflow.click(); // CHANGE: a queued repeat activation remains idempotent after expansion
-    assert.equal(stack.querySelectorAll(".trellis-task-assignee-avatar").length, roles.length); // CHANGE
+    const names = h.document.querySelector(".trellis-task-assignee-names-popover"); // NEW
+    assert.ok(names); // NEW
+    roles.forEach(role => assert.match(names.textContent, new RegExp(role === roles[0] ? "A One" : role === roles[1] ? "B Two" : role === roles[2] ? "C Three" : "D Four"))); // NEW
     stack.querySelector(".trellis-task-assignee-avatar").click(); // NEW
     assert.ok(roles.includes(h.graph.getSelectionCell())); // NEW
 
