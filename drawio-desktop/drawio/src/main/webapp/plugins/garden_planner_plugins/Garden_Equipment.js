@@ -35,6 +35,7 @@ Draw.loadPlugin(function (ui) {
     const PLUGIN_VERSION = 1;
     const STYLE_ID = "trellis-garden-equipment-style";
     const ACTION_ID = "trellisGardenEquipment";
+    const TRELLIS_DIALOG_Z = 2000000000; // NEW
 
     const ATTRS = {
         EQUIPMENT_INVENTORY_JSON: "equipment_inventory_json",
@@ -1465,7 +1466,7 @@ Draw.loadPlugin(function (ui) {
         const style = document.createElement("style");
         style.id = STYLE_ID;
         style.textContent = `
-.trellis-eq-overlay { position: fixed; inset: 0; z-index: 10030; background: rgba(0,0,0,0.28); display: flex; align-items: center; justify-content: center; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+.trellis-eq-overlay { position: fixed; inset: 0; z-index: ${TRELLIS_DIALOG_Z}; background: rgba(0,0,0,0.28); display: flex; align-items: center; justify-content: center; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; } /* CHANGE */
 .trellis-eq-dialog { width: min(1480px, calc(100vw - 52px)); height: min(920px, calc(100vh - 52px)); background: #fff; color: #172018; border-radius: 9px; box-shadow: 0 18px 50px rgba(0,0,0,.32); overflow: hidden; display: flex; flex-direction: column; }
 .trellis-eq-header { height: 54px; background: linear-gradient(90deg,#0f3f25,#0b2d1b); color: #fff; display: flex; align-items: center; justify-content: space-between; padding: 0 22px; }
 .trellis-eq-title { font-size: 18px; font-weight: 650; }

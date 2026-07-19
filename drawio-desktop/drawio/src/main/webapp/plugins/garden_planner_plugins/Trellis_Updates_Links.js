@@ -12,6 +12,7 @@
     const RELEASES_API_URL = "https://api.github.com/repos/Benjamin-Elon/Trellis-for-Drawio/releases?per_page=10";
     const CHANGELOG_URL = "plugins/garden_planner_plugins/trellis_changelog.json";
     const SUMMARY_LIMIT = 220;
+    const TRELLIS_DIALOG_Z = 2000000000; // NEW
 
     const DEFAULT_APP_INFO = Object.freeze({
         productName: "Trellis Studio",
@@ -51,6 +52,12 @@
     function clearNode(node) {
         while (node.firstChild) node.removeChild(node.firstChild);
     }
+
+    function elevateTrellisDialog(ui) { // NEW
+        const dlg = ui && ui.dialog; // NEW
+        if (dlg && dlg.bg && dlg.bg.style) dlg.bg.style.zIndex = String(TRELLIS_DIALOG_Z - 1); // NEW
+        if (dlg && dlg.container && dlg.container.style) dlg.container.style.zIndex = String(TRELLIS_DIALOG_Z); // NEW
+    } // NEW
 
     function normalizeVersion(value) {
         const match = text(value).trim().match(/^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+([0-9A-Za-z.-]+))?$/);
@@ -465,6 +472,7 @@
 
         ui.actions.addAction(ACTION_ID, function () {
             ui.showDialog(buildDialog(ui), 960, 620, true, true); // CHANGE
+            elevateTrellisDialog(ui); // NEW
         });
 
         const action = ui.actions.get && ui.actions.get(ACTION_ID);

@@ -32,6 +32,7 @@ Draw.loadPlugin(function (ui) {
   const ATTR_HISTORY_ID = 'trellis_history_id';                              // NEW
   const ATTR_CREATED_BY = 'createdByUserId';                                  // NEW
   const ATTR_EDITED_BY = 'lastEditedByUserId';                                // NEW
+  const GRAPH_OVERLAY_Z = Object.freeze({ ANNOTATION: 10000, CONNECTION: 10010, CONTROL: 10020, CONTROL_TOP: 10030 }); // NEW
 
   const MODE_NONE = 'none';
   const MODE_CHANGE = 'changemap';
@@ -1550,6 +1551,8 @@ Draw.loadPlugin(function (ui) {
   let compareBtn = null;                                                       // NEW
   let restoreBtn = null;                                                       // NEW
   let checkpointBtn = null;                                                    // NEW
+  let formatPanelState = null;                                                 // NEW
+  let nativeFormatState = null;                                                // NEW
 
   graph.__ccPanelVisible = false;
 
@@ -1558,8 +1561,9 @@ Draw.loadPlugin(function (ui) {
 
   function applyPanelSize() {
     if (!panel) return;
-    panel.style.width = String(graph.__ccPanelW) + 'px';
+    panel.style.width = '100%';                                                 // CHANGE
     panel.style.height = '100%';                                               // CHANGE
+    if (formatPanelState) refreshChangeMapSidebarLayout();                      // NEW
   }
 
   function clamp(n, a, b) {
@@ -1582,6 +1586,65 @@ Draw.loadPlugin(function (ui) {
     applyPanelSize();
   }
 
+  function fireFormatWidthChanged() {                                          // NEW
+    if (!ui || typeof ui.fireEvent !== 'function') return false;               // CHANGE
+    if (typeof mxEventObject === 'undefined') return false;                    // CHANGE
+    ui.fireEvent(new mxEventObject('formatWidthChanged'));                     // NEW
+    return true;                                                               // NEW
+  }                                                                            // NEW
+
+  function suspendNativeFormatRefresh() {                                      // NEW
+    if (nativeFormatState) return;                                             // NEW
+    const nativeFormat = ui && ui.format && !ui.formatWindow ? ui.format : null; // NEW
+    if (!nativeFormat) return;                                                 // NEW
+    nativeFormatState = {                                                      // NEW
+      format: nativeFormat,                                                    // NEW
+      refresh: nativeFormat.refresh,                                           // NEW
+      immediateRefresh: nativeFormat.immediateRefresh,                         // NEW
+      clear: nativeFormat.clear                                                // NEW
+    };                                                                         // NEW
+    if (typeof nativeFormat.refresh === 'function') nativeFormat.refresh = function () { }; // NEW
+    if (typeof nativeFormat.immediateRefresh === 'function') nativeFormat.immediateRefresh = function () { }; // NEW
+    if (typeof nativeFormat.clear === 'function') nativeFormat.clear = function () { }; // NEW
+  }                                                                            // NEW
+
+  function restoreNativeFormatRefresh() {                                      // NEW
+    if (!nativeFormatState) return null;                                       // NEW
+    const state = nativeFormatState;                                           // NEW
+    nativeFormatState = null;                                                  // NEW
+    state.format.refresh = state.refresh;                                      // NEW
+    state.format.immediateRefresh = state.immediateRefresh;                    // NEW
+    state.format.clear = state.clear;                                          // NEW
+    return state.format;                                                       // NEW
+  }                                                                            // NEW
+
+  function refreshChangeMapSidebarLayout() {                                   // NEW
+    const container = formatPanelState && formatPanelState.container;          // NEW
+    if (!container) return;                                                    // NEW
+    const width = clamp(graph.__ccPanelW || 340, 320, Math.max(320, (window.innerWidth || 1200) - 40)); // NEW
+    graph.__ccPanelW = width;                                                  // NEW
+    if (typeof ui.formatWidth !== 'undefined') ui.formatWidth = width;         // NEW
+    if (typeof ui.refresh === 'function') ui.refresh(true);                    // NEW
+    container.style.width = String(width) + 'px';                              // NEW
+    if (graph && typeof graph.sizeDidChange === 'function') graph.sizeDidChange(); // NEW
+    fireFormatWidthChanged();                                                  // NEW
+  }                                                                            // NEW
+
+  function restoreFormatPanel() {                                              // NEW
+    if (!formatPanelState) return;                                             // NEW
+    const state = formatPanelState;                                            // NEW
+    formatPanelState = null;                                                   // NEW
+    const nativeFormat = restoreNativeFormatRefresh();                         // NEW
+    if (panel && panel.parentNode === state.container) panel.parentNode.removeChild(panel); // NEW
+    while (state.container.firstChild) state.container.removeChild(state.container.firstChild); // NEW
+    state.container.appendChild(state.fragment);                               // NEW
+    if (typeof ui.formatWidth !== 'undefined') ui.formatWidth = state.formatWidth; // NEW
+    state.container.style.cssText = state.cssText;                             // NEW
+    if (typeof ui.refresh === 'function') ui.refresh(true);                    // NEW
+    if (graph && typeof graph.sizeDidChange === 'function') graph.sizeDidChange(); // NEW
+    if (!fireFormatWidthChanged() && nativeFormat && typeof nativeFormat.refresh === 'function') nativeFormat.refresh(); // CHANGE
+  }                                                                            // NEW
+
 
   function isPanelVisible() {
     return !!(panel && panel.style.display !== 'none' && graph.__ccPanelVisible);
@@ -1590,6 +1653,7 @@ Draw.loadPlugin(function (ui) {
   function showPanel() {
     createPanel();
     if (!panel) return;
+    attachPanel();                                                             // NEW
     panel.style.display = '';
     graph.__ccPanelVisible = true;
     syncPanelFromState();
@@ -1602,7 +1666,25 @@ Draw.loadPlugin(function (ui) {
     panel.style.display = 'none';
     graph.__ccPanelVisible = false;
     clearHistoryCompareOverlays();                                             // NEW
+    restoreFormatPanel();                                                      // NEW
   }
+
+  function turnOffChangeMapForFileBoundary() {                                  // NEW
+    const shouldRestorePanel = !!(panel && (graph.__ccPanelVisible || formatPanelState)); // NEW
+    if (graph.__ccApplyTimer) { clearTimeout(graph.__ccApplyTimer); graph.__ccApplyTimer = null; } // NEW
+    graph.__ccApplyToken++;                                                     // NEW
+    graph.__ccApplyQueued = false;                                               // NEW
+    graph.__ccHistorySelectedId = null;                                          // NEW
+    graph.__ccFiltered = [];                                                     // NEW
+    graph.__ccNavIndex = 0;                                                      // NEW
+    if (graph.__ccMode !== MODE_NONE) clearMap();                                // NEW
+    if (shouldRestorePanel) hidePanel();                                         // CHANGE
+    else clearHistoryCompareOverlays();                                          // NEW
+    graph.__ccPanelVisible = false;                                              // NEW
+    if (modeSelect) modeSelect.value = MODE_NONE;                                // NEW
+    updateNavUI();                                                               // NEW
+    updateHistoryUI();                                                           // NEW
+  }                                                                              // NEW
 
   function togglePanel() {
     if (isPanelVisible()) hidePanel();
@@ -1619,11 +1701,7 @@ Draw.loadPlugin(function (ui) {
     if (panel) return;
 
     panel = makeEl('div', {
-      position: 'absolute',
-      top: '0',                                                               // CHANGE
-      right: '0',                                                             // CHANGE
-      zIndex: 9999,
-      bottom: '0',                                                            // NEW
+      position: 'relative',                                                    // CHANGE
       background: '#ffffff',                                                   // CHANGE
       borderLeft: '1px solid #c7c7cc',                                         // CHANGE
       padding: '10px',
@@ -1806,8 +1884,30 @@ Draw.loadPlugin(function (ui) {
 
   function attachPanel() {
     if (!graph.container || !panel) return;
+    const formatContainer = ui && ui.formatContainer && !ui.formatWindow ? ui.formatContainer : null; // NEW
+    if (formatContainer) {                                                     // NEW
+      if (panel.parentNode === formatContainer && formatPanelState) { refreshChangeMapSidebarLayout(); return; } // NEW
+      if (!formatPanelState) {                                                 // NEW
+        const fragment = document.createDocumentFragment();                    // NEW
+        while (formatContainer.firstChild) fragment.appendChild(formatContainer.firstChild); // NEW
+        formatPanelState = { container: formatContainer, fragment, cssText: formatContainer.style.cssText, formatWidth: ui.formatWidth }; // NEW
+      }                                                                        // NEW
+      suspendNativeFormatRefresh();                                            // NEW
+      if (panel.parentNode && panel.parentNode !== formatContainer) panel.parentNode.removeChild(panel); // NEW
+      panel.style.position = 'relative';                                       // NEW
+      panel.style.top = '';                                                    // NEW
+      panel.style.right = '';                                                  // NEW
+      panel.style.zIndex = '';                                                 // NEW
+      formatContainer.appendChild(panel);                                      // NEW
+      refreshChangeMapSidebarLayout();                                         // NEW
+      return;                                                                  // NEW
+    }                                                                          // NEW
     const parent = graph.container.parentNode || graph.container;
     if (parent && parent.style && (!parent.style.position || parent.style.position === 'static')) parent.style.position = 'relative'; // NEW
+    panel.style.position = 'absolute';                                         // NEW
+    panel.style.top = '0';                                                     // NEW
+    panel.style.right = '0';                                                   // NEW
+    panel.style.zIndex = String(GRAPH_OVERLAY_Z.CONTROL);                      // NEW
     if (panel.parentNode !== parent) parent.appendChild(panel);
   }
 
@@ -2082,7 +2182,7 @@ Draw.loadPlugin(function (ui) {
       border: '2px ' + (dashed ? 'dashed' : 'solid') + ' ' + color,            // NEW
       background: dashed ? 'rgba(217,48,37,0.08)' : 'rgba(26,115,232,0.08)',   // NEW
       pointerEvents: 'none',                                                   // NEW
-      zIndex: 9998,                                                            // NEW
+      zIndex: String(GRAPH_OVERLAY_Z.ANNOTATION),                              // CHANGE
       boxSizing: 'border-box'                                                  // NEW
     });                                                                        // NEW
     if (label) div.title = label;                                              // NEW
@@ -2586,6 +2686,16 @@ Draw.loadPlugin(function (ui) {
     host.appendChild(button);                                                   // NEW
   }                                                                            // NEW
 
+  function installDiagramBoundaryReset() {                                      // NEW
+    const editor = ui && ui.editor;                                             // NEW
+    if (!editor || typeof editor.addListener !== 'function') return;            // NEW
+    if (ui.__trellisChangeMapFileBoundaryResetInstalled) return;                // NEW
+    ui.__trellisChangeMapFileBoundaryResetInstalled = true;                     // NEW
+    editor.addListener('fileLoaded', function () {                              // NEW
+      turnOffChangeMapForFileBoundary();                                        // NEW
+    });                                                                         // NEW
+  }                                                                            // NEW
+
 
 
   // -------------------- Context menu --------------------
@@ -2621,6 +2731,7 @@ Draw.loadPlugin(function (ui) {
   installHistoryPublicApi();                                                   // NEW
   installHistoryAction();                                                      // NEW
   installHistoryToolbarButton();                                               // NEW
+  installDiagramBoundaryReset();                                                // NEW
   historyRecorder.initializeBaseline();                                        // NEW
 
 });

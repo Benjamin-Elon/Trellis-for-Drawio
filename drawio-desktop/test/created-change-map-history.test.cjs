@@ -91,7 +91,7 @@ function createDbBridge() { // NEW
 } // NEW
 
 function loadPlugin(options = {}) { // NEW
-    const dom = new JSDOM("<!doctype html><body><div id='host'><div id='graph'></div></div></body>", { url: "https://app.test/" }); // NEW
+    const dom = new JSDOM("<!doctype html><body><div id='host'><div id='format'><div id='native-format'>Format</div></div><div id='graph'></div></div></body>", { url: "https://app.test/" }); // CHANGE
     const document = dom.window.document; // NEW
     const root = new TestCell("root"); // NEW
     const layer = appendChild(root, makeXmlCell(document, "layer", { label: "Layer" })); // NEW
@@ -101,6 +101,7 @@ function loadPlugin(options = {}) { // NEW
     let serialized = options.serialized || "<mxGraphModel><root><mxCell id='0'/><mxCell id='1' parent='0'/><mxCell id='cell-a' parent='1'><mxGeometry x='10' y='20' width='80' height='40' as='geometry'/></mxCell></root></mxGraphModel>"; // NEW
     let restoredXml = null; // NEW
     const graphListeners = new Map(); // NEW
+    const editorListeners = new Map(); // NEW
     const graph = { // NEW
         container: document.getElementById("graph"), // NEW
         popupMenuHandler: {}, // NEW
@@ -119,10 +120,40 @@ function loadPlugin(options = {}) { // NEW
         __trellisHistoryTestRestore(xml) { restoredXml = xml; serialized = xml; } // NEW
     }; // NEW
     const actions = {}; // NEW
+    const formatContainer = document.getElementById("format"); // NEW
+    const firedEvents = []; // NEW
+    const nativeFormat = { // NEW
+        refreshCalls: 0, // NEW
+        clearCalls: 0, // NEW
+        refresh() { // NEW
+            this.refreshCalls += 1; // NEW
+            this.clear(); // NEW
+            const div = document.createElement("div"); // NEW
+            div.id = "native-format"; // NEW
+            div.textContent = "Format"; // NEW
+            formatContainer.appendChild(div); // NEW
+        }, // NEW
+        immediateRefresh() { this.refresh(); }, // NEW
+        clear() { this.clearCalls += 1; formatContainer.textContent = ""; } // NEW
+    }; // NEW
+    const editor = { // NEW
+        graph, // NEW
+        undoManager: { clear() { ui.undoCleared = true; } }, // NEW
+        addListener(name, fn) { if (!editorListeners.has(name)) editorListeners.set(name, []); editorListeners.get(name).push(fn); } // NEW
+    }; // NEW
     const ui = { // NEW
-        editor: { graph, undoManager: { clear() { ui.undoCleared = true; } } }, // NEW
+        editor, // CHANGE
         actions: { addAction(id, fn) { actions[id] = { funct: fn }; } }, // NEW
-        menus: { get() { return null; }, addMenuItems() {} } // NEW
+        menus: { get() { return null; }, addMenuItems() {} }, // CHANGE
+        formatContainer, // NEW
+        format: nativeFormat, // NEW
+        formatWidth: 0, // NEW
+        refresh(sizeDidChange) { ui.refreshed = sizeDidChange; }, // NEW
+        fireEvent(evt) { // CHANGE
+            const name = evt && evt.name ? evt.name : evt; // NEW
+            firedEvents.push(name); // NEW
+            if (name === "formatWidthChanged" && ui.format && typeof ui.format.refresh === "function") ui.format.refresh(); // NEW
+        } // NEW
     }; // NEW
     const dbBridge = options.dbBridge === false ? null : createDbBridge(); // NEW
     const context = { // NEW
@@ -131,6 +162,7 @@ function loadPlugin(options = {}) { // NEW
         clearTimeout, // NEW
         Draw: { loadPlugin(callback) { callback(ui); } }, // NEW
         mxEvent: { CHANGE: "change", CELLS_ADDED: "cellsAdded", PASTE: "paste", SCALE: "scale" }, // NEW
+        mxEventObject: function mxEventObject(name) { this.name = name; }, // NEW
         mxUtils: { createXmlDocument() { return document.implementation.createDocument("", "", null); }, parseXml(xml) { return new dom.window.DOMParser().parseFromString(xml, "text/xml"); }, getXml(node) { return new dom.window.XMLSerializer().serializeToString(node); } }, // NEW
         requestAnimationFrame(fn) { fn(); } // NEW
     }; // NEW
@@ -138,7 +170,7 @@ function loadPlugin(options = {}) { // NEW
     context.window.confirm = () => true; // NEW
     if (options.users) context.window.Trellis = { users: options.users }; // NEW
     vm.runInNewContext(fs.readFileSync(pluginPath, "utf8"), context, { filename: pluginPath }); // NEW
-    return { context, document, graph, model, cell, layer, dbBridge, actions, restoredXml: () => restoredXml, setSerialized(xml) { serialized = xml; }, ui }; // NEW
+    return { context, document, graph, model, cell, layer, dbBridge, actions, restoredXml: () => restoredXml, setSerialized(xml) { serialized = xml; }, ui, formatContainer, firedEvents, fireEditorEvent(name) { (editorListeners.get(name) || []).forEach(fn => fn(editor, { name })); } }; // CHANGE
 } // NEW
 
 async function settle(ms = 0) { // NEW
@@ -160,6 +192,80 @@ test("history API records a baseline and exposes a side-panel action", async () 
     assert.match(harness.document.body.textContent, /History/); // NEW
     assert.equal(harness.dbBridge.state.events[0].category, "System"); // NEW
     assert.equal(harness.layer.getAttribute("trellis_history_id").startsWith("diagram_"), true); // NEW
+}); // NEW
+
+test("history panel takes over and restores the format sidebar", async () => { // NEW
+    const harness = loadPlugin(); // NEW
+    await settle(); // NEW
+    const nativeFormat = harness.document.getElementById("native-format"); // NEW
+    const originalRefresh = harness.ui.format.refresh; // NEW
+    const originalImmediateRefresh = harness.ui.format.immediateRefresh; // NEW
+    const originalClear = harness.ui.format.clear; // NEW
+    assert.equal(nativeFormat.parentNode, harness.formatContainer); // NEW
+    harness.actions.trellisChangeMapHistory.funct(); // NEW
+    assert.equal(harness.ui.formatWidth, 340); // NEW
+    assert.equal(harness.ui.refreshed, true); // NEW
+    assert.ok(harness.firedEvents.includes("formatWidthChanged")); // NEW
+    assert.match(harness.formatContainer.textContent, /ChangeMap History/); // NEW
+    assert.notEqual(nativeFormat.parentNode, harness.formatContainer); // NEW
+    assert.notEqual(harness.ui.format.refresh, originalRefresh); // NEW
+    assert.notEqual(harness.ui.format.immediateRefresh, originalImmediateRefresh); // NEW
+    assert.notEqual(harness.ui.format.clear, originalClear); // NEW
+    assert.equal(harness.ui.format.refreshCalls, 0); // NEW
+    harness.ui.format.refresh(); // NEW
+    harness.ui.format.immediateRefresh(); // NEW
+    harness.ui.format.clear(); // NEW
+    assert.match(harness.formatContainer.textContent, /ChangeMap History/); // NEW
+    assert.equal(harness.ui.format.refreshCalls, 0); // NEW
+    assert.equal(harness.ui.format.clearCalls, 0); // NEW
+    harness.actions.trellisChangeMapHistory.funct(); // NEW
+    assert.equal(harness.ui.formatWidth, 0); // NEW
+    assert.equal(harness.ui.format.refresh, originalRefresh); // NEW
+    assert.equal(harness.ui.format.immediateRefresh, originalImmediateRefresh); // NEW
+    assert.equal(harness.ui.format.clear, originalClear); // NEW
+    assert.equal(harness.ui.format.refreshCalls, 1); // NEW
+    assert.equal(harness.ui.format.clearCalls, 1); // NEW
+    assert.equal(harness.document.getElementById("native-format").parentNode, harness.formatContainer); // NEW
+    assert.doesNotMatch(harness.formatContainer.textContent, /ChangeMap History/); // NEW
+}); // NEW
+
+test("fileLoaded turns off ChangeMap and does not reopen history on the next diagram", async () => { // NEW
+    const harness = loadPlugin(); // NEW
+    await settle(); // NEW
+    const originalRefresh = harness.ui.format.refresh; // NEW
+    const originalImmediateRefresh = harness.ui.format.immediateRefresh; // NEW
+    const originalClear = harness.ui.format.clear; // NEW
+    harness.actions.trellisChangeMapHistory.funct(); // NEW
+    harness.context.window.Trellis.history._test.components.ChangeMapRenderer.enable("createdmap"); // NEW
+    harness.graph.__ccHistorySelectedId = "old-revision"; // NEW
+    harness.graph.__ccFiltered = [{ cell: harness.cell, ts: 1 }]; // NEW
+    harness.graph.__ccNavIndex = 0; // NEW
+    const overlay = harness.document.createElement("div"); // NEW
+    harness.document.body.appendChild(overlay); // NEW
+    harness.graph.__ccHistoryCompareOverlays = [overlay]; // NEW
+    assert.equal(harness.graph.__ccMode, "createdmap"); // NEW
+    assert.ok(harness.graph.__ccApplyTimer); // NEW
+    assert.match(harness.formatContainer.textContent, /ChangeMap History/); // NEW
+    harness.fireEditorEvent("fileLoaded"); // NEW
+    await settle(); // NEW
+    assert.equal(harness.graph.__ccMode, "none"); // NEW
+    assert.equal(harness.graph.__ccPanelVisible, false); // NEW
+    assert.equal(harness.graph.__ccApplyTimer, null); // NEW
+    assert.equal(harness.graph.__ccFiltered.length, 0); // CHANGE
+    assert.equal(harness.graph.__ccHistorySelectedId, null); // NEW
+    assert.equal(harness.graph.__ccHistoryCompareOverlays.length, 0); // NEW
+    assert.equal(overlay.parentNode, null); // NEW
+    assert.equal(harness.ui.formatWidth, 0); // NEW
+    assert.equal(harness.ui.format.refresh, originalRefresh); // NEW
+    assert.equal(harness.ui.format.immediateRefresh, originalImmediateRefresh); // NEW
+    assert.equal(harness.ui.format.clear, originalClear); // NEW
+    assert.equal(harness.document.getElementById("native-format").parentNode, harness.formatContainer); // NEW
+    assert.doesNotMatch(harness.formatContainer.textContent, /ChangeMap History/); // NEW
+    harness.fireEditorEvent("fileLoaded"); // NEW
+    await settle(); // NEW
+    assert.equal(harness.graph.__ccMode, "none"); // NEW
+    assert.equal(harness.graph.__ccPanelVisible, false); // NEW
+    assert.doesNotMatch(harness.formatContainer.textContent, /ChangeMap History/); // NEW
 }); // NEW
 
 test("semantic run records outer category and nested category as a tag", async () => { // NEW

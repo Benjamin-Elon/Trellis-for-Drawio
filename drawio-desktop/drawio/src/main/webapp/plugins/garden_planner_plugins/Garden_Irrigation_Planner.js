@@ -25,6 +25,7 @@ Draw.loadPlugin(function (ui) {
     const DRAW_SCALE = 0.18;
     const CM_PER_FOOT = 30.48;
     const HUD_SYNC_DEBOUNCE_MS = 200; // NEW
+    const TRELLIS_DIALOG_Z = 2000000000; // NEW
 
     const ATTRS = {
         CATALOG_JSON: "irrigation_catalog_json",
@@ -5749,9 +5750,18 @@ Draw.loadPlugin(function (ui) {
     }
 
     function showDialog(node, w, h) {
-        if (ui.showDialog) ui.showDialog(node, w, h, true, true);
+        if (ui.showDialog) { // CHANGE
+            ui.showDialog(node, w, h, true, true); // CHANGE
+            elevateTrellisDialog(); // NEW
+        } // NEW
         else if (document && document.body) document.body.appendChild(node);
     }
+
+    function elevateTrellisDialog() { // NEW
+        const dlg = ui && ui.dialog; // NEW
+        if (dlg && dlg.bg && dlg.bg.style) dlg.bg.style.zIndex = String(TRELLIS_DIALOG_Z - 1); // NEW
+        if (dlg && dlg.container && dlg.container.style) dlg.container.style.zIndex = String(TRELLIS_DIALOG_Z); // NEW
+    } // NEW
 
     function hideDialog() {
         if (ui.hideDialog) ui.hideDialog();

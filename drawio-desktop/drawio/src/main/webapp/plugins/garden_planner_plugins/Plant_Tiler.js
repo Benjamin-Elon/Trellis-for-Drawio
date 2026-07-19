@@ -18,6 +18,7 @@ Draw.loadPlugin(function (ui) {
     const DEBUG_PLANT_TILER = false; // CHANGE
     const DEBUG_BED_FIT = false; // CHANGE
     const GRAPH_OVERLAY_Z = Object.freeze({ ANNOTATION: 10000, CONNECTION: 10010, CONTROL: 10020, CONTROL_TOP: 10030 }); // CHANGE
+    const TRELLIS_DIALOG_Z = 2000000000; // NEW
 
     const GROUP_LABEL_FONT_PX = 12;
     const GROUP_LABEL_LINE_HEIGHT = 1.25;
@@ -254,6 +255,12 @@ Draw.loadPlugin(function (ui) {
             } catch (_) { }
         }
     }
+
+    function elevateTrellisDialog() { // NEW
+        const dlg = ui && ui.dialog; // NEW
+        if (dlg && dlg.bg && dlg.bg.style) dlg.bg.style.zIndex = String(TRELLIS_DIALOG_Z - 1); // NEW
+        if (dlg && dlg.container && dlg.container.style) dlg.container.style.zIndex = String(TRELLIS_DIALOG_Z); // NEW
+    } // NEW
 
     async function execAll(sql, params) { // ADDED
         if (!window.dbBridge || typeof window.dbBridge.open !== "function") { // ADDED
@@ -1714,7 +1721,8 @@ Draw.loadPlugin(function (ui) {
 
         refreshPicker(current?.city_id); // ADDED
         fillForm(current || { city_id: 1, timezone: "America/Los_Angeles" }, !!current); // ADDED
-        ui.showDialog(div, 800, 720, true, true); // ADDED
+        ui.showDialog(div, 800, 720, true, true); // CHANGE
+        elevateTrellisDialog(); // NEW
     } // ADDED
 
 
@@ -1946,6 +1954,7 @@ Draw.loadPlugin(function (ui) {
         div.appendChild(btnRow);
 
         ui.showDialog(div, 420, 330, true, true, notifyClose); // CHANGE
+        elevateTrellisDialog(); // NEW
         gardenNameInput.focus(); // CHANGED
     }
 
@@ -3576,7 +3585,8 @@ Draw.loadPlugin(function (ui) {
             }
         });
 
-        ui.showDialog(div, 360, 170, true, true);
+        ui.showDialog(div, 360, 170, true, true); // CHANGE
+        elevateTrellisDialog(); // NEW
         inputX.focus();
     }
 

@@ -20,13 +20,19 @@ Draw.loadPlugin(function (ui) {
     const ATTR_EDITED_BY = "lastEditedByUserId";
     const ATTR_ACTOR_NAME = "trellis_actor_name";
     const ATTR_ACTOR_ROLE = "trellis_actor_role";
+    const ATTR_REMEMBER_DIAGRAM_ID = "trellis_users_diagram_id"; // NEW
+    const ATTR_HISTORY_ID = "trellis_history_id"; // NEW
 
     const PROTECTED_ATTRS = new Set([ATTR_STORE, ATTR_OWNER, ATTR_ACCESS_USERS, ATTR_ACCESS_OPEN]);
     const USER_ID_PREFIX = "user_";
     const PIN_SALT_PREFIX = "salt_";
+    const DIAGRAM_ID_PREFIX = "diagram_users_"; // NEW
     const INVITE_ID_PREFIX = "invite_"; // NEW
     const INVITE_CODE_SALT_PREFIX = "invite_salt_"; // NEW
     const INVITE_EXPIRY_MS = 14 * 24 * 60 * 60 * 1000; // NEW
+    const REMEMBER_STORAGE_PREFIX = "trellis_users_remembered_login_v1:"; // NEW
+    const USERS_UI_LAYER_Z = 2000000000; // NEW
+    const AUTH_OVERLAY_Z = 2147483000; // NEW
     const INTERNAL_FLAG = "__trellisUsersInternalChange";
     const REJECT_FLAG = "__trellisUsersRejecting";
 
@@ -37,6 +43,14 @@ Draw.loadPlugin(function (ui) {
     let loginPinInput = null;
     let rosterNode = null;
     let accessNode = null;
+    let authOverlay = null; // NEW
+    let authStatusNode = null; // NEW
+    let toolbarButton = null; // NEW
+    let accountMenu = null; // NEW
+    let accountMenuOutsideHandler = null; // NEW
+    let accountMenuKeyHandler = null; // NEW
+    let graphAuthBlocked = false; // NEW
+    let graphXmlLoading = 0; // NEW
     let selectionListenerInstalled = false;
 
     function nowMs() {
@@ -149,6 +163,7 @@ Draw.loadPlugin(function (ui) {
             model.endUpdate();
             graph[INTERNAL_FLAG] = false;
         }
+        updateToolbarButton(); // NEW
         refreshPanel();
     }
 
@@ -228,6 +243,59 @@ Draw.loadPlugin(function (ui) {
     function listPendingInvites() { // NEW
         const store = expireInvites(readStore()); // NEW
         return store.invites.filter(function (invite) { return invite.status === "pending" && canManageInvite(invite); }).map(publicInvite); // CHANGE
+    } // NEW
+
+    function localStore() { // NEW
+        try { return window && window.localStorage ? window.localStorage : null; } catch (e) { return null; } // NEW
+    } // NEW
+
+    function getDiagramLoginKey(create) { // NEW
+        const cell = metadataCell(); // NEW
+        let key = getAttr(cell, ATTR_REMEMBER_DIAGRAM_ID); // NEW
+        if (!key && !create) key = getAttr(cell, ATTR_HISTORY_ID); // NEW
+        if (!key && create) { // NEW
+            key = makeId(DIAGRAM_ID_PREFIX); // NEW
+            setAttr(cell, ATTR_REMEMBER_DIAGRAM_ID, key); // NEW
+        } // NEW
+        return key || ""; // NEW
+    } // NEW
+
+    function rememberStorageKey(create) { // NEW
+        const diagramKey = getDiagramLoginKey(create); // NEW
+        return diagramKey ? REMEMBER_STORAGE_PREFIX + diagramKey : ""; // NEW
+    } // NEW
+
+    function rememberLogin(userId, enabled) { // NEW
+        const storage = localStore(); // NEW
+        if (!storage) return { ok: false, reason: "Local login memory is unavailable." }; // NEW
+        const key = rememberStorageKey(!!enabled); // NEW
+        if (!key) return { ok: false, reason: "Diagram login identity is unavailable." }; // NEW
+        if (enabled && userById(userId)) storage.setItem(key, String(userId)); // NEW
+        else storage.removeItem(key); // NEW
+        return { ok: true }; // NEW
+    } // NEW
+
+    function forgetRememberedLogin() { // NEW
+        const storage = localStore(); // NEW
+        const key = rememberStorageKey(false); // NEW
+        if (storage && key) storage.removeItem(key); // NEW
+        return { ok: true }; // NEW
+    } // NEW
+
+    function restoreRememberedLogin() { // NEW
+        if (!isEnabled()) return { ok: false, reason: "Users are not enabled." }; // NEW
+        const storage = localStore(); // NEW
+        const key = rememberStorageKey(false); // NEW
+        const rememberedId = storage && key ? storage.getItem(key) : ""; // NEW
+        const user = rememberedId ? userById(rememberedId) : null; // NEW
+        if (!user) { // NEW
+            currentUserId = ""; // NEW
+            if (storage && key && rememberedId) storage.removeItem(key); // NEW
+            return { ok: false, reason: "No remembered active user for this diagram." }; // NEW
+        } // NEW
+        currentUserId = user.id; // NEW
+        updateToolbarButton(); // NEW
+        return { ok: true, user: publicUser(user) }; // NEW
     } // NEW
 
     function isEnabled() { // NEW
@@ -316,6 +384,8 @@ Draw.loadPlugin(function (ui) {
         currentUserId = user.id; // NEW
         writeStore(store); // NEW
         showStatus("Users enabled. Created first admin: " + user.name); // NEW
+        closeAuthOverlay(true); // NEW
+        updateToolbarButton(); // NEW
         return { ok: true, user: publicUser(user) }; // NEW
     } // NEW
 
@@ -326,14 +396,18 @@ Draw.loadPlugin(function (ui) {
             if (!created.ok) return created;
             currentUserId = created.user.id;
             showStatus("Created first admin: " + created.user.name);
+            closeAuthOverlay(true); // NEW
             refreshPanel();
+            updateToolbarButton(); // NEW
             return { ok: true, user: created.user };
         }
         const user = userByName(name);
         if (!user || user.pinHash !== hashPin(pin, user.pinSalt)) return { ok: false, reason: "Unknown user or incorrect PIN." };
         currentUserId = user.id;
         showStatus("Logged in as " + user.name);
+        closeAuthOverlay(true); // NEW
         refreshPanel();
+        updateToolbarButton(); // NEW
         return { ok: true, user: publicUser(user) };
     }
 
@@ -369,15 +443,19 @@ Draw.loadPlugin(function (ui) {
         if (!user) return { ok: false, reason: "Unknown user." }; // NEW
         if (user.admin && disabled && activeAdmins(store).length <= 1) return { ok: false, reason: "At least one active admin is required." }; // NEW
         user.disabled = !!disabled; // NEW
-        if (user.id === currentUserId && user.disabled) currentUserId = ""; // NEW
+        if (user.id === currentUserId && user.disabled) { currentUserId = ""; forgetRememberedLogin(); } // CHANGE
         writeStore(store); // NEW
         return { ok: true }; // NEW
     } // NEW
 
     function logout() {
         currentUserId = "";
+        forgetRememberedLogin(); // NEW
+        closeAccountMenu(); // NEW
         showStatus("Logged out.");
         refreshPanel();
+        updateToolbarButton(); // NEW
+        applyAuthGateIfNeeded("Logged out."); // NEW
     }
 
     function userIdsFromAttr(cell) {
@@ -743,7 +821,9 @@ Draw.loadPlugin(function (ui) {
         writeStore(store); // NEW
         currentUserId = user.id; // NEW
         showStatus("Invite accepted. Logged in as " + name + "."); // NEW
+        closeAuthOverlay(true); // NEW
         refreshPanel(); // NEW
+        updateToolbarButton(); // NEW
         return { ok: true, user: publicUser(user) }; // NEW
     } // NEW
 
@@ -856,6 +936,7 @@ Draw.loadPlugin(function (ui) {
     function inspectModelChange(_sender, evt) {
         if (!isEnabled()) return; // NEW
         if (graph[INTERNAL_FLAG] || graph[REJECT_FLAG]) return;
+        if ((ui && ui.openingFile) || graphXmlLoading > 0) return; // NEW
         const edit = evt && evt.getProperty && evt.getProperty("edit");
         const changes = edit && edit.changes || [];
         if (!changes.length) return;
@@ -889,6 +970,26 @@ Draw.loadPlugin(function (ui) {
         return graph.getSelectionCell ? graph.getSelectionCell() : ((graph.getSelectionCells && graph.getSelectionCells()[0]) || null);
     }
 
+    function viewportSize() { // NEW
+        const doc = document && document.documentElement; // NEW
+        return { // NEW
+            width: Math.max(320, Number(window && window.innerWidth) || (doc && doc.clientWidth) || 1024), // NEW
+            height: Math.max(240, Number(window && window.innerHeight) || (doc && doc.clientHeight) || 768) // NEW
+        }; // NEW
+    } // NEW
+
+    function fixedPositionNearButton(width, height, gap) { // NEW
+        const size = viewportSize(); // NEW
+        const rect = toolbarButton && typeof toolbarButton.getBoundingClientRect === "function" ? toolbarButton.getBoundingClientRect() : null; // NEW
+        const margin = 8; // NEW
+        const x = rect ? rect.right - width : size.width - width - margin; // NEW
+        const y = rect ? rect.bottom + (gap || 4) : 36; // NEW
+        return { // NEW
+            left: Math.max(margin, Math.min(x, size.width - width - margin)), // NEW
+            top: Math.max(margin, Math.min(y, size.height - Math.min(height, size.height - margin * 2) - margin)) // NEW
+        }; // NEW
+    } // NEW
+
     function showStatus(message) {
         if (statusNode) statusNode.textContent = String(message || "");
         else if (ui && typeof ui.alert === "function") ui.alert(String(message || ""));
@@ -910,13 +1011,298 @@ Draw.loadPlugin(function (ui) {
         }); // NEW
     } // NEW
 
+    function showAuthStatus(message) { // NEW
+        const text = String(message || ""); // NEW
+        if (authStatusNode) authStatusNode.textContent = text; // NEW
+        showStatus(text); // NEW
+    } // NEW
+
+    function currentFileEditable() { // NEW
+        const file = ui && typeof ui.getCurrentFile === "function" ? ui.getCurrentFile() : null; // NEW
+        return !file || typeof file.isEditable !== "function" || file.isEditable(); // NEW
+    } // NEW
+
+    function setGraphAuthBlocked(blocked) { // NEW
+        graphAuthBlocked = !!blocked; // NEW
+        const enabled = !graphAuthBlocked && currentFileEditable(); // NEW
+        if (graph && typeof graph.setEnabled === "function") graph.setEnabled(enabled); // NEW
+        else if (ui && typeof ui.setGraphEnabled === "function") ui.setGraphEnabled(enabled); // NEW
+    } // NEW
+
+    function closeAuthOverlay(restoreGraph) { // NEW
+        const hadOverlay = !!authOverlay; // NEW
+        if (authOverlay && authOverlay.parentNode) authOverlay.parentNode.removeChild(authOverlay); // NEW
+        authOverlay = null; // NEW
+        authStatusNode = null; // NEW
+        if (restoreGraph !== false && (hadOverlay || graphAuthBlocked)) setGraphAuthBlocked(false); // CHANGE
+    } // NEW
+
+    function closeCurrentDiagramFromAuth() { // NEW
+        closeAuthOverlay(false); // NEW
+        currentUserId = ""; // NEW
+        forgetRememberedLogin(); // NEW
+        if (ui && typeof ui.fileLoaded === "function") ui.fileLoaded(null); // NEW
+        else setGraphAuthBlocked(false); // NEW
+        updateToolbarButton(); // NEW
+    } // NEW
+
+    function authKeepRow() { // NEW
+        const label = document.createElement("label"); // NEW
+        label.style.cssText = "display:flex;gap:6px;align-items:center;margin:8px 0;color:#374151;"; // NEW
+        const checkbox = document.createElement("input"); // NEW
+        checkbox.type = "checkbox"; // NEW
+        label.appendChild(checkbox); // NEW
+        label.appendChild(document.createTextNode("Keep me logged in on this device")); // NEW
+        return { row: label, checkbox }; // NEW
+    } // NEW
+
+    function finishAuthSuccess(keepChecked, message) { // NEW
+        const user = currentUser(); // NEW
+        if (user) { // NEW
+            if (keepChecked) rememberLogin(user.id, true); // NEW
+            else forgetRememberedLogin(); // NEW
+        } // NEW
+        closeAuthOverlay(true); // NEW
+        refreshPanel(); // NEW
+        updateToolbarButton(); // NEW
+        if (message) showStatus(message); // NEW
+    } // NEW
+
+    function appendAuthLoginForm(parent) { // NEW
+        const title = document.createElement("div"); // NEW
+        title.textContent = canBootstrapAdmin() ? "Create first admin" : "Log in"; // NEW
+        title.style.cssText = "font-weight:700;margin-top:8px;"; // NEW
+        parent.appendChild(title); // NEW
+        const row = document.createElement("div"); // NEW
+        row.style.cssText = "display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px;"; // NEW
+        const name = makeInput("text", "Name"); // NEW
+        const pin = makeInput("password", "PIN"); // NEW
+        row.appendChild(name); // NEW
+        row.appendChild(pin); // NEW
+        parent.appendChild(row); // NEW
+        const keep = authKeepRow(); // NEW
+        parent.appendChild(keep.row); // NEW
+        const action = makeButton(canBootstrapAdmin() ? "Create Admin" : "Login", function () { // NEW
+            const result = login(name.value, pin.value); // NEW
+            pin.value = ""; // NEW
+            if (!result.ok) { showAuthStatus(result.reason); return; } // NEW
+            finishAuthSuccess(keep.checkbox.checked, result.user && result.user.name ? "Logged in as " + result.user.name + "." : "Logged in."); // NEW
+        }); // NEW
+        parent.appendChild(action); // NEW
+    } // NEW
+
+    function appendAuthEnableForm(parent) { // NEW
+        const hint = document.createElement("div"); // NEW
+        hint.textContent = "Users are off for this diagram. Create the first admin to enable login and permissions."; // NEW
+        hint.style.cssText = "color:#4B5563;margin-bottom:8px;"; // NEW
+        parent.appendChild(hint); // NEW
+        const row = document.createElement("div"); // NEW
+        row.style.cssText = "display:grid;grid-template-columns:1fr 1fr;gap:8px;"; // NEW
+        const name = makeInput("text", "Admin name"); // NEW
+        const pin = makeInput("password", "PIN"); // NEW
+        row.appendChild(name); // NEW
+        row.appendChild(pin); // NEW
+        parent.appendChild(row); // NEW
+        const keep = authKeepRow(); // NEW
+        parent.appendChild(keep.row); // NEW
+        parent.appendChild(makeButton("Enable Users", function () { // NEW
+            const result = enableUsers(name.value, pin.value); // NEW
+            pin.value = ""; // NEW
+            if (!result.ok) { showAuthStatus(result.reason); return; } // NEW
+            finishAuthSuccess(keep.checkbox.checked, "Users enabled. Logged in as " + result.user.name + "."); // NEW
+        })); // NEW
+    } // NEW
+
+    function appendAuthInviteForm(parent) { // NEW
+        const box = document.createElement("div"); // NEW
+        box.style.cssText = "border-top:1px solid #E5E7EB;margin-top:12px;padding-top:10px;"; // NEW
+        const title = document.createElement("div"); // NEW
+        title.textContent = "Accept invite"; // NEW
+        title.style.cssText = "font-weight:700;"; // NEW
+        box.appendChild(title); // NEW
+        const row = document.createElement("div"); // NEW
+        row.style.cssText = "display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px;"; // NEW
+        const email = makeInput("email", "Email"); // NEW
+        const code = makeInput("text", "Invite code"); // NEW
+        const name = makeInput("text", "Display name"); // NEW
+        const pin = makeInput("password", "PIN"); // NEW
+        row.appendChild(email); // NEW
+        row.appendChild(code); // NEW
+        row.appendChild(name); // NEW
+        row.appendChild(pin); // NEW
+        box.appendChild(row); // NEW
+        const keep = authKeepRow(); // NEW
+        box.appendChild(keep.row); // NEW
+        box.appendChild(makeButton("Accept Invite", function () { // NEW
+            const result = acceptInvite({ email: email.value, code: code.value, name: name.value, pin: pin.value }); // NEW
+            pin.value = ""; // NEW
+            if (!result.ok) { showAuthStatus(result.reason); return; } // NEW
+            finishAuthSuccess(keep.checkbox.checked, "Invite accepted. Logged in as " + result.user.name + "."); // NEW
+        })); // NEW
+        parent.appendChild(box); // NEW
+    } // NEW
+
+    function showAuthDialog(options) { // NEW
+        if (typeof document === "undefined") return { ok: false, reason: "Document UI is unavailable." }; // NEW
+        closeAccountMenu(); // NEW
+        closeAuthOverlay(false); // NEW
+        const source = options || {}; // NEW
+        const blocking = !!source.blocking; // NEW
+        const host = document.body || (graph.container && (graph.container.parentNode || graph.container)); // NEW
+        if (!host) return { ok: false, reason: "Auth host is unavailable." }; // NEW
+        authOverlay = document.createElement("div"); // NEW
+        authOverlay.className = "trellis-users-auth-overlay"; // NEW
+        authOverlay.style.cssText = "position:fixed;inset:0;z-index:" + AUTH_OVERLAY_Z + ";background:#fff;display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;font:12px Arial,sans-serif;"; // CHANGE
+        authOverlay.addEventListener("mousedown", function (evt) { evt.stopPropagation(); }); // NEW
+        const card = document.createElement("div"); // NEW
+        card.style.cssText = "width:min(460px,100%);border:1px solid #111;border-radius:4px;box-shadow:0 12px 32px rgba(0,0,0,.24);padding:14px;background:#fff;box-sizing:border-box;"; // NEW
+        const header = document.createElement("div"); // NEW
+        header.style.cssText = "display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:8px;"; // NEW
+        const title = document.createElement("div"); // NEW
+        title.textContent = isEnabled() ? "Trellis Login" : "Enable Trellis Users"; // NEW
+        title.style.cssText = "font-weight:700;font-size:15px;"; // NEW
+        header.appendChild(title); // NEW
+        header.appendChild(makeButton(blocking ? "Close Diagram" : "Cancel", function () { // NEW
+            if (blocking) closeCurrentDiagramFromAuth(); // NEW
+            else closeAuthOverlay(true); // NEW
+        })); // NEW
+        card.appendChild(header); // NEW
+        authStatusNode = document.createElement("div"); // NEW
+        authStatusNode.style.cssText = "min-height:16px;color:#4B5563;margin-bottom:8px;"; // NEW
+        authStatusNode.textContent = source.message || (isEnabled() ? "Log in to open this diagram." : "Enable users for this diagram."); // NEW
+        card.appendChild(authStatusNode); // NEW
+        if (!isEnabled()) appendAuthEnableForm(card); // NEW
+        else { appendAuthLoginForm(card); appendAuthInviteForm(card); } // NEW
+        authOverlay.appendChild(card); // NEW
+        host.appendChild(authOverlay); // NEW
+        if (blocking) setGraphAuthBlocked(true); // NEW
+        return { ok: true }; // NEW
+    } // NEW
+
+    function toolbarHost() { // NEW
+        return ui && (ui.toolbarContainer || ui.menubarContainer || ui.container) || (graph.container && (graph.container.parentNode || graph.container)); // NEW
+    } // NEW
+
+    function toolbarLabel() { // NEW
+        const user = currentUser(); // NEW
+        if (user) return user.name || "Logout"; // NEW
+        return "Login"; // NEW
+    } // NEW
+
+    function updateToolbarButton() { // NEW
+        if (!toolbarButton) return; // NEW
+        toolbarButton.textContent = toolbarLabel(); // NEW
+        toolbarButton.title = currentUser() ? "Trellis user account" : (isEnabled() ? "Log in to Trellis Users" : "Enable Trellis Users"); // NEW
+    } // NEW
+
+    function closeAccountMenu() { // NEW
+        if (accountMenu && accountMenu.parentNode) accountMenu.parentNode.removeChild(accountMenu); // NEW
+        accountMenu = null; // NEW
+        if (accountMenuOutsideHandler && document && typeof document.removeEventListener === "function") document.removeEventListener("mousedown", accountMenuOutsideHandler, true); // NEW
+        if (accountMenuKeyHandler && document && typeof document.removeEventListener === "function") document.removeEventListener("keydown", accountMenuKeyHandler, true); // NEW
+        accountMenuOutsideHandler = null; // NEW
+        accountMenuKeyHandler = null; // NEW
+    } // NEW
+
+    function openAccountMenu() { // NEW
+        if (typeof document === "undefined" || !toolbarButton) return; // NEW
+        closeAccountMenu(); // NEW
+        const host = document.body; // CHANGE
+        if (!host) return; // NEW
+        const user = currentUser(); // NEW
+        const menuWidth = 190; // NEW
+        const menuHeight = 112; // NEW
+        const pos = fixedPositionNearButton(menuWidth, menuHeight, 4); // NEW
+        accountMenu = document.createElement("div"); // NEW
+        accountMenu.className = "trellis-users-account-menu"; // NEW
+        accountMenu.style.cssText = "position:fixed;top:" + pos.top + "px;left:" + pos.left + "px;z-index:" + USERS_UI_LAYER_Z + ";background:#fff;border:1px solid #111;border-radius:4px;box-shadow:0 6px 18px rgba(0,0,0,.22);padding:8px;width:" + menuWidth + "px;font:12px Arial,sans-serif;box-sizing:border-box;"; // CHANGE
+        accountMenu.addEventListener("mousedown", function (evt) { evt.stopPropagation(); }); // NEW
+        const label = document.createElement("div"); // NEW
+        label.textContent = user ? user.name + " (" + (user.admin ? "admin" : "regular") + ")" : "Not logged in"; // NEW
+        label.style.cssText = "font-weight:700;margin-bottom:8px;"; // NEW
+        accountMenu.appendChild(label); // NEW
+        const actions = document.createElement("div"); // NEW
+        actions.style.cssText = "display:grid;grid-template-columns:1fr;gap:6px;"; // NEW
+        actions.appendChild(makeButton("Users Panel", function () { closeAccountMenu(); togglePanel(); })); // NEW
+        actions.appendChild(makeButton("Logout", function () { logout(); })); // NEW
+        accountMenu.appendChild(actions); // NEW
+        host.appendChild(accountMenu); // NEW
+        accountMenuOutsideHandler = function (evt) { // NEW
+            if (evt && (evt.target === toolbarButton || (accountMenu && accountMenu.contains(evt.target)))) return; // NEW
+            closeAccountMenu(); // NEW
+        }; // NEW
+        accountMenuKeyHandler = function (evt) { if (evt && evt.key === "Escape") closeAccountMenu(); }; // NEW
+        setTimeout(function () { // NEW
+            if (document && typeof document.addEventListener === "function" && accountMenu) { // NEW
+                document.addEventListener("mousedown", accountMenuOutsideHandler, true); // NEW
+                document.addEventListener("keydown", accountMenuKeyHandler, true); // NEW
+            } // NEW
+        }, 0); // NEW
+    } // NEW
+
+    function installToolbarButton() { // NEW
+        if (toolbarButton || typeof document === "undefined") return; // NEW
+        const host = toolbarHost(); // NEW
+        if (!host) return; // NEW
+        toolbarButton = document.createElement("button"); // NEW
+        toolbarButton.type = "button"; // NEW
+        toolbarButton.className = "geButton trellis-users-login-button"; // NEW
+        toolbarButton.style.cssText = "margin:2px 4px;padding:3px 8px;cursor:pointer;"; // NEW
+        toolbarButton.addEventListener("click", function (evt) { // NEW
+            if (evt) evt.stopPropagation(); // NEW
+            if (isLoggedIn()) openAccountMenu(); // NEW
+            else showAuthDialog({ blocking: false, message: isEnabled() ? "Log in to this diagram." : "Enable users for this diagram." }); // NEW
+        }); // NEW
+        const historyButton = host.querySelector && host.querySelector(".trellis-changemap-history-button"); // NEW
+        if (historyButton && historyButton.parentNode === host) host.insertBefore(toolbarButton, historyButton); // NEW
+        else host.appendChild(toolbarButton); // NEW
+        updateToolbarButton(); // NEW
+    } // NEW
+
+    function applyAuthGateIfNeeded(message) { // NEW
+        if (!isEnabled()) { closeAuthOverlay(true); return false; } // NEW
+        if (isLoggedIn()) { closeAuthOverlay(true); return false; } // NEW
+        showAuthDialog({ blocking: true, message: message || (canBootstrapAdmin() ? "Create the first admin to open this diagram." : "Log in to open this diagram.") }); // NEW
+        return true; // NEW
+    } // NEW
+
+    function handleDiagramOpened() { // NEW
+        currentUserId = ""; // NEW
+        restoreRememberedLogin(); // NEW
+        updateToolbarButton(); // NEW
+        applyAuthGateIfNeeded(); // NEW
+    } // NEW
+
+    function installFileLoadedGate() { // NEW
+        if (!ui || !ui.editor || ui.__trellisUsersFileGateInstalled) return; // NEW
+        ui.__trellisUsersFileGateInstalled = true; // NEW
+        if (typeof ui.editor.addListener === "function") { // NEW
+            ui.editor.addListener("fileLoaded", function () { handleDiagramOpened(); }); // NEW
+        } // NEW
+    } // NEW
+
+    function installGraphXmlLoadGuard() { // NEW
+        if (!ui || !ui.editor || ui.__trellisUsersGraphXmlGuardInstalled || typeof ui.editor.setGraphXml !== "function") return; // NEW
+        ui.__trellisUsersGraphXmlGuardInstalled = true; // NEW
+        const originalSetGraphXml = ui.editor.setGraphXml; // NEW
+        ui.editor.setGraphXml = function () { // NEW
+            const wasLoggedIn = isLoggedIn(); // NEW
+            graphXmlLoading += 1; // NEW
+            try { // NEW
+                return originalSetGraphXml.apply(this, arguments); // NEW
+            } finally { // NEW
+                graphXmlLoading = Math.max(0, graphXmlLoading - 1); // NEW
+                if (!wasLoggedIn) setTimeout(function () { handleDiagramOpened(); }, 0); // NEW
+            } // NEW
+        }; // NEW
+    } // NEW
+
     function createPanel() {
         if (panel || typeof document === "undefined") return;
-        const host = graph.container && (graph.container.parentNode || graph.container);
+        const host = document.body; // CHANGE
         if (!host) return;
-        if (host.style && (!host.style.position || host.style.position === "static")) host.style.position = "relative";
         panel = document.createElement("div");
-        panel.style.cssText = "position:absolute;top:36px;right:12px;z-index:100000;background:#fff;border:1px solid #111;border-radius:4px;box-shadow:0 6px 18px rgba(0,0,0,.22);width:320px;max-height:calc(100vh - 72px);overflow:auto;padding:10px;font:12px Arial,sans-serif;display:none;box-sizing:border-box;";
+        panel.style.cssText = "position:fixed;top:36px;right:12px;z-index:" + USERS_UI_LAYER_Z + ";background:#fff;border:1px solid #111;border-radius:4px;box-shadow:0 6px 18px rgba(0,0,0,.22);width:320px;max-height:calc(100vh - 72px);overflow:auto;padding:10px;font:12px Arial,sans-serif;display:none;box-sizing:border-box;"; // CHANGE
         panel.addEventListener("mousedown", function (evt) { evt.stopPropagation(); });
         const title = document.createElement("div");
         title.textContent = "Trellis Users";
@@ -1207,16 +1593,17 @@ Draw.loadPlugin(function (ui) {
 
     function promptLoginIfNeeded() {
         setTimeout(function () {
-            if (isEnabled() && !isLoggedIn()) { // CHANGE
-                createPanel();
-                if (panel) panel.style.display = "";
-                showStatus(canBootstrapAdmin() ? "Create the first admin to edit this diagram." : "Log in to edit this diagram.");
-            }
+            restoreRememberedLogin(); // NEW
+            applyAuthGateIfNeeded(); // CHANGE
+            updateToolbarButton(); // NEW
         }, 0);
     }
 
     model.addListener(mxEvent.CHANGE, inspectModelChange);
     installAction();
+    installToolbarButton(); // NEW
+    installFileLoadedGate(); // NEW
+    installGraphXmlLoadGuard(); // NEW
     promptLoginIfNeeded();
 
     window.Trellis = window.Trellis || {};
@@ -1235,6 +1622,10 @@ Draw.loadPlugin(function (ui) {
         enableUsers, // NEW
         login,
         logout,
+        showAuthDialog, // NEW
+        rememberLogin, // NEW
+        forgetRememberedLogin, // NEW
+        restoreRememberedLogin, // NEW
         createUser,
         resetUserPin, // NEW
         setUserAdmin, // NEW
@@ -1265,7 +1656,9 @@ Draw.loadPlugin(function (ui) {
             nearestOwnedAncestor,
             nearestAccessGrant,
             changeAllowed,
-            composeInviteEmail // NEW
+            composeInviteEmail, // NEW
+            getDiagramLoginKey, // NEW
+            applyAuthGateIfNeeded // NEW
         }
     };
     graph.__trellisUsers = window.Trellis.users;

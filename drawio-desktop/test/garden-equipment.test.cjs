@@ -176,6 +176,8 @@ test("equipment dialog shows yearly reserve tile and native tooltips", () => { /
         { id: "eq_rented", name: "Rented Tool", status: "rented", replacementCost: 1000, expectedLifespanYears: 1, capabilities: [], relevantTaskTypes: [], efficiencyEffects: [] } // NEW
     ]); // NEW
     api.openDialog(moduleCell); // NEW
+    const overlay = document.querySelector(".trellis-eq-overlay"); // NEW
+    assert.equal(document.defaultView.getComputedStyle(overlay).zIndex, "2000000000"); // NEW
     const title = document.querySelector(".trellis-eq-title"); // NEW
     assert.equal(title.textContent, "Garden Equipment & Workload Assumptions"); // NEW
     const reserveTile = Array.from(document.querySelectorAll(".trellis-eq-tile")).find(tile => tile.textContent.includes("Yearly Replacement")); // NEW

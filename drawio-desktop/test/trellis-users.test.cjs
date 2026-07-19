@@ -54,9 +54,11 @@ function makeXmlCell(document, id, attrs = {}) { // NEW
     return new TestCell(id, node); // NEW
 } // NEW
 
-function loadUsersPlugin() { // NEW
+function loadUsersPlugin(options = {}) { // CHANGE
     const dom = new JSDOM("<!doctype html><body><div id='host'><div id='graph'></div></div></body>", { url: "https://app.test/" }); // NEW
     const document = dom.window.document; // NEW
+    Object.defineProperty(dom.window, "innerWidth", { configurable: true, value: 1024 }); // NEW
+    Object.defineProperty(dom.window, "innerHeight", { configurable: true, value: 768 }); // NEW
     const root = new TestCell("root"); // NEW
     const layer = appendChild(root, makeXmlCell(document, "layer", { label: "Layer" })); // NEW
     const module = appendChild(layer, makeXmlCell(document, "module", { label: "Module" })); // NEW
@@ -64,6 +66,7 @@ function loadUsersPlugin() { // NEW
     const outside = appendChild(layer, makeXmlCell(document, "outside", { label: "Outside" })); // NEW
     const model = new TestModel(root); // NEW
     const graphListeners = new Map(); // NEW
+    const editorListeners = new Map(); // NEW
     const graph = { // NEW
         container: document.getElementById("graph"), // NEW
         getModel() { return model; }, // NEW
@@ -73,13 +76,34 @@ function loadUsersPlugin() { // NEW
         setSelectionCell(cell) { graph.selected = cell; }, // NEW
         getSelectionModel() { return { addListener() {} }; }, // NEW
         addListener(name, fn) { if (!graphListeners.has(name)) graphListeners.set(name, []); graphListeners.get(name).push(fn); }, // NEW
+        setEnabled(value) { graph.enabled = value; }, // NEW
         refresh() { graph.refreshed = true; } // NEW
     }; // NEW
     const actions = {}; // NEW
+    const toolbarContainer = document.createElement("div"); // NEW
+    document.body.insertBefore(toolbarContainer, document.body.firstChild); // NEW
+    if (options.historyButton) { // NEW
+        const history = document.createElement("button"); // NEW
+        history.className = "geButton trellis-changemap-history-button"; // NEW
+        history.textContent = "History"; // NEW
+        toolbarContainer.appendChild(history); // NEW
+    } // NEW
     const ui = { // NEW
-        editor: { graph }, // NEW
+        editor: { // CHANGE
+            graph, // NEW
+            addListener(name, fn) { if (!editorListeners.has(name)) editorListeners.set(name, []); editorListeners.get(name).push(fn); }, // CHANGE
+            setGraphXml(node) { // NEW
+                ui.setGraphXmlCalls = (ui.setGraphXmlCalls || 0) + 1; // NEW
+                const edit = ui.setGraphXmlEdit || { changes: [{ constructor: { name: "mxChildChange" }, child: module, parent: layer }], undo() { ui.setGraphXmlUndone = true; } }; // NEW
+                model.fireChange(edit); // NEW
+                ui.setGraphXmlNode = node; // NEW
+            } // NEW
+        }, // CHANGE
         actions: { addAction(id, fn) { actions[id] = { funct: fn }; } }, // NEW
-        menus: { get() { return null; }, addMenuItems() {} } // NEW
+        menus: { get() { return null; }, addMenuItems() {} }, // CHANGE
+        toolbarContainer, // NEW
+        fileLoaded(file) { ui.loadedFile = file; (editorListeners.get("fileLoaded") || []).forEach(fn => fn()); }, // NEW
+        getCurrentFile() { return ui.currentFile || null; } // NEW
     }; // NEW
     const context = { // NEW
         window: dom.window, document, console, Promise, Error, String, Number, Math, Date, Set, Map, JSON, // NEW
@@ -89,19 +113,54 @@ function loadUsersPlugin() { // NEW
         mxUtils: { createXmlDocument() { return document.implementation.createDocument("", "", null); } } // NEW
     }; // NEW
     vm.runInNewContext(fs.readFileSync(pluginPath, "utf8"), context, { filename: pluginPath }); // NEW
-    return { context, document, graph, model, layer, module, card, outside, actions }; // NEW
+    const loginButton = document.querySelector(".trellis-users-login-button"); // NEW
+    if (loginButton) loginButton.getBoundingClientRect = () => ({ left: 850, right: 910, top: 10, bottom: 34, width: 60, height: 24 }); // NEW
+    return { context, document, graph, model, layer, module, card, outside, actions, ui, toolbarContainer, editorListeners }; // CHANGE
+} // NEW
+
+function buttonByText(document, text) { // NEW
+    return Array.from(document.querySelectorAll("button")).find(button => button.textContent === text); // NEW
+} // NEW
+
+function inputByPlaceholder(document, text) { // NEW
+    return Array.from(document.querySelectorAll("input")).find(input => input.placeholder === text); // NEW
 } // NEW
 
 test("disabled diagrams do not prompt or block edits", () => { // CHANGE
     const harness = loadUsersPlugin(); // NEW
     const users = harness.context.window.Trellis.users; // NEW
     assert.equal(users.isEnabled(), false); // NEW
+    assert.equal(harness.document.querySelector(".trellis-users-auth-overlay"), null); // NEW
+    assert.ok(harness.document.querySelector(".trellis-users-login-button")); // NEW
     assert.equal(users.canEditCell(harness.card), true); // NEW
     assert.equal(users.login("Alice", "1234").ok, false); // NEW
     let undone = false; // NEW
     harness.model.fireChange({ changes: [{ constructor: { name: "mxValueChange" }, cell: harness.card }], undo() { undone = true; } }); // NEW
     assert.equal(undone, false); // NEW
     assert.ok(harness.actions.trellisUsers); // NEW
+}); // NEW
+
+test("toolbar login enables users and keeps the first admin logged in for this diagram", () => { // NEW
+    const harness = loadUsersPlugin(); // NEW
+    const users = harness.context.window.Trellis.users; // NEW
+    harness.document.querySelector(".trellis-users-login-button").click(); // NEW
+    assert.ok(harness.document.querySelector(".trellis-users-auth-overlay")); // NEW
+    inputByPlaceholder(harness.document, "Admin name").value = "Alice"; // NEW
+    inputByPlaceholder(harness.document, "PIN").value = "1234"; // NEW
+    harness.document.querySelector(".trellis-users-auth-overlay input[type='checkbox']").checked = true; // NEW
+    buttonByText(harness.document, "Enable Users").click(); // NEW
+    assert.equal(users.isEnabled(), true); // NEW
+    assert.equal(users.isLoggedIn(), true); // NEW
+    assert.equal(harness.document.querySelector(".trellis-users-auth-overlay"), null); // NEW
+    const key = users._test.getDiagramLoginKey(false); // NEW
+    assert.equal(harness.context.window.localStorage.getItem("trellis_users_remembered_login_v1:" + key), users.getCurrentUser().id); // NEW
+}); // NEW
+
+test("users toolbar button is inserted beside an existing ChangeMap History button", () => { // NEW
+    const harness = loadUsersPlugin({ historyButton: true }); // NEW
+    const buttons = Array.from(harness.toolbarContainer.querySelectorAll("button")); // NEW
+    assert.equal(buttons[0].className.includes("trellis-users-login-button"), true); // NEW
+    assert.equal(buttons[1].className.includes("trellis-changemap-history-button"), true); // NEW
 }); // NEW
 
 test("enable users creates the first admin and persists usersEnabled", () => { // CHANGE
@@ -126,6 +185,102 @@ test("logged-out enabled diagrams reject edits", () => { // NEW
     let undone = false; // NEW
     harness.model.fireChange({ changes: [{ constructor: { name: "mxValueChange" }, cell: harness.card }], undo() { undone = true; } }); // NEW
     assert.equal(undone, true); // NEW
+}); // NEW
+
+test("enabled diagram load changes are allowed while logged out but later edits are rejected", () => { // NEW
+    const harness = loadUsersPlugin(); // NEW
+    const users = harness.context.window.Trellis.users; // NEW
+    users.enableUsers("Alice", "1234"); // NEW
+    users.logout(); // NEW
+    let loadUndone = false; // NEW
+    harness.ui.openingFile = true; // NEW
+    harness.model.fireChange({ changes: [{ constructor: { name: "mxChildChange" }, child: harness.module, parent: harness.layer }], undo() { loadUndone = true; } }); // NEW
+    harness.ui.openingFile = false; // NEW
+    harness.ui.fileLoaded({}); // NEW
+    assert.equal(loadUndone, false); // NEW
+    assert.ok(harness.document.querySelector(".trellis-users-auth-overlay")); // NEW
+    let editUndone = false; // NEW
+    harness.model.fireChange({ changes: [{ constructor: { name: "mxValueChange" }, cell: harness.card }], undo() { editUndone = true; } }); // NEW
+    assert.equal(editUndone, true); // NEW
+}); // NEW
+
+test("direct setGraphXml load changes are allowed and then show the auth gate", () => { // NEW
+    const harness = loadUsersPlugin(); // NEW
+    const users = harness.context.window.Trellis.users; // NEW
+    users.enableUsers("Alice", "1234"); // NEW
+    users.logout(); // NEW
+    harness.ui.setGraphXmlUndone = false; // NEW
+    harness.ui.editor.setGraphXml(harness.document.createElement("mxGraphModel")); // NEW
+    assert.equal(harness.ui.setGraphXmlCalls, 1); // NEW
+    assert.equal(harness.ui.setGraphXmlUndone, false); // NEW
+    assert.ok(harness.document.querySelector(".trellis-users-auth-overlay")); // NEW
+}); // NEW
+
+test("logged-out enabled diagrams show an opaque auth gate until login succeeds", () => { // NEW
+    const harness = loadUsersPlugin(); // NEW
+    const users = harness.context.window.Trellis.users; // NEW
+    users.enableUsers("Alice", "1234"); // NEW
+    users.logout(); // NEW
+    assert.ok(harness.document.querySelector(".trellis-users-auth-overlay")); // NEW
+    assert.equal(harness.graph.enabled, false); // NEW
+    assert.equal(users.login("Alice", "bad").ok, false); // NEW
+    assert.ok(harness.document.querySelector(".trellis-users-auth-overlay")); // NEW
+    assert.equal(users.login("Alice", "1234").ok, true); // NEW
+    assert.equal(harness.document.querySelector(".trellis-users-auth-overlay"), null); // NEW
+    assert.equal(harness.graph.enabled, true); // NEW
+}); // NEW
+
+test("remembered login restores on file load and logout forgets it", () => { // NEW
+    const harness = loadUsersPlugin(); // NEW
+    const users = harness.context.window.Trellis.users; // NEW
+    users.enableUsers("Alice", "1234"); // NEW
+    const alice = users.getCurrentUser(); // NEW
+    assert.equal(users.rememberLogin(alice.id, true).ok, true); // NEW
+    harness.ui.fileLoaded({}); // NEW
+    assert.equal(users.isLoggedIn(), true); // NEW
+    assert.equal(users.getCurrentUser().id, alice.id); // NEW
+    users.logout(); // NEW
+    const key = users._test.getDiagramLoginKey(false); // NEW
+    assert.equal(harness.context.window.localStorage.getItem("trellis_users_remembered_login_v1:" + key), null); // NEW
+    assert.ok(harness.document.querySelector(".trellis-users-auth-overlay")); // NEW
+}); // NEW
+
+test("remembered login is ignored when the stored user is disabled", () => { // NEW
+    const harness = loadUsersPlugin(); // NEW
+    const users = harness.context.window.Trellis.users; // NEW
+    users.enableUsers("Alice", "1234"); // NEW
+    const bob = users.createUser("Bob", "5678", false).user; // NEW
+    assert.equal(users.rememberLogin(bob.id, true).ok, true); // NEW
+    users.setUserDisabled(bob.id, true); // NEW
+    harness.ui.fileLoaded({}); // NEW
+    assert.equal(users.isLoggedIn(), false); // NEW
+    assert.ok(harness.document.querySelector(".trellis-users-auth-overlay")); // NEW
+}); // NEW
+
+test("logged-in toolbar button opens an account menu with logout and users panel access", () => { // NEW
+    const harness = loadUsersPlugin(); // NEW
+    const users = harness.context.window.Trellis.users; // NEW
+    users.enableUsers("Alice", "1234"); // NEW
+    const button = harness.document.querySelector(".trellis-users-login-button"); // NEW
+    assert.equal(button.textContent, "Alice"); // NEW
+    button.click(); // NEW
+    const menu = harness.document.querySelector(".trellis-users-account-menu"); // CHANGE
+    assert.ok(menu); // NEW
+    assert.equal(menu.parentNode, harness.document.body); // NEW
+    assert.equal(menu.style.position, "fixed"); // CHANGE
+    assert.equal(menu.style.zIndex, "2000000000"); // CHANGE
+    assert.ok(buttonByText(harness.document, "Users Panel")); // NEW
+    buttonByText(harness.document, "Users Panel").click(); // NEW
+    const panel = harness.document.body.querySelector("div[style*='width: 320px'], div[style*='width:320px']"); // NEW
+    assert.ok(panel); // NEW
+    assert.equal(panel.parentNode, harness.document.body); // NEW
+    assert.equal(panel.style.position, "fixed"); // CHANGE
+    assert.equal(panel.style.zIndex, "2000000000"); // CHANGE
+    button.click(); // NEW
+    buttonByText(harness.document, "Logout").click(); // NEW
+    assert.equal(users.isLoggedIn(), false); // NEW
+    assert.equal(harness.document.querySelector(".trellis-users-account-menu"), null); // NEW
+    assert.ok(harness.document.querySelector(".trellis-users-auth-overlay")); // NEW
 }); // NEW
 
 test("admin roster management supports PIN reset disable reactivate and last-admin guards", () => { // NEW

@@ -3,6 +3,7 @@
 
     const ACTION_ID = "trellisRestoreBuiltInDatabase"; // NEW
     const ACTION_LABEL = "Restore Built-in Trellis Database..."; // NEW
+    const TRELLIS_DIALOG_Z = 2000000000; // NEW
 
     function createEl(tag, className, text) { // NEW
         const el = document.createElement(tag); // NEW
@@ -17,6 +18,12 @@
 
     function closeDialog(ui) { // NEW
         if (ui && typeof ui.hideDialog === "function") ui.hideDialog(); // NEW
+    } // NEW
+
+    function elevateTrellisDialog(ui) { // NEW
+        const dlg = ui && ui.dialog; // NEW
+        if (dlg && dlg.bg && dlg.bg.style) dlg.bg.style.zIndex = String(TRELLIS_DIALOG_Z - 1); // NEW
+        if (dlg && dlg.container && dlg.container.style) dlg.container.style.zIndex = String(TRELLIS_DIALOG_Z); // NEW
     } // NEW
 
     function addStyles(root) { // NEW
@@ -104,6 +111,7 @@
 
         ui.actions.addAction(ACTION_ID, function () { // NEW
             ui.showDialog(buildRestoreDialog(ui), 560, 320, true, true); // NEW
+            elevateTrellisDialog(ui); // NEW
         }); // NEW
 
         const action = ui.actions.get && ui.actions.get(ACTION_ID); // NEW

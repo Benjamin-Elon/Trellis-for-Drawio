@@ -38,6 +38,35 @@ test("garden dashboard toolbar is mounted to the graph viewport and sized from t
     assert.doesNotMatch(text, /innerWidth/); // NEW
 }); // NEW
 
+test("garden dashboard toolbar width follows a narrowed graph container rect", () => { // NEW
+    const graph = { // NEW
+        container: { // NEW
+            clientWidth: 1600, // NEW
+            getBoundingClientRect() { return { left: 88, top: 124, width: 916, height: 700 }; } // NEW
+        } // NEW
+    }; // NEW
+    const entry = { wrap: { style: {} } }; // NEW
+    function getViewportToolbarContainer() { return graph && graph.container; } // NEW
+    function viewportToolbarWidth(host) { // NEW
+        if (!host) return 0; // NEW
+        const rect = host.getBoundingClientRect ? host.getBoundingClientRect() : null; // NEW
+        if (rect && rect.width) return rect.width; // NEW
+        return host.clientWidth || 0; // NEW
+    } // NEW
+    function positionViewportToolbar(target) { // NEW
+        const host = getViewportToolbarContainer(); // NEW
+        if (!target || !host) return; // NEW
+        const rect = host.getBoundingClientRect ? host.getBoundingClientRect() : { left: 0, top: 0 }; // NEW
+        target.wrap.style.left = Math.round(rect.left || 0) + "px"; // NEW
+        target.wrap.style.top = Math.round(rect.top || 0) + "px"; // NEW
+        target.wrap.style.width = Math.max(0, Math.round(viewportToolbarWidth(host))) + "px"; // NEW
+    } // NEW
+    positionViewportToolbar(entry); // NEW
+    assert.equal(entry.wrap.style.left, "88px"); // NEW
+    assert.equal(entry.wrap.style.top, "124px"); // NEW
+    assert.equal(entry.wrap.style.width, "916px"); // NEW
+}); // NEW
+
 test("garden dashboard toolbar follows garden module and descendant selection", () => { // NEW
     const text = viewportToolbarSource(); // NEW
     const fullSource = source(); // NEW

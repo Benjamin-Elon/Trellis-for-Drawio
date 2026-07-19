@@ -24,6 +24,7 @@ Draw.loadPlugin(function (ui) {
     const DRAW_SCALE = 0.18;
     const GRAPH_OVERLAY_Z = Object.freeze({ ANNOTATION: 10000, CONNECTION: 10010, CONTROL: 10020, CONTROL_TOP: 10030 }); // CHANGE
     const GRAPH_OVERLAY_LAYER_CLASS = Object.freeze({ control: "trellis-graph-control-layer trellis-body-control-layer" }); // CHANGE
+    const TRELLIS_DIALOG_Z = 2000000000; // NEW
 
     const DASH_ATTR = "garden_dashboard";
     const DASH_YEAR_ATTR = "dashboard_year";
@@ -1070,7 +1071,7 @@ Draw.loadPlugin(function (ui) {
     function openShareInviteDialog(scopes, shareInfo) { // NEW
         const users = trellisUsersApi(); // NEW
         const overlay = document.createElement("div"); // NEW
-        overlay.style.cssText = "position:fixed;left:0;top:0;right:0;bottom:0;z-index:100040;background:rgba(0,0,0,.24);display:flex;align-items:flex-start;justify-content:center;padding-top:80px;box-sizing:border-box;"; // NEW
+        overlay.style.cssText = "position:fixed;left:0;top:0;right:0;bottom:0;z-index:" + TRELLIS_DIALOG_Z + ";background:rgba(0,0,0,.24);display:flex;align-items:flex-start;justify-content:center;padding-top:80px;box-sizing:border-box;"; // CHANGE
         const box = document.createElement("div"); // NEW
         box.style.cssText = "width:420px;max-width:calc(100vw - 32px);background:#fff;border:1px solid #111;border-radius:6px;box-shadow:0 10px 28px rgba(0,0,0,.28);padding:14px;font:13px Arial,sans-serif;box-sizing:border-box;"; // NEW
         const title = document.createElement("div"); // NEW
@@ -1114,7 +1115,7 @@ Draw.loadPlugin(function (ui) {
     function openEnableUsersForShareDialog() { // NEW
         const users = trellisUsersApi(); // NEW
         const overlay = document.createElement("div"); // NEW
-        overlay.style.cssText = "position:fixed;left:0;top:0;right:0;bottom:0;z-index:100040;background:rgba(0,0,0,.24);display:flex;align-items:flex-start;justify-content:center;padding-top:80px;box-sizing:border-box;"; // NEW
+        overlay.style.cssText = "position:fixed;left:0;top:0;right:0;bottom:0;z-index:" + TRELLIS_DIALOG_Z + ";background:rgba(0,0,0,.24);display:flex;align-items:flex-start;justify-content:center;padding-top:80px;box-sizing:border-box;"; // CHANGE
         const box = document.createElement("div"); // NEW
         box.style.cssText = "width:380px;max-width:calc(100vw - 32px);background:#fff;border:1px solid #111;border-radius:6px;box-shadow:0 10px 28px rgba(0,0,0,.28);padding:14px;font:13px Arial,sans-serif;box-sizing:border-box;"; // NEW
         const title = document.createElement("div"); // NEW
@@ -1399,7 +1400,7 @@ Draw.loadPlugin(function (ui) {
         wrap.style.minHeight = "0";
 
         wrap.style.position = "absolute";
-        wrap.style.zIndex = "10";
+        wrap.style.zIndex = String(GRAPH_OVERLAY_Z.CONTROL); // CHANGE
         wrap.style.pointerEvents = "none"; // CHANGE
         wrap.style.boxSizing = "border-box";
         wrap.style.padding = "0";

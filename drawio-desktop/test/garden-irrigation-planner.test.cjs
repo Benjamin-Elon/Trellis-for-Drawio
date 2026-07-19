@@ -143,6 +143,7 @@ function loadPlugin(options = {}) { // NEW
     const ui = { // NEW
         editor: { graph, undoManager }, // CHANGE
         actions: { addAction(id, fn) { actions.set(id, { funct: fn }); } }, // NEW
+        dialog: { bg: { style: {} }, container: { style: {} } }, // NEW
         showDialog(node) { ui.lastDialog = node; ui.hidden = false; ui.showCount = (ui.showCount || 0) + 1; }, // NEW
         hideDialog() { ui.hidden = true; ui.hideCount = (ui.hideCount || 0) + 1; }, // NEW
         alert(message) { ui.lastAlert = message; } // NEW
@@ -310,6 +311,8 @@ test("catalog manager renders category/size group headers, catalog filters, and 
     const { api, moduleCell, ui } = loadPlugin(); // NEW
     api.writeCatalog(moduleCell, sampleCatalog()); // NEW
     api.openCatalogManager(moduleCell); // NEW
+    assert.equal(ui.dialog.container.style.zIndex, "2000000000"); // NEW
+    assert.equal(ui.dialog.bg.style.zIndex, "1999999999"); // NEW
     const groups = Array.from(ui.lastDialog.querySelectorAll(".trellis-irrigation-catalog-group")).map(row => row.textContent); // NEW
     assert.ok(groups.includes("filter / 3/4")); // NEW
     assert.ok(groups.includes("fitting / 3/4")); // NEW

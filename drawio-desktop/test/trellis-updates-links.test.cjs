@@ -87,6 +87,7 @@ function createUi() {
     return {
         shown,
         ui: {
+            dialog: { bg: { style: {} }, container: { style: {} } }, // NEW
             actions: {
                 addAction(id, funct) {
                     actions[id] = { funct };
@@ -171,6 +172,8 @@ test("Trellis updates plugin registers Help action and opens dialog", async () =
     await settle();
 
     assert.equal(shown.length, 1);
+    assert.equal(ui.dialog.container.style.zIndex, "2000000000"); // NEW
+    assert.equal(ui.dialog.bg.style.zIndex, "1999999999"); // NEW
     assert.equal(shown[0].width, 960); // CHANGE
     assert.equal(shown[0].height, 620); // NEW
     assert.equal(shown[0].node.querySelectorAll("[role='tab']").length, 0); // NEW

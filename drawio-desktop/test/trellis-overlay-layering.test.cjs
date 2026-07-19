@@ -49,7 +49,8 @@ test("graph overlay plugins share a dialog-safe layer contract", () => { // NEW
         "Garden_Scale.js", // NEW
         "Deep_Click_Through.js", // NEW
         "Vertex_Linking_Standalone.js", // NEW
-        "Bed_Succession_Navigator.js" // NEW
+        "Bed_Succession_Navigator.js", // CHANGE
+        "Created_Change_Map.js" // NEW
     ].forEach(assertLayerContract); // NEW
 
     assert.match(readProjectFile("drawio/src/main/webapp/js/diagramly/EditorUi.js"), /zIndex: 2e9/); // NEW
@@ -78,6 +79,8 @@ test("graph-local Trellis controls use control layers", () => { // NEW
     assert.match(readPlugin("Modules_Standalone.js"), /trellis-role-image-overlay[\s\S]*overlay\.style\.zIndex = String\(GRAPH_OVERLAY_Z\.CONTROL\)/); // NEW
     assert.match(readPlugin("Garden_Beds.js"), /trellis-bed-conditions-overlay[\s\S]*div\.style\.zIndex = String\(GRAPH_OVERLAY_Z\.CONTROL\)/); // NEW
     assert.match(readPlugin("Garden_Dashboard.js"), /trellis-garden-dashboard-toolbar[\s\S]*wrap\.style\.zIndex = String\(GRAPH_OVERLAY_Z\.CONTROL\)/); // NEW
+    assert.match(readPlugin("Garden_Dashboard.js"), /wrap\.style\.zIndex = String\(GRAPH_OVERLAY_Z\.CONTROL\);/); // NEW
+    assert.match(readPlugin("Created_Change_Map.js"), /panel\.style\.zIndex = String\(GRAPH_OVERLAY_Z\.CONTROL\)/); // NEW
     assert.match(readPlugin("Garden_Task_Manager.js"), /trellis-task-board-header-controls[\s\S]*bar\.style\.zIndex = String\(GRAPH_OVERLAY_Z\.CONTROL\)/); // NEW
     assert.match(readPlugin("Garden_Task_Manager.js"), /trellis-task-selected-card-actions[\s\S]*overlay\.style\.zIndex = String\(GRAPH_OVERLAY_Z\.CONTROL\)/); // NEW
     assert.match(readPlugin("Garden_Task_Manager.js"), /const paneIsSvg = !!\(pane && pane\.namespaceURI === 'http:\/\/www\.w3\.org\/2000\/svg'\)/); // NEW
@@ -96,6 +99,11 @@ test("graph-local Trellis controls use control layers", () => { // NEW
 }); // NEW
 
 test("custom Trellis dialogs render at the Draw.io dialog layer", () => { // NEW
+    const users = readPlugin("Trellis_Users.js"); // NEW
+    assert.match(users, /const USERS_UI_LAYER_Z = 2000000000;/); // NEW
+    assert.match(users, /const AUTH_OVERLAY_Z = 2147483000;/); // NEW
+    assert.match(users, /accountMenu\.style\.cssText = "position:fixed[\s\S]*z-index:" \+ USERS_UI_LAYER_Z/); // NEW
+    assert.match(users, /const host = document\.body; \/\/ CHANGE[\s\S]*panel\.style\.cssText = "position:fixed[\s\S]*z-index:" \+ USERS_UI_LAYER_Z/); // NEW
     const yearPlanner = readPlugin("Year_Planner.js"); // NEW
     assert.match(yearPlanner, /const TRELLIS_DIALOG_Z = 2000000000;/); // NEW
     assert.match(yearPlanner, /z-index:" \+ TRELLIS_DIALOG_Z \+ "/); // NEW
@@ -120,6 +128,35 @@ test("custom Trellis dialogs render at the Draw.io dialog layer", () => { // NEW
     assert.match(gardenBeds, /dlg\.container\.style\.zIndex = String\(TRELLIS_DIALOG_Z\)/); // NEW
     assert.match(gardenBeds, /dlg\.bg\.style\.zIndex = String\(TRELLIS_DIALOG_Z - 1\)/); // NEW
     assert.equal((gardenBeds.match(/ui\.showDialog\(/g) || []).length, (gardenBeds.match(/elevateBedConditionsDialog\(\)/g) || []).length - 1); // NEW
+    const plantTiler = readPlugin("Plant_Tiler.js"); // NEW
+    assert.match(plantTiler, /const TRELLIS_DIALOG_Z = 2000000000;/); // NEW
+    assert.match(plantTiler, /function elevateTrellisDialog\(\)/); // NEW
+    assert.match(plantTiler, /dlg\.container\.style\.zIndex = String\(TRELLIS_DIALOG_Z\)/); // NEW
+    assert.match(plantTiler, /dlg\.bg\.style\.zIndex = String\(TRELLIS_DIALOG_Z - 1\)/); // NEW
+    assert.equal((plantTiler.match(/ui\.showDialog\(/g) || []).length, (plantTiler.match(/elevateTrellisDialog\(\)/g) || []).length - 1); // NEW
+    const irrigation = readPlugin("Garden_Irrigation_Planner.js"); // NEW
+    assert.match(irrigation, /const TRELLIS_DIALOG_Z = 2000000000;/); // NEW
+    assert.match(irrigation, /function showDialog\(node, w, h\)[\s\S]*ui\.showDialog\(node, w, h, true, true\);[\s\S]*elevateTrellisDialog\(\);/); // NEW
+    assert.match(irrigation, /function elevateTrellisDialog\(\)/); // NEW
+    assert.match(irrigation, /dlg\.container\.style\.zIndex = String\(TRELLIS_DIALOG_Z\)/); // NEW
+    assert.match(irrigation, /dlg\.bg\.style\.zIndex = String\(TRELLIS_DIALOG_Z - 1\)/); // NEW
+    assert.equal((irrigation.match(/ui\.showDialog\(/g) || []).length, 1); // NEW
+    const databaseTools = readPlugin("Trellis_Database_Tools.js"); // NEW
+    assert.match(databaseTools, /const TRELLIS_DIALOG_Z = 2000000000;/); // NEW
+    assert.match(databaseTools, /function elevateTrellisDialog\(ui\)/); // NEW
+    assert.match(databaseTools, /ui\.showDialog\(buildRestoreDialog\(ui\), 560, 320, true, true\);[\s\S]*elevateTrellisDialog\(ui\);/); // NEW
+    const updatesLinks = readPlugin("Trellis_Updates_Links.js"); // NEW
+    assert.match(updatesLinks, /const TRELLIS_DIALOG_Z = 2000000000;/); // NEW
+    assert.match(updatesLinks, /function elevateTrellisDialog\(ui\)/); // NEW
+    assert.match(updatesLinks, /ui\.showDialog\(buildDialog\(ui\), 960, 620, true, true\);[\s\S]*elevateTrellisDialog\(ui\);/); // NEW
+    const dashboard = readPlugin("Garden_Dashboard.js"); // NEW
+    assert.match(dashboard, /const TRELLIS_DIALOG_Z = 2000000000;/); // NEW
+    assert.match(dashboard, /z-index:" \+ TRELLIS_DIALOG_Z \+ "/); // NEW
+    assert.doesNotMatch(dashboard, /z-index:100040/); // NEW
+    const equipment = readPlugin("Garden_Equipment.js"); // NEW
+    assert.match(equipment, /const TRELLIS_DIALOG_Z = 2000000000;/); // NEW
+    assert.match(equipment, /trellis-eq-overlay[\s\S]*z-index: \$\{TRELLIS_DIALOG_Z\}/); // NEW
+    assert.doesNotMatch(equipment, /z-index: 10030/); // NEW
 }); // NEW
 
 test("non-control graph overlays stay below controls", () => { // NEW
@@ -129,4 +166,8 @@ test("non-control graph overlays stay below controls", () => { // NEW
     assert.match(readPlugin("Bed_Succession_Navigator.js"), /function styleSelectBtn[\s\S]*el\.style\.zIndex = String\(GRAPH_OVERLAY_Z\.CONTROL\)/); // NEW
     assert.match(readPlugin("Deep_Click_Through.js"), /handle\.style\.zIndex = String\(GRAPH_OVERLAY_Z\.CONTROL_TOP\)/); // NEW
     assert.match(readPlugin("Deep_Click_Through.js"), /div\.style\.zIndex = String\(GRAPH_OVERLAY_Z\.CONTROL_TOP\)/); // NEW
+    const changeMap = readPlugin("Created_Change_Map.js"); // NEW
+    assert.doesNotMatch(changeMap, /zIndex: 9999/); // NEW
+    assert.doesNotMatch(changeMap, /zIndex: 9998/); // NEW
+    assert.match(changeMap, /zIndex: String\(GRAPH_OVERLAY_Z\.ANNOTATION\)/); // NEW
 }); // NEW
