@@ -6171,6 +6171,7 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
         overlay.className = 'trellis-task-week-time-scale'; // NEW
         overlay.style.cssText = 'position:absolute;display:none;pointer-events:none;font:11px Arial,sans-serif;color:#4B5563;z-index:' + GRAPH_OVERLAY_Z.ANNOTATION + ';'; // NEW
         host.appendChild(overlay); // NEW
+        let lastActiveBoard = null; // NEW
 
         function selectedBoard() { // NEW
             const cells = getSelectionCellsList(); // NEW
@@ -6180,6 +6181,20 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
                 if (board) return board; // NEW
             } // NEW
             return null; // NEW
+        } // NEW
+
+        function resolveActiveBoard() { // NEW
+            const board = selectedBoard(); // NEW
+            if (board) lastActiveBoard = board; // NEW
+            return lastActiveBoard; // NEW
+        } // NEW
+
+        function isRenderableActiveBoard(board) { // NEW
+            if (!board || !isBoardCell(board)) return false; // NEW
+            if (model.getParent && !model.getParent(board)) return false; // NEW
+            if (model.isVisible && model.isVisible(board) === false) return false; // NEW
+            if (graph.isCellVisible && graph.isCellVisible(board) === false) return false; // NEW
+            return true; // NEW
         } // NEW
 
         function clearOverlay() { // NEW
@@ -6200,8 +6215,8 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
         } // NEW
 
         function refresh() { // NEW
-            const board = selectedBoard(); // NEW
-            if (!board || getBoardViewMode(board) !== 'WEEK') { clearOverlay(); return; } // NEW
+            const board = resolveActiveBoard(); // CHANGE
+            if (!isRenderableActiveBoard(board) || getBoardViewMode(board) !== 'WEEK') { clearOverlay(); return; } // CHANGE
             ensureBoardPlanningDefaults(board); // NEW
             const lanes = boardLanes(board); // NEW
             const firstLane = lanes[WEEK_DAY_LANE_KEYS[0]]; // NEW

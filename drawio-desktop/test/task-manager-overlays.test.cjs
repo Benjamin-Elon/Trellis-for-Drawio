@@ -808,6 +808,41 @@ test("task manager week scheduler lays out day heights and selected-lane control
     assert.equal(attr(h.board, "task_selected_day"), "2026-07-15"); // NEW
 }); // NEW
 
+test("task manager keeps week time scale visible for the last active board", async () => { // NEW
+    const h = makeHarness(); // NEW
+    h.setState(h.board, { x: 10, y: 10, width: 700, height: 260 }); // NEW
+    h.graph.setSelectionCell(h.board); // NEW
+    await nextTick(); // NEW
+
+    const boardOverlay = h.document.querySelector(".trellis-task-board-header-controls"); // NEW
+    const timeScaleOverlay = h.document.querySelector(".trellis-task-week-time-scale"); // NEW
+    assert.equal(timeScaleOverlay.style.display, "block"); // NEW
+    assert.equal(boardOverlay.style.display, "flex"); // NEW
+
+    h.graph.setSelectionCell(h.root); // NEW
+    await nextTick(); // NEW
+
+    assert.equal(timeScaleOverlay.style.display, "block"); // NEW
+    assert.equal(timeScaleOverlay.querySelector(".trellis-task-week-time-label").textContent, "8:00 AM"); // NEW
+    assert.equal(boardOverlay.style.display, "none"); // NEW: scheduler commands remain selection-scoped
+}); // NEW
+
+test("task manager hides remembered week time scale when another task board becomes active in full view", async () => { // NEW
+    const h = makeHarness({ secondaryBoard: true }); // NEW
+    h.setState(h.board, { x: 10, y: 10, width: 700, height: 260 }); // NEW
+    h.graph.setSelectionCell(h.board); // NEW
+    await nextTick(); // NEW
+
+    const timeScaleOverlay = h.document.querySelector(".trellis-task-week-time-scale"); // NEW
+    assert.equal(timeScaleOverlay.style.display, "block"); // NEW
+
+    setAttr(h.secondaryBoard, "task_view_mode", "FULL"); // NEW
+    h.graph.setSelectionCell(h.secondaryBoard); // NEW
+    await nextTick(); // NEW
+
+    assert.equal(timeScaleOverlay.style.display, "none"); // NEW
+}); // NEW
+
 test("task manager normalizes narrow and wide day cards to the lane interior", async () => { // NEW
     const h = makeHarness(); // NEW
     h.weekTueCard.geometry.x = 55; // NEW
