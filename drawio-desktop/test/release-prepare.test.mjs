@@ -9,7 +9,70 @@ import {
 	normalizeRemoteUrl,
 	parseArgs,
 	resolveCommand,
+	runReleasePrepare,
 } from '../scripts/release-prepare.mjs';
+
+function createReleaseHarness({ commandFailures = {} } = {}) {
+	const events = [];
+	const paths = {
+		appDir: 'C:\\repo\\drawio-desktop',
+		repoRoot: 'C:\\repo',
+		packageJsonPath: 'C:\\repo\\drawio-desktop\\package.json',
+		packageJsonRepoPath: 'drawio-desktop/package.json',
+	};
+
+	return {
+		events,
+		operations: {
+			resolvePaths() {
+				events.push('resolvePaths');
+				return paths;
+			},
+			async readPackage(packageJsonPath) {
+				events.push(`readPackage:${packageJsonPath}`);
+				return { version: '1.2.3' };
+			},
+			requireCleanWorktree(repoRoot) {
+				events.push(`requireCleanWorktree:${repoRoot}`);
+			},
+			readCurrentBranch(repoRoot) {
+				events.push(`readCurrentBranch:${repoRoot}`);
+				return 'main';
+			},
+			requireExpectedRemote(repoRoot) {
+				events.push(`requireExpectedRemote:${repoRoot}`);
+			},
+			requireTagDoesNotExist(repoRoot, tag) {
+				events.push(`requireTagDoesNotExist:${repoRoot}:${tag}`);
+			},
+			printPlan() {
+				events.push('printPlan');
+			},
+			async writePackageVersion(packageJsonPath, version) {
+				events.push(`writePackageVersion:${packageJsonPath}:${version}`); // CHANGE: record exactly when version mutation would happen.
+			},
+			requireOnlyPackageChanged(repoRoot, packageJsonRepoPath) {
+				events.push(`requireOnlyPackageChanged:${repoRoot}:${packageJsonRepoPath}`);
+			},
+			runCommand(command, args, cwd) {
+				const commandLine = `${command} ${args.join(' ')}`.trim();
+				events.push(`runCommand:${commandLine}:${cwd}`);
+
+				if (commandFailures[commandLine] != null) {
+					throw commandFailures[commandLine];
+				}
+			},
+		},
+	};
+}
+
+function findEventIndex(events, prefix) {
+	const index = events.findIndex((event) => event.startsWith(prefix));
+
+	assert.notEqual(index, -1, `Expected event starting with "${prefix}".\n${events.join('\n')}`);
+
+	return index;
+}
 
 test('validates Trellis release semver strings', () => {
 	assert.equal(isValidReleaseVersion('1.0.0'), true);
@@ -134,4 +197,66 @@ test('formats captured stderr before stdout', () => {
 	assert.match(message, /exit status: 128/);
 	assert.match(message, /stderr:\nstderr details/);
 	assert.doesNotMatch(message, /stdout:\nstdout details/);
+});
+
+test('does not write package version when install fails', async () => {
+	const installError = new Error('install failed');
+	const harness = createReleaseHarness({
+		commandFailures: {
+			'yarn install --frozen-lockfile': installError,
+		},
+	});
+
+	await assert.rejects(
+		() => runReleasePrepare(['--bump=patch'], harness.operations),
+		/install failed/,
+	);
+
+	assert.equal(harness.events.some((event) => event.startsWith('writePackageVersion:')), false);
+	assert.equal(harness.events.some((event) => event.startsWith('runCommand:yarn test:')), false);
+});
+
+test('does not write package version when tests fail', async () => {
+	const testError = new Error('tests failed');
+	const harness = createReleaseHarness({
+		commandFailures: {
+			'yarn test': testError,
+		},
+	});
+
+	await assert.rejects(
+		() => runReleasePrepare(['--bump=patch'], harness.operations),
+		/tests failed/,
+	);
+
+	assert(
+		findEventIndex(harness.events, 'runCommand:yarn install --frozen-lockfile:') <
+			findEventIndex(harness.events, 'runCommand:yarn test:'),
+	);
+	assert.equal(harness.events.some((event) => event.startsWith('writePackageVersion:')), false);
+});
+
+test('writes package version only after install and tests pass', async () => {
+	const harness = createReleaseHarness();
+
+	await runReleasePrepare(['--bump=patch'], harness.operations);
+
+	const installIndex = findEventIndex(harness.events, 'runCommand:yarn install --frozen-lockfile:');
+	const testIndex = findEventIndex(harness.events, 'runCommand:yarn test:');
+	const writeIndex = findEventIndex(harness.events, 'writePackageVersion:C:\\repo\\drawio-desktop\\package.json:1.2.4');
+	const packageChangedIndex = findEventIndex(harness.events, 'requireOnlyPackageChanged:C:\\repo:drawio-desktop/package.json');
+	const addIndex = findEventIndex(harness.events, 'runCommand:git add drawio-desktop/package.json:');
+	const commitIndex = findEventIndex(harness.events, 'runCommand:git commit -m Release v1.2.4:');
+	const tagIndex = findEventIndex(harness.events, 'runCommand:git tag -a v1.2.4 -m Trellis Studio 1.2.4:');
+	const branchPushIndex = findEventIndex(harness.events, 'runCommand:git push origin HEAD:main:');
+	const tagPushIndex = findEventIndex(harness.events, 'runCommand:git push origin v1.2.4:');
+
+	assert(installIndex < testIndex);
+	assert(testIndex < writeIndex); // CHANGE: codifies that version increments only after successful validation.
+	assert(writeIndex < packageChangedIndex);
+	assert(packageChangedIndex < addIndex);
+	assert(addIndex < commitIndex);
+	assert(commitIndex < tagIndex);
+	assert(tagIndex < branchPushIndex);
+	assert(branchPushIndex < tagPushIndex);
 });

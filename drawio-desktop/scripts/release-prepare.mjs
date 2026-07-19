@@ -353,38 +353,59 @@ function printPlan({ branch, currentVersion, version, tag, dryRun }) {
 	const prefix = dryRun ? '[dry-run] ' : '';
 
 	console.log(`${prefix}Release preparation plan:`);
-	console.log(`${prefix}- Update drawio-desktop/package.json ${currentVersion} -> ${version}`);
 	console.log(`${prefix}- Run yarn install --frozen-lockfile`);
 	console.log(`${prefix}- Run yarn test`);
+	console.log(`${prefix}- Update drawio-desktop/package.json ${currentVersion} -> ${version}`); // CHANGE: printed order matches delayed version write.
 	console.log(`${prefix}- Commit Release ${tag}`);
 	console.log(`${prefix}- Create annotated tag ${tag}`);
 	console.log(`${prefix}- Push branch ${branch}`);
 	console.log(`${prefix}- Push tag ${tag}`);
 }
 
+function createReleasePrepareOperations(overrides = {}) {
+	return {
+		parseArgs,
+		resolvePaths,
+		readPackage,
+		requireCleanWorktree,
+		readCurrentBranch,
+		requireExpectedRemote,
+		resolveNextVersion,
+		isValidReleaseVersion,
+		formatTag,
+		requireTagDoesNotExist,
+		printPlan,
+		writePackageVersion,
+		requireOnlyPackageChanged,
+		runCommand,
+		...overrides,
+	}; // CHANGE: allow tests to inject release side effects without changing CLI behavior.
+}
+
 /**
  * Runs the strict release-prep flow. All mutating git operations happen only
  * after validation, install, and tests have succeeded.
  */
-export async function runReleasePrepare(argv = process.argv.slice(2)) {
-	const options = parseArgs(argv);
+export async function runReleasePrepare(argv = process.argv.slice(2), releaseOperations = {}) {
+	const operations = createReleasePrepareOperations(releaseOperations); // CHANGE: centralize real vs test release operations.
+	const options = operations.parseArgs(argv);
 
 	if (options.help) {
 		console.log(usage());
 		return;
 	}
 
-	const paths = resolvePaths();
-	const pkg = await readPackage(paths.packageJsonPath);
+	const paths = operations.resolvePaths();
+	const pkg = await operations.readPackage(paths.packageJsonPath);
 	const currentVersion = pkg.version;
 
-	requireCleanWorktree(paths.repoRoot);
-	const branch = readCurrentBranch(paths.repoRoot);
-	requireExpectedRemote(paths.repoRoot);
+	operations.requireCleanWorktree(paths.repoRoot);
+	const branch = operations.readCurrentBranch(paths.repoRoot);
+	operations.requireExpectedRemote(paths.repoRoot);
 
-	const version = await resolveNextVersion(options, currentVersion);
+	const version = await operations.resolveNextVersion(options, currentVersion);
 
-	if (!isValidReleaseVersion(version)) {
+	if (!operations.isValidReleaseVersion(version)) {
 		throw new Error(`Invalid release version "${version}". Expected x.y.z or x.y.z-prerelease.`);
 	}
 
@@ -392,17 +413,12 @@ export async function runReleasePrepare(argv = process.argv.slice(2)) {
 		throw new Error(`New version must differ from current version ${currentVersion}.`);
 	}
 
-	const tag = formatTag(version);
-	requireTagDoesNotExist(paths.repoRoot, tag);
-	printPlan({ branch, currentVersion, version, tag, dryRun: options.dryRun });
+	const tag = operations.formatTag(version);
+	operations.requireTagDoesNotExist(paths.repoRoot, tag);
+	operations.printPlan({ branch, currentVersion, version, tag, dryRun: options.dryRun });
 
-	if (!options.dryRun) {
-		await writePackageVersion(paths.packageJsonPath, version);
-		requireOnlyPackageChanged(paths.repoRoot, paths.packageJsonRepoPath);
-	}
-
-	runCommand('yarn', ['install', '--frozen-lockfile'], paths.appDir);
-	runCommand('yarn', ['test'], paths.appDir);
+	operations.runCommand('yarn', ['install', '--frozen-lockfile'], paths.appDir);
+	operations.runCommand('yarn', ['test'], paths.appDir); // CHANGE: version is written only after install and tests pass.
 
 	if (options.dryRun) {
 		console.log('[dry-run] No files changed, commits created, tags created, or pushes performed.');
@@ -411,13 +427,14 @@ export async function runReleasePrepare(argv = process.argv.slice(2)) {
 		return;
 	}
 
-	requireOnlyPackageChanged(paths.repoRoot, paths.packageJsonRepoPath);
+	await operations.writePackageVersion(paths.packageJsonPath, version); // CHANGE: defer package version mutation until release validation succeeds.
+	operations.requireOnlyPackageChanged(paths.repoRoot, paths.packageJsonRepoPath);
 
-	runCommand('git', ['add', paths.packageJsonRepoPath], paths.repoRoot);
-	runCommand('git', ['commit', '-m', `Release ${tag}`], paths.repoRoot);
-	runCommand('git', ['tag', '-a', tag, '-m', `Trellis Studio ${version}`], paths.repoRoot);
-	runCommand('git', ['push', 'origin', `HEAD:${branch}`], paths.repoRoot);
-	runCommand('git', ['push', 'origin', tag], paths.repoRoot);
+	operations.runCommand('git', ['add', paths.packageJsonRepoPath], paths.repoRoot);
+	operations.runCommand('git', ['commit', '-m', `Release ${tag}`], paths.repoRoot);
+	operations.runCommand('git', ['tag', '-a', tag, '-m', `Trellis Studio ${version}`], paths.repoRoot);
+	operations.runCommand('git', ['push', 'origin', `HEAD:${branch}`], paths.repoRoot);
+	operations.runCommand('git', ['push', 'origin', tag], paths.repoRoot);
 
 	console.log(`Release tag pushed: ${tag}`);
 	console.log(`Actions: ${ACTIONS_URL}`);
