@@ -37,7 +37,7 @@ class TestModel { // NEW
     getCell(id) { return this.cells.get(id) || null; } // NEW
     beginUpdate() {} // NEW
     endUpdate() {} // NEW
-    setValue(cell, value) { cell.value = value; } // NEW
+    setValue(cell, value) { this.setValueCalls = (this.setValueCalls || 0) + 1; cell.value = value; } // CHANGE
     addListener(name, fn) { if (!this.listeners.has(name)) this.listeners.set(name, []); this.listeners.get(name).push(fn); } // NEW
     fireChange(edit) { (this.listeners.get("change") || []).forEach(fn => fn(this, { getProperty: key => key === "edit" ? edit : null })); } // NEW
 } // NEW
@@ -186,6 +186,52 @@ test("enable users creates the first admin and persists usersEnabled", () => { /
     assert.equal(users.listUsers().length, 1); // NEW
     assert.equal(users._test.readStore().usersEnabled, true); // NEW
     assert.match(harness.layer.getAttribute("trellis_users_json"), /Alice/); // CHANGE
+}); // NEW
+
+test("accepted visible edits merge actor metadata into the same undoable edit", () => { // NEW
+    const harness = loadUsersPlugin(); // NEW
+    const users = harness.context.window.Trellis.users; // NEW
+    users.enableUsers("Alice", "1234"); // NEW
+    const edit = { changes: [{ constructor: { name: "mxGeometryChange" }, cell: harness.card }] }; // NEW
+    harness.model.fireChange(edit); // NEW
+    assert.equal(edit.changes.length, 2); // NEW
+    assert.equal(harness.card.getAttribute(users.attrs.editedBy), users.getCurrentUser().id); // NEW
+    const actorChange = edit.changes.find(change => change.__trellisUsersActorStamp); // NEW
+    assert.ok(actorChange); // NEW
+    actorChange.execute(); // NEW
+    assert.equal(harness.card.getAttribute(users.attrs.editedBy), null); // NEW
+    actorChange.execute(); // NEW
+    assert.equal(harness.card.getAttribute(users.attrs.editedBy), users.getCurrentUser().id); // NEW
+}); // NEW
+
+test("created planting ownership metadata is included in the creation undo edit", () => { // NEW
+    const harness = loadUsersPlugin(); // NEW
+    const users = harness.context.window.Trellis.users; // NEW
+    users.enableUsers("Alice", "1234"); // NEW
+    const planting = makeXmlCell(harness.document, "planting", { label: "Planting", tiler_group: "1" }); // NEW
+    appendChild(harness.module, planting); // NEW
+    const edit = { changes: [{ constructor: { name: "mxChildChange" }, child: planting, parent: harness.module }] }; // NEW
+    harness.model.fireChange(edit); // NEW
+    assert.equal(edit.changes.length, 2); // NEW
+    assert.equal(planting.getAttribute(users.attrs.owner), users.getCurrentUser().id); // NEW
+    assert.equal(planting.getAttribute(users.attrs.createdBy), users.getCurrentUser().id); // NEW
+    const actorChange = edit.changes.find(change => change.__trellisUsersActorStamp); // NEW
+    actorChange.execute(); // NEW
+    assert.equal(planting.getAttribute(users.attrs.owner), null); // NEW
+    assert.equal(planting.getAttribute(users.attrs.createdBy), null); // NEW
+    actorChange.execute(); // NEW
+    assert.equal(planting.getAttribute(users.attrs.owner), users.getCurrentUser().id); // NEW
+}); // NEW
+
+test("direct actor stamping mutates XML without model setValue calls", () => { // NEW
+    const harness = loadUsersPlugin(); // NEW
+    const users = harness.context.window.Trellis.users; // NEW
+    users.enableUsers("Alice", "1234"); // NEW
+    const preInsert = new TestCell("pre-insert", "Pre Insert"); // NEW
+    harness.model.setValueCalls = 0; // NEW
+    assert.equal(users.stampActorDirect(preInsert, "created"), true); // NEW
+    assert.equal(harness.model.setValueCalls, 0); // NEW
+    assert.equal(preInsert.getAttribute(users.attrs.createdBy), users.getCurrentUser().id); // NEW
 }); // NEW
 
 test("logged-out enabled diagrams reject edits", () => { // NEW

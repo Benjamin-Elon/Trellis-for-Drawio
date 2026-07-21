@@ -59,6 +59,13 @@ function makeXmlCell(document, id, attrs = {}) { // NEW
     return new TestCell(id, node); // NEW
 } // NEW
 
+test("change map stamps Trellis user actor metadata before deferred history recording", () => { // NEW
+    const source = fs.readFileSync(pluginPath, "utf8"); // NEW
+    assert.match(source, /function stampActor\(cell, kind, edit\)[\s\S]*stampActorIntoEdit\(edit, cell, kind\)/); // NEW
+    assert.match(source, /const capturedMetadata = historyRecorder\.captureActiveTransactionMetadata\(\);[\s\S]*const createdStamped = stampCreatedOnInsert\(edit\);[\s\S]*Promise\.resolve\(\)\.then/); // NEW
+    assert.doesNotMatch(source, /Promise\.resolve\(\)\.then\(function \(\) \{[\s\S]{0,900}stampCreatedOnInsert\(edit\)/); // NEW
+}); // NEW
+
 function createDbBridge() { // NEW
     const state = { snapshots: new Map(), events: [], execs: [] }; // NEW
     return { // NEW

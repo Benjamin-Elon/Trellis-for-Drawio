@@ -352,9 +352,10 @@ Draw.loadPlugin(function (ui) {
     return user && user.id ? String(user.id) : '';                              // NEW
   }                                                                            // NEW
 
-  function stampActor(cell, kind) {                                            // NEW
+  function stampActor(cell, kind, edit) {                                      // CHANGE
     const users = usersApi();                                                   // NEW
-    if (users && typeof users.stampActorOnCell === 'function') users.stampActorOnCell(cell, kind); // NEW
+    if (users && edit && typeof users.stampActorIntoEdit === 'function') users.stampActorIntoEdit(edit, cell, kind); // NEW
+    else if (users && typeof users.stampActorOnCell === 'function') users.stampActorOnCell(cell, kind); // CHANGE
   }                                                                            // NEW
 
   function isDirectEditChange(ch) {
@@ -1040,15 +1041,15 @@ Draw.loadPlugin(function (ui) {
 
   // -------------------- Timestamp stamping --------------------
 
-  function stampCreatedIfMissing(cell, tNow) {
+  function stampCreatedIfMissing(cell, tNow, edit) {                           // CHANGE
     if (!shouldStyleCell(cell)) return;
-    if (getAttrMs(cell, ATTR_CREATED) == null) { setAttrMs(cell, ATTR_CREATED, tNow); stampActor(cell, 'created'); } // CHANGE
+    if (getAttrMs(cell, ATTR_CREATED) == null) { setAttrMs(cell, ATTR_CREATED, tNow); stampActor(cell, 'created', edit); } // CHANGE
   }
 
-  function stampEdited(cell, tNow) {
+  function stampEdited(cell, tNow, edit) {                                     // CHANGE
     if (!shouldStyleCell(cell)) return;
     setAttrMs(cell, ATTR_EDITED, tNow);
-    stampActor(cell, 'edited');                                                // NEW
+    stampActor(cell, 'edited', edit);                                          // CHANGE
   }
 
   function snapshotSelectionIds() {
@@ -1110,8 +1111,8 @@ Draw.loadPlugin(function (ui) {
     model.beginUpdate();
     try {
       for (const cell of touched.values()) {
-        stampCreatedIfMissing(cell, tNow);                                                 // keep createdAt stable
-        stampEdited(cell, tNow);
+        stampCreatedIfMissing(cell, tNow, edit);                                           // CHANGE
+        stampEdited(cell, tNow, edit);                                                     // CHANGE
         did = true;
       }
     } finally {
@@ -1145,7 +1146,7 @@ Draw.loadPlugin(function (ui) {
 
         if (getAttrMs(child, ATTR_CREATED) == null) {
           setAttrMs(child, ATTR_CREATED, tNow);
-          stampActor(child, 'created');                                        // NEW
+          stampActor(child, 'created', edit);                                  // CHANGE
           did = true;
         }
       }
@@ -2469,6 +2470,9 @@ Draw.loadPlugin(function (ui) {
     if (!edit || !edit.changes) return;
     if (edit.__trellisUsersRejected) return;                                    // NEW
     const capturedMetadata = historyRecorder.captureActiveTransactionMetadata(); // NEW
+    const createdStamped = stampCreatedOnInsert(edit);                          // CHANGE
+    const editedStamped = stampEditedFromSelectedIntersection(edit);             // CHANGE
+    if (createdStamped || editedStamped) scheduleRefreshIfEnabled();             // CHANGE
 
     Promise.resolve().then(function () {                                        // NEW
       if (graph.__ccMapInternalChange) return;                                  // NEW
@@ -2477,11 +2481,6 @@ Draw.loadPlugin(function (ui) {
 
       debugLogEdit(edit, 'CHANGE');                                             // CHANGE
       historyRecorder.recordModelChange(edit, capturedMetadata);                // CHANGE
-
-      const createdStamped = stampCreatedOnInsert(edit);                        // CHANGE
-      const editedStamped = stampEditedFromSelectedIntersection(edit);           // CHANGE
-
-      if (createdStamped || editedStamped) scheduleRefreshIfEnabled();           // CHANGE
     });                                                                         // NEW
   });
 

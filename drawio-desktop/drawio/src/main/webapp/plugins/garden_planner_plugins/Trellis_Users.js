@@ -96,6 +96,35 @@ Draw.loadPlugin(function (ui) {
         return obj;
     }
 
+    function ensureXmlValueDirect(cell) { // NEW
+        if (!cell) return null; // NEW
+        const value = cell.value; // NEW
+        if (value && typeof value === "object" && value.nodeType === 1) return value; // NEW
+        const doc = mxUtils.createXmlDocument(); // NEW
+        const obj = doc.createElement("object"); // NEW
+        if (value != null && value !== "") obj.setAttribute("label", String(value)); // NEW
+        cell.value = obj; // NEW
+        return obj; // NEW
+    } // NEW
+
+    function cloneCellValueForUndo(value) { // NEW
+        return value && typeof value === "object" && typeof value.cloneNode === "function" ? value.cloneNode(true) : value; // NEW
+    } // NEW
+
+    function TrellisUsersValueChange(cell, previous, value) { // NEW
+        this.cell = cell; // NEW
+        this.previous = previous; // NEW
+        this.value = value; // NEW
+        this.__trellisUsersActorStamp = true; // NEW
+    } // NEW
+
+    TrellisUsersValueChange.prototype.execute = function () { // NEW
+        if (!this.cell) return; // NEW
+        const next = this.previous; // NEW
+        this.previous = this.cell.value; // NEW
+        this.cell.value = next; // NEW
+    }; // NEW
+
     function getAttr(cell, key) {
         return cell && typeof cell.getAttribute === "function" ? cell.getAttribute(key) : null;
     }
@@ -1050,39 +1079,73 @@ Draw.loadPlugin(function (ui) {
         return base;
     }
 
-    function stampCreatedOwner(cell) {
+    function writeActorAttribute(node, key, value) { // NEW
+        if (!node || !key) return false; // NEW
+        const next = value == null || value === "" ? "" : String(value); // NEW
+        const current = node.getAttribute(key) || ""; // NEW
+        if (current === next) return false; // NEW
+        if (next) node.setAttribute(key, next); // NEW
+        else node.removeAttribute(key); // NEW
+        return true; // NEW
+    } // NEW
+
+    function applyActorStamp(node, user, kind, options) { // NEW
+        if (!node || !user) return false; // NEW
+        const opts = options || {}; // NEW
+        let changed = false; // NEW
+        if (opts.owner === true && !node.getAttribute(ATTR_OWNER)) changed = writeActorAttribute(node, ATTR_OWNER, user.id) || changed; // NEW
+        if (kind === "created" && !node.getAttribute(ATTR_CREATED_BY)) changed = writeActorAttribute(node, ATTR_CREATED_BY, user.id) || changed; // NEW
+        if (kind === "edited") changed = writeActorAttribute(node, ATTR_EDITED_BY, user.id) || changed; // NEW
+        changed = writeActorAttribute(node, ATTR_ACTOR_NAME, user.name) || changed; // NEW
+        changed = writeActorAttribute(node, ATTR_ACTOR_ROLE, user.admin ? "admin" : "regular") || changed; // NEW
+        return changed; // NEW
+    } // NEW
+
+    function addChangeToEdit(edit, change) { // NEW
+        if (!edit || !change) return false; // NEW
+        if (typeof edit.add === "function") edit.add(change); // NEW
+        else if (Array.isArray(edit.changes)) edit.changes.push(change); // NEW
+        else return false; // NEW
+        return true; // NEW
+    } // NEW
+
+    function stampActorDirect(cell, kind, options) { // NEW
         const user = currentUser();
         if (!cell || !user) return false;
-        graph[INTERNAL_FLAG] = true;
-        model.beginUpdate();
-        try {
-            if (!getAttr(cell, ATTR_OWNER)) setAttr(cell, ATTR_OWNER, user.id);
-            if (!getAttr(cell, ATTR_CREATED_BY)) setAttr(cell, ATTR_CREATED_BY, user.id);
-            setAttr(cell, ATTR_ACTOR_NAME, user.name);
-            setAttr(cell, ATTR_ACTOR_ROLE, user.admin ? "admin" : "regular");
-        } finally {
-            model.endUpdate();
-            graph[INTERNAL_FLAG] = false;
-        }
+        const node = ensureXmlValueDirect(cell); // CHANGE
+        const changed = applyActorStamp(node, user, kind, options); // NEW
+        if (!changed) return false; // NEW
         refreshPanel();
         return true;
     }
 
-    function stampActorOnCell(cell, kind) {
+    function stampActorIntoEdit(edit, cell, kind, options) { // NEW
         const user = currentUser();
         if (!cell || !user) return false;
-        graph[INTERNAL_FLAG] = true;
-        model.beginUpdate();
-        try {
-            if (kind === "created" && !getAttr(cell, ATTR_CREATED_BY)) setAttr(cell, ATTR_CREATED_BY, user.id);
-            if (kind === "edited") setAttr(cell, ATTR_EDITED_BY, user.id);
-            setAttr(cell, ATTR_ACTOR_NAME, user.name);
-            setAttr(cell, ATTR_ACTOR_ROLE, user.admin ? "admin" : "regular");
-        } finally {
-            model.endUpdate();
-            graph[INTERNAL_FLAG] = false;
-        }
-        return true;
+        if (!edit || !Array.isArray(edit.changes)) return stampActorDirect(cell, kind, options); // NEW
+        const previous = cloneCellValueForUndo(cell.value); // NEW
+        const node = ensureXmlValueDirect(cell); // NEW
+        if (!applyActorStamp(node, user, kind, options)) return false; // NEW
+        const value = cloneCellValueForUndo(cell.value); // NEW
+        return addChangeToEdit(edit, new TrellisUsersValueChange(cell, previous, value)); // NEW
+    } // NEW
+
+    function activeModelEdit() { // NEW
+        return model && model.currentEdit && Array.isArray(model.currentEdit.changes) ? model.currentEdit : null; // NEW
+    } // NEW
+
+    function stampCreatedOwner(cell, edit) { // CHANGE
+        const targetEdit = edit || activeModelEdit(); // NEW
+        const stamped = targetEdit ? stampActorIntoEdit(targetEdit, cell, "created", { owner: true }) : stampActorDirect(cell, "created", { owner: true }); // CHANGE
+        if (stamped && graph.refresh) graph.refresh(cell); // NEW
+        return stamped; // CHANGE
+    }
+
+    function stampActorOnCell(cell, kind, edit) { // CHANGE
+        const targetEdit = edit || activeModelEdit(); // NEW
+        const stamped = targetEdit ? stampActorIntoEdit(targetEdit, cell, kind) : stampActorDirect(cell, kind); // CHANGE
+        if (stamped && graph.refresh) graph.refresh(cell); // NEW
+        return stamped; // CHANGE
     }
 
     function setAccess(cell, options) {
@@ -1457,16 +1520,34 @@ Draw.loadPlugin(function (ui) {
         }); // NEW
     } // NEW
 
-    function stampAllowedCreations(changes) { // NEW
-        (changes || []).forEach(function (change) { // NEW
+    function isActorStampableEditChange(change) { // NEW
+        const name = change && change.constructor && change.constructor.name; // NEW
+        return name === "mxStyleChange" || name === "mxValueChange" || name === "mxTerminalChange" || name === "mxGeometryChange" || name === "mxCollapseChange" || name === "mxVisibleChange" || name === "mxCellAttributeChange"; // NEW
+    } // NEW
+
+    function stampAcceptedActorMetadata(edit, changes) { // CHANGE
+        const sourceChanges = (changes || []).slice(); // NEW
+        const stamped = new Set(); // NEW
+        sourceChanges.forEach(function (change) { // CHANGE
+            if (!change || change.__trellisUsersActorStamp) return; // NEW
             const name = change && change.constructor && change.constructor.name; // NEW
-            if (name !== "mxChildChange") return; // NEW
             const cell = cellFromChange(change); // NEW
-            if (cell && currentParentOfChange(change) && !previousParentOfChange(change) && isTilerGroup(cell)) stampCreatedOwner(cell); // NEW
+            if (!cell) return; // NEW
+            const keyBase = String(cell.id || (cell.getId && cell.getId()) || ""); // NEW
+            if (name === "mxChildChange" && currentParentOfChange(change) && !previousParentOfChange(change) && isTilerGroup(cell)) { // CHANGE
+                const key = keyBase + ":createdOwner"; // NEW
+                if (!stamped.has(key)) { stampCreatedOwner(cell, edit); stamped.add(key); } // CHANGE
+                return; // NEW
+            } // NEW
+            if (isActorStampableEditChange(change)) { // NEW
+                const key = keyBase + ":edited"; // NEW
+                if (!stamped.has(key)) { stampActorIntoEdit(edit, cell, "edited"); stamped.add(key); } // NEW
+            } // NEW
         }); // NEW
     } // NEW
 
     function changeAllowed(change) {
+        if (change && change.__trellisUsersActorStamp) return true; // NEW
         const name = change && change.constructor && change.constructor.name;
         const cell = cellFromChange(change);
         if (!name || !cell) return true;
@@ -1522,6 +1603,7 @@ Draw.loadPlugin(function (ui) {
         if (graph[INTERNAL_FLAG] || graph[REJECT_FLAG]) return;
         if ((ui && ui.openingFile) || graphXmlLoading > 0) return; // NEW
         const edit = evt && evt.getProperty && evt.getProperty("edit");
+        if (edit && (edit.undone || edit.redone)) return; // NEW
         const changes = edit && edit.changes || [];
         if (!changes.length) return;
         if (!isLoggedIn()) { rejectEdit(edit, "Log in before editing this diagram."); return; }
@@ -1532,7 +1614,7 @@ Draw.loadPlugin(function (ui) {
                 return;
             }
         }
-        stampAllowedCreations(changes); // NEW
+        stampAcceptedActorMetadata(edit, changes); // CHANGE
     }
 
     function makeButton(label, onClick) {
@@ -2563,6 +2645,8 @@ Draw.loadPlugin(function (ui) {
         setOwner,
         stampCreatedOwner,
         stampActorOnCell,
+        stampActorDirect, // NEW
+        stampActorIntoEdit, // NEW
         attrs: {
             owner: ATTR_OWNER,
             accessUsers: ATTR_ACCESS_USERS,
@@ -2592,6 +2676,8 @@ Draw.loadPlugin(function (ui) {
             composeInviteEmail, // NEW
             getDiagramLoginKey, // NEW
             applyAuthGateIfNeeded, // CHANGE
+            stampActorDirect, // NEW
+            stampActorIntoEdit, // NEW
             refreshPanel // NEW
         }
     };
