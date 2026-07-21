@@ -1,7 +1,7 @@
 {
   "name": "trellis-studio",
   "productName": "Trellis Studio",
-  "version": "2.4.0",
+  "version": "2.4.1",
   "drawioBaseVersion": "29.0.3",
   "description": "Trellis Studio desktop",
   "exports": "./src/main/electron.js",
