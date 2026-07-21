@@ -137,6 +137,18 @@ function selectByOptionText(document, text) { // NEW
     return Array.from(document.querySelectorAll("select")).find(select => Array.from(select.options || []).some(option => option.textContent === text)); // NEW
 } // NEW
 
+function checkboxByLabel(document, text) { // NEW
+    return Array.from(document.querySelectorAll("label")).find(label => label.textContent.trim() === text)?.querySelector("input[type='checkbox']") || null; // NEW
+} // NEW
+
+function accessRowByUserId(document, userId) { // NEW
+    return document.querySelector('.trellis-users-access-row[data-trellis-users-user-id="' + userId + '"]'); // NEW
+} // NEW
+
+function checkboxByLabelIn(root, text) { // NEW
+    return Array.from(root.querySelectorAll("label")).find(label => label.textContent.trim() === text)?.querySelector("input[type='checkbox']") || null; // NEW
+} // NEW
+
 test("disabled diagrams do not prompt or block edits", () => { // CHANGE
     const harness = loadUsersPlugin(); // NEW
     const users = harness.context.window.Trellis.users; // NEW
@@ -502,6 +514,18 @@ test("viewer grant keeps regular users view-only", () => { // CHANGE
     assert.equal(users.canDeleteCell(harness.card), false); // NEW
     assert.equal(users.canManageAccess(harness.module), false); // NEW
     assert.equal(users._test.changeAllowed({ constructor: { name: "mxCellAttributeChange" }, cell: harness.card, attribute: "label" }), false); // NEW
+    const planting = appendChild(harness.module, makeXmlCell(harness.document, "viewer-planting", { tiler_group: "1" })); // NEW
+    let undone = false; // NEW
+    harness.model.fireChange({ changes: [{ constructor: { name: "mxChildChange" }, child: planting, parent: harness.module }], undo() { undone = true; } }); // NEW
+    assert.equal(undone, true); // NEW
+    const bed = appendChild(harness.module, makeXmlCell(harness.document, "viewer-bed", { garden_bed: "1" })); // NEW
+    undone = false; // NEW
+    harness.model.fireChange({ changes: [{ constructor: { name: "mxChildChange" }, child: bed, parent: harness.module }], undo() { undone = true; } }); // NEW
+    assert.equal(undone, true); // NEW
+    bed.parent = null; // NEW
+    undone = false; // NEW
+    harness.model.fireChange({ changes: [{ constructor: { name: "mxChildChange" }, child: bed, previous: harness.module }], undo() { undone = true; } }); // NEW
+    assert.equal(undone, true); // NEW
 }); // NEW
 
 test("permission diagnostics stay quiet unless explicitly enabled", () => { // NEW
@@ -569,6 +593,23 @@ test("admin remains allowed for bed-fit relevant child geometry and style change
     assert.equal(users._test.changeAllowed({ constructor: { name: "mxStyleChange" }, cell: planting }), true); // NEW
 }); // NEW
 
+test("admin planting creation allows generated plant tile churn in the same edit", () => { // NEW
+    const harness = loadUsersPlugin(); // NEW
+    const users = harness.context.window.Trellis.users; // NEW
+    users.enableUsers("Alice", "1234"); // NEW
+    const planting = appendChild(harness.module, makeXmlCell(harness.document, "admin-planting-fit", { tiler_group: "1" })); // NEW
+    const generatedTile = makeXmlCell(harness.document, "generated-tile", { plant_tiler: "1", auto: "1", tile_r: "0", tile_c: "0" }); // NEW
+    let undone = false; // NEW
+    harness.model.fireChange({ // NEW
+        changes: [ // NEW
+            { constructor: { name: "mxChildChange" }, child: planting, parent: harness.module }, // NEW
+            { constructor: { name: "mxChildChange" }, child: generatedTile } // NEW
+        ], // NEW
+        undo() { undone = true; } // NEW
+    }); // NEW
+    assert.equal(undone, false); // NEW
+}); // NEW
+
 test("grower grant creates and manages only owned planting groups", () => { // CHANGE
     const harness = loadUsersPlugin(); // NEW
     const users = harness.context.window.Trellis.users; // NEW
@@ -593,6 +634,138 @@ test("grower grant creates and manages only owned planting groups", () => { // C
     assert.equal(bobPlanting.getAttribute(users.attrs.owner), bob.id); // NEW
     assert.equal(users.canManagePlanting(bobPlanting), true); // NEW
     assert.equal(users.canManageAccess(bobPlanting), false); // NEW
+}); // NEW
+
+test("grower planting creation allows initialization edits and generated plant tile churn", () => { // CHANGE
+    const harness = loadUsersPlugin(); // NEW
+    const users = harness.context.window.Trellis.users; // NEW
+    users.enableUsers("Alice", "1234"); // NEW
+    harness.module.style = "module=1"; // NEW
+    users.stampCreatedOwner(harness.module); // NEW
+    const bob = users.createUser("Bob", "5678", false).user; // NEW
+    assert.equal(users.setScopeGrant(harness.module, { userId: bob.id, preset: "grower" }).ok, true); // NEW
+    users.logout(); // NEW
+    assert.equal(users.login("Bob", "5678").ok, true); // NEW
+    const planting = appendChild(harness.module, makeXmlCell(harness.document, "bob-planting-fit", { tiler_group: "1" })); // NEW
+    const previousValue = planting.value.cloneNode(true); // NEW
+    planting.setAttribute("label", "?"); // NEW
+    const generatedTile = appendChild(planting, makeXmlCell(harness.document, "bob-generated-tile", { plant_tiler: "1", auto: "1", tile_r: "0", tile_c: "0" })); // CHANGE
+    const previousTileValue = generatedTile.value.cloneNode(true); // NEW
+    generatedTile.setAttribute("label", "?"); // NEW
+    let undone = false; // NEW
+    harness.model.fireChange({ // NEW
+        changes: [ // NEW
+            { constructor: { name: "mxChildChange" }, child: planting, parent: harness.module }, // NEW
+            { constructor: { name: "mxValueChange" }, cell: planting, previous: previousValue, value: planting.value }, // NEW
+            { constructor: { name: "mxChildChange" }, child: generatedTile, parent: planting }, // CHANGE
+            { constructor: { name: "mxGeometryChange" }, cell: generatedTile }, // NEW
+            { constructor: { name: "mxValueChange" }, cell: generatedTile, previous: previousTileValue, value: generatedTile.value }, // NEW
+            { constructor: { name: "mxStyleChange" }, cell: generatedTile } // NEW
+        ], // NEW
+        undo() { undone = true; } // NEW
+    }); // NEW
+    assert.equal(undone, false); // NEW
+    assert.equal(planting.getAttribute(users.attrs.owner), bob.id); // NEW
+}); // NEW
+
+test("grower cannot create or delete garden beds in a granted module", () => { // NEW
+    const harness = loadUsersPlugin(); // NEW
+    const users = harness.context.window.Trellis.users; // NEW
+    users.enableUsers("Alice", "1234"); // NEW
+    harness.module.style = "module=1"; // NEW
+    users.stampCreatedOwner(harness.module); // NEW
+    const bob = users.createUser("Bob", "5678", false).user; // NEW
+    assert.equal(users.setScopeGrant(harness.module, { userId: bob.id, preset: "grower" }).ok, true); // NEW
+    users.logout(); // NEW
+    assert.equal(users.login("Bob", "5678").ok, true); // NEW
+    const createdBed = appendChild(harness.module, makeXmlCell(harness.document, "grower-created-bed", { garden_bed: "1" })); // NEW
+    let undone = false; // NEW
+    harness.model.fireChange({ changes: [{ constructor: { name: "mxChildChange" }, child: createdBed, parent: harness.module }], undo() { undone = true; } }); // NEW
+    assert.equal(undone, true); // NEW
+    const existingBed = appendChild(harness.module, makeXmlCell(harness.document, "grower-existing-bed", { garden_bed: "1" })); // NEW
+    existingBed.parent = null; // NEW
+    undone = false; // NEW
+    harness.model.fireChange({ changes: [{ constructor: { name: "mxChildChange" }, child: existingBed, previous: harness.module }], undo() { undone = true; } }); // NEW
+    assert.equal(undone, true); // NEW
+}); // NEW
+
+test("generated plant tile churn still requires a valid planting context", () => { // NEW
+    const harness = loadUsersPlugin(); // NEW
+    const users = harness.context.window.Trellis.users; // NEW
+    users.enableUsers("Alice", "1234"); // NEW
+    const generatedTile = makeXmlCell(harness.document, "orphan-generated-tile", { plant_tiler: "1", auto: "1", tile_r: "0", tile_c: "0" }); // NEW
+    let undone = false; // NEW
+    harness.model.fireChange({ changes: [{ constructor: { name: "mxChildChange" }, child: generatedTile }], undo() { undone = true; } }); // NEW
+    assert.equal(undone, true); // NEW
+}); // NEW
+
+test("generated plant tile initialization rejects outside the created planting context", () => { // NEW
+    const harness = loadUsersPlugin(); // NEW
+    const users = harness.context.window.Trellis.users; // NEW
+    users.enableUsers("Alice", "1234"); // NEW
+    harness.module.style = "module=1"; // NEW
+    users.stampCreatedOwner(harness.module); // NEW
+    const existingPlanting = appendChild(harness.module, makeXmlCell(harness.document, "existing-planting", { tiler_group: "1" })); // NEW
+    const generatedTile = appendChild(existingPlanting, makeXmlCell(harness.document, "existing-generated-tile", { plant_tiler: "1", auto: "1", tile_r: "0", tile_c: "0" })); // NEW
+    const bob = users.createUser("Bob", "5678", false).user; // NEW
+    assert.equal(users.setScopeGrant(harness.module, { userId: bob.id, preset: "grower" }).ok, true); // NEW
+    users.logout(); // NEW
+    assert.equal(users.login("Bob", "5678").ok, true); // NEW
+    let undone = false; // NEW
+    harness.model.fireChange({ changes: [{ constructor: { name: "mxGeometryChange" }, cell: generatedTile }], undo() { undone = true; } }); // NEW
+    assert.equal(undone, true); // NEW
+}); // NEW
+
+test("created planting context does not allow manual plant tile initialization", () => { // NEW
+    const harness = loadUsersPlugin(); // NEW
+    const users = harness.context.window.Trellis.users; // NEW
+    users.enableUsers("Alice", "1234"); // NEW
+    harness.module.style = "module=1"; // NEW
+    users.stampCreatedOwner(harness.module); // NEW
+    const bob = users.createUser("Bob", "5678", false).user; // NEW
+    assert.equal(users.setScopeGrant(harness.module, { userId: bob.id, preset: "grower" }).ok, true); // NEW
+    users.logout(); // NEW
+    assert.equal(users.login("Bob", "5678").ok, true); // NEW
+    const planting = appendChild(harness.module, makeXmlCell(harness.document, "manual-tile-planting", { tiler_group: "1" })); // NEW
+    const manualTile = appendChild(planting, makeXmlCell(harness.document, "manual-child-tile", { plant_tiler: "1", auto: "0" })); // NEW
+    let undone = false; // NEW
+    harness.model.fireChange({ // NEW
+        changes: [ // NEW
+            { constructor: { name: "mxChildChange" }, child: planting, parent: harness.module }, // NEW
+            { constructor: { name: "mxChildChange" }, child: manualTile, parent: planting }, // NEW
+            { constructor: { name: "mxGeometryChange" }, cell: manualTile } // NEW
+        ], // NEW
+        undo() { undone = true; } // NEW
+    }); // NEW
+    assert.equal(undone, true); // NEW
+}); // NEW
+
+test("planting context does not allow ordinary or manual orphan child changes", () => { // NEW
+    const harness = loadUsersPlugin(); // NEW
+    const users = harness.context.window.Trellis.users; // NEW
+    users.enableUsers("Alice", "1234"); // NEW
+    const ordinary = makeXmlCell(harness.document, "ordinary-orphan", { label: "Ordinary" }); // NEW
+    const manualTile = makeXmlCell(harness.document, "manual-tile", { plant_tiler: "1", auto: "0" }); // NEW
+    let undone = false; // NEW
+    const plantingA = appendChild(harness.module, makeXmlCell(harness.document, "admin-planting-ordinary", { tiler_group: "1" })); // NEW
+    harness.model.fireChange({ // NEW
+        changes: [ // NEW
+            { constructor: { name: "mxChildChange" }, child: plantingA, parent: harness.module }, // NEW
+            { constructor: { name: "mxChildChange" }, child: ordinary } // NEW
+        ], // NEW
+        undo() { undone = true; } // NEW
+    }); // NEW
+    assert.equal(undone, true); // NEW
+    undone = false; // NEW
+    const plantingB = appendChild(harness.module, makeXmlCell(harness.document, "admin-planting-manual", { tiler_group: "1" })); // NEW
+    harness.model.fireChange({ // NEW
+        changes: [ // NEW
+            { constructor: { name: "mxChildChange" }, child: plantingB, parent: harness.module }, // NEW
+            { constructor: { name: "mxChildChange" }, child: manualTile } // NEW
+        ], // NEW
+        undo() { undone = true; } // NEW
+    }); // NEW
+    assert.equal(undone, true); // NEW
 }); // NEW
 
 test("owner can transfer ownership to an active user", () => { // NEW
@@ -700,6 +873,157 @@ test("manager grant can manage access but cannot transfer ownership", () => { //
     assert.equal(users._test.changeAllowed({ constructor: { name: "mxCellAttributeChange" }, cell: harness.card, attribute: "label" }), true); // NEW
     assert.equal(users.setScopeGrant(harness.module, { userId: carol.id, preset: "viewer" }).ok, true); // NEW
     assert.equal(users.setOwner(harness.module, carol.id).ok, false); // NEW
+}); // NEW
+
+test("manage scope content implies content capabilities but not access management", () => { // NEW
+    const harness = loadUsersPlugin(); // NEW
+    const users = harness.context.window.Trellis.users; // NEW
+    assert.deepEqual(Array.from(users._test.normalizeCapabilities([users.capabilities.manageScopeContent], "viewer")), [ // NEW
+        users.capabilities.createPlantings, // NEW
+        users.capabilities.editTaskDetails, // NEW
+        users.capabilities.manageOwnPlantings, // NEW
+        users.capabilities.manageScopeContent, // NEW
+        users.capabilities.moveTasks // NEW
+    ]); // NEW
+    users.enableUsers("Alice", "1234"); // NEW
+    harness.module.style = "module=1"; // NEW
+    users.stampCreatedOwner(harness.module); // NEW
+    const board = appendChild(harness.module, makeXmlCell(harness.document, "scope-content-board", { board_key: "KANBAN_BOARD" })); // NEW
+    const card = appendChild(board, makeXmlCell(harness.document, "scope-content-card", { kanban_card: "1", title: "Task" })); // NEW
+    const bob = users.createUser("Bob", "5678", false).user; // NEW
+    assert.equal(users.setScopeGrant(harness.module, { userId: bob.id, capabilities: [users.capabilities.manageScopeContent] }).ok, true); // NEW
+    const grants = JSON.parse(harness.module.getAttribute(users.attrs.accessGrants)); // NEW
+    assert.deepEqual(grants[0].capabilities, [ // NEW
+        users.capabilities.createPlantings, // NEW
+        users.capabilities.editTaskDetails, // NEW
+        users.capabilities.manageOwnPlantings, // NEW
+        users.capabilities.manageScopeContent, // NEW
+        users.capabilities.moveTasks // NEW
+    ]); // NEW
+    users.logout(); // NEW
+    assert.equal(users.login("Bob", "5678").ok, true); // NEW
+    assert.equal(users.canCreatePlanting(harness.module), true); // NEW
+    assert.equal(users.canManagePlanting(appendChild(harness.module, makeXmlCell(harness.document, "scope-content-planting", { tiler_group: "1", [users.attrs.owner]: bob.id }))), true); // NEW
+    assert.equal(users.canMoveTask(card), true); // NEW
+    assert.equal(users.canEditTaskDetails(card), true); // NEW
+    assert.equal(users.canManageAccess(harness.module), false); // NEW
+}); // NEW
+
+test("manage scope content checkbox auto-checks implied capabilities", () => { // NEW
+    const harness = loadUsersPlugin(); // NEW
+    const users = harness.context.window.Trellis.users; // NEW
+    users.enableUsers("Alice", "1234"); // NEW
+    users.stampCreatedOwner(harness.module); // NEW
+    const bob = users.createUser("Bob", "5678", false).user; // NEW
+    assert.equal(users.setScopeGrant(harness.module, { userId: bob.id, preset: "viewer" }).ok, true); // NEW
+    harness.graph.setSelectionCell(harness.module); // NEW
+    harness.actions.trellisUsers.funct(); // NEW
+    const manageScope = checkboxByLabel(harness.document, "Manage scope content"); // NEW
+    assert.ok(manageScope); // NEW
+    manageScope.checked = true; // NEW
+    manageScope.dispatchEvent(new harness.context.window.Event("change", { bubbles: true })); // NEW
+    assert.equal(checkboxByLabel(harness.document, "Create plantings").checked, true); // NEW
+    assert.equal(checkboxByLabel(harness.document, "Manage own plantings").checked, true); // NEW
+    assert.equal(checkboxByLabel(harness.document, "Move tasks").checked, true); // NEW
+    assert.equal(checkboxByLabel(harness.document, "Edit task details").checked, true); // NEW
+    assert.equal(checkboxByLabel(harness.document, "Manage access").checked, false); // NEW
+    const grant = JSON.parse(harness.module.getAttribute(users.attrs.accessGrants))[0]; // NEW
+    assert.deepEqual(grant.capabilities, [ // NEW
+        users.capabilities.createPlantings, // NEW
+        users.capabilities.editTaskDetails, // NEW
+        users.capabilities.manageOwnPlantings, // NEW
+        users.capabilities.manageScopeContent, // NEW
+        users.capabilities.moveTasks // NEW
+    ]); // NEW
+}); // NEW
+
+test("child access rows visibly show inherited manage scope content without writing grants", () => { // NEW
+    const harness = loadUsersPlugin(); // NEW
+    const users = harness.context.window.Trellis.users; // NEW
+    users.enableUsers("Alice", "1234"); // NEW
+    harness.module.style = "module=1"; // NEW
+    users.stampCreatedOwner(harness.module); // NEW
+    const child = appendChild(harness.module, makeXmlCell(harness.document, "inherited-child", { label: "Child Cell" })); // NEW
+    const bob = users.createUser("Bob", "5678", false).user; // NEW
+    assert.equal(users.setScopeGrant(harness.module, { userId: bob.id, capabilities: [users.capabilities.manageScopeContent] }).ok, true); // NEW
+    const parentGrantsBefore = harness.module.getAttribute(users.attrs.accessGrants); // NEW
+    const writesBefore = harness.model.setValueCalls || 0; // NEW
+    harness.graph.setSelectionCell(child); // NEW
+    harness.actions.trellisUsers.funct(); // NEW
+    const row = accessRowByUserId(harness.document, bob.id); // NEW
+    assert.ok(row); // NEW
+    assert.match(row.textContent, /Inherited from Module: Module/); // NEW
+    assert.doesNotMatch(row.textContent, /Granted/); // NEW
+    assert.equal(checkboxByLabelIn(row, "Manage scope content").checked, true); // NEW
+    assert.equal(checkboxByLabelIn(row, "Create plantings").checked, true); // NEW
+    assert.equal(checkboxByLabelIn(row, "Manage own plantings").checked, true); // NEW
+    assert.equal(checkboxByLabelIn(row, "Move tasks").checked, true); // NEW
+    assert.equal(checkboxByLabelIn(row, "Edit task details").checked, true); // NEW
+    assert.equal(checkboxByLabelIn(row, "Manage access").checked, false); // NEW
+    assert.equal(child.getAttribute(users.attrs.accessGrants), null); // NEW
+    assert.equal(harness.module.getAttribute(users.attrs.accessGrants), parentGrantsBefore); // NEW
+    assert.equal(harness.model.setValueCalls || 0, writesBefore); // NEW
+}); // NEW
+
+test("editing inherited child access creates a direct child grant and leaves parent grants unchanged", () => { // NEW
+    const harness = loadUsersPlugin(); // NEW
+    const users = harness.context.window.Trellis.users; // NEW
+    users.enableUsers("Alice", "1234"); // NEW
+    harness.module.style = "module=1"; // NEW
+    users.stampCreatedOwner(harness.module); // NEW
+    const child = appendChild(harness.module, makeXmlCell(harness.document, "edited-inherited-child", { label: "Child Cell" })); // NEW
+    const bob = users.createUser("Bob", "5678", false).user; // NEW
+    assert.equal(users.setScopeGrant(harness.module, { userId: bob.id, capabilities: [users.capabilities.manageScopeContent] }).ok, true); // NEW
+    const parentGrantsBefore = harness.module.getAttribute(users.attrs.accessGrants); // NEW
+    harness.graph.setSelectionCell(child); // NEW
+    harness.actions.trellisUsers.funct(); // NEW
+    const row = accessRowByUserId(harness.document, bob.id); // NEW
+    checkboxByLabelIn(row, "Manage access").checked = true; // NEW
+    checkboxByLabelIn(row, "Manage access").dispatchEvent(new harness.context.window.Event("change", { bubbles: true })); // NEW
+    assert.equal(harness.module.getAttribute(users.attrs.accessGrants), parentGrantsBefore); // NEW
+    const childGrant = JSON.parse(child.getAttribute(users.attrs.accessGrants))[0]; // NEW
+    assert.equal(childGrant.userId, bob.id); // NEW
+    assert.equal(childGrant.capabilities.includes(users.capabilities.manageScopeContent), true); // NEW
+    assert.equal(childGrant.capabilities.includes(users.capabilities.manageAccess), true); // NEW
+}); // NEW
+
+test("direct child grants remain distinguishable from inherited parent access", () => { // NEW
+    const harness = loadUsersPlugin(); // NEW
+    const users = harness.context.window.Trellis.users; // NEW
+    users.enableUsers("Alice", "1234"); // NEW
+    harness.module.style = "module=1"; // NEW
+    users.stampCreatedOwner(harness.module); // NEW
+    const child = appendChild(harness.module, makeXmlCell(harness.document, "direct-and-inherited-child", { label: "Child Cell" })); // NEW
+    const bob = users.createUser("Bob", "5678", false).user; // NEW
+    assert.equal(users.setScopeGrant(harness.module, { userId: bob.id, capabilities: [users.capabilities.manageScopeContent] }).ok, true); // NEW
+    assert.equal(users.setScopeGrant(child, { userId: bob.id, preset: "viewer" }).ok, true); // NEW
+    harness.graph.setSelectionCell(child); // NEW
+    harness.actions.trellisUsers.funct(); // NEW
+    const row = accessRowByUserId(harness.document, bob.id); // NEW
+    assert.match(row.textContent, /Granted/); // NEW
+    assert.match(row.textContent, /Inherited from Module: Module/); // NEW
+    assert.equal(checkboxByLabelIn(row, "Manage scope content").checked, true); // NEW
+}); // NEW
+
+test("manager can create and delete garden beds in a granted module", () => { // NEW
+    const harness = loadUsersPlugin(); // NEW
+    const users = harness.context.window.Trellis.users; // NEW
+    users.enableUsers("Alice", "1234"); // NEW
+    harness.module.style = "module=1"; // NEW
+    users.stampCreatedOwner(harness.module); // NEW
+    const bob = users.createUser("Bob", "5678", false).user; // NEW
+    assert.equal(users.setScopeGrant(harness.module, { userId: bob.id, preset: "manager" }).ok, true); // NEW
+    users.logout(); // NEW
+    assert.equal(users.login("Bob", "5678").ok, true); // NEW
+    const createdBed = appendChild(harness.module, makeXmlCell(harness.document, "manager-created-bed", { garden_bed: "1" })); // NEW
+    let undone = false; // NEW
+    harness.model.fireChange({ changes: [{ constructor: { name: "mxChildChange" }, child: createdBed, parent: harness.module }], undo() { undone = true; } }); // NEW
+    assert.equal(undone, false); // NEW
+    const existingBed = appendChild(harness.module, makeXmlCell(harness.document, "manager-existing-bed", { garden_bed: "1" })); // NEW
+    existingBed.parent = null; // NEW
+    undone = false; // NEW
+    harness.model.fireChange({ changes: [{ constructor: { name: "mxChildChange" }, child: existingBed, previous: harness.module }], undo() { undone = true; } }); // NEW
+    assert.equal(undone, false); // NEW
 }); // NEW
 
 test("linked role cards imply task access for reciprocal boards and fail closed when ambiguous", () => { // NEW

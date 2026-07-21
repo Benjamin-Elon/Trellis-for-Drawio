@@ -646,6 +646,64 @@ test("Trellis splash eats percentage margins before compact mode and removes its
 	assert.equal(closeCalls, 1); // NEW
 }); // NEW
 
+test("Trellis splash hides top chrome only while the splash dialog remains active", () => { // NEW
+	const { dom, dialog, context, editorUi } = loadSplashDialog({ savedRecord: makeSavedRecord() }); // NEW
+	const splashCss = fs.readFileSync(splashCssPath, "utf8"); // NEW
+	const editorRoot = dom.window.document.createElement("div"); // NEW
+	const menubarContainer = dom.window.document.createElement("div"); // NEW
+	const toolbarContainer = dom.window.document.createElement("div"); // NEW
+	const sidebarContainer = dom.window.document.createElement("div"); // NEW
+	const outerContainer = dom.window.document.createElement("div"); // NEW
+	const backdrop = dom.window.document.createElement("div"); // NEW
+	let bounds = { left: 0, top: 98, width: 1536, height: 718 }; // NEW
+	let boundsReads = 0; // NEW
+	let closeShouldFail = true; // NEW
+	let closeCalls = 0; // NEW
+
+	editorRoot.className = "geEditor"; // NEW
+	menubarContainer.className = "geMenubarContainer"; // NEW
+	toolbarContainer.className = "geToolbarContainer"; // NEW
+	sidebarContainer.className = "geSidebarContainer"; // NEW
+	editorRoot.appendChild(menubarContainer); // NEW
+	editorRoot.appendChild(toolbarContainer); // NEW
+	editorRoot.appendChild(sidebarContainer); // NEW
+	editorUi.container = editorRoot; // NEW
+	editorUi.diagramContainer = { // NEW
+		getBoundingClientRect() { // NEW
+			boundsReads++; // NEW
+			return bounds; // NEW
+		} // NEW
+	}; // NEW
+	const outerDialog = { // NEW
+		container: outerContainer, // NEW
+		bg: backdrop, // NEW
+		close() { // NEW
+			closeCalls++; // NEW
+			return closeShouldFail ? false : undefined; // NEW
+		} // NEW
+	}; // NEW
+
+	assert.match(splashCss, /\.geEditor\.trellis-splash-active > \.geMenubarContainer,\s*\/\* NEW \*\/\s*\.geEditor\.trellis-splash-active > \.geToolbarContainer[\s\S]*display: none !important/); // NEW
+	assert.doesNotMatch(splashCss, /\.geEditor\.trellis-splash-active > \.geSidebarContainer/); // NEW
+
+	context.window.TrellisSplashEnhancements.decorateOuterDialog(editorUi, dialog, outerDialog); // NEW
+	assert.equal(editorRoot.classList.contains("trellis-splash-active"), true); // NEW
+	assert.equal(outerDialog.close(), false); // NEW
+	assert.equal(editorRoot.classList.contains("trellis-splash-active"), true); // NEW
+	bounds = { left: 0, top: 98, width: 600, height: 500 }; // NEW
+	dom.window.dispatchEvent(new dom.window.Event("resize")); // NEW
+	assert.ok(boundsReads > 1); // NEW
+
+	closeShouldFail = false; // NEW
+	outerDialog.close(); // NEW
+	const readsAfterClose = boundsReads; // NEW
+	bounds = { left: 0, top: 98, width: 500, height: 400 }; // NEW
+	dom.window.dispatchEvent(new dom.window.Event("resize")); // NEW
+	assert.equal(editorRoot.classList.contains("trellis-splash-active"), false); // NEW
+	assert.equal(boundsReads, readsAfterClose); // NEW
+	assert.equal(closeCalls, 2); // NEW
+}); // NEW
+
 test("Trellis splash rejects unsafe background filenames and keeps the gradient fallback", () => { // NEW
     const { dom, dialog, context, editorUi } = loadSplashDialog(); // NEW
     const outerContainer = dom.window.document.createElement("div"); // NEW
@@ -714,8 +772,11 @@ test("Trellis splash assets and bootstrap wire the same enhancement into package
 
 	assert.match(enhancementSource, /Build systems that grow/); // NEW
 	assert.match(enhancementSource, /getTrellisSplashBackground/); // NEW
+	assert.match(enhancementSource, /trellis-splash-active/); // NEW
 	assert.match(splashCss, /trellis-splash-dialog\.trellis-splash-compact/); // CHANGE
 	assert.match(splashCss, /trellis-splash-backdrop::before/); // CHANGE
+	assert.match(splashCss, /\.geEditor\.trellis-splash-active > \.geMenubarContainer/); // NEW
+	assert.match(splashCss, /\.geEditor\.trellis-splash-active > \.geToolbarContainer/); // NEW
 	assert.match(splashCss, /\.trellis-splash-bg-image/); // NEW
 	assert.match(splashCss, /object-fit: cover/); // NEW
 	assert.match(splashCss, /\.trellis-splash-tagline[\s\S]*text-align: center/); // NEW

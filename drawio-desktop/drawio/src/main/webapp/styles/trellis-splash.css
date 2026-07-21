@@ -1,4 +1,9 @@
 /* Trellis Studio startup presentation. */
+.geEditor.trellis-splash-active > .geMenubarContainer, /* NEW */
+.geEditor.trellis-splash-active > .geToolbarContainer { /* NEW */
+	display: none !important; /* NEW */
+}
+
 .geBackground.trellis-splash-backdrop { /* NEW */
 	background: transparent !important; /* CHANGE */
 	opacity: 1 !important;

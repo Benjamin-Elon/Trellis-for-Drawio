@@ -1477,6 +1477,8 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
     const BOARD_LANE_Y = 28, BOARD_BOTTOM_PADDING = 10, FULL_LANE_MIN_H = TASK_LANE_MIN_HEIGHT; // CHANGE: one minimum for every non-day lane
     const WEEK_BOARD_TOP_MARGIN = 20; // NEW: replaces schedule-lane stackBorder so hour origin and resize math match
     const TASK_ACTION_OVERLAY_EXTRA_Y = 3; // CHANGE: nudges selected card/lane action overlays below handles
+    const TASK_ACTION_OVERLAY_EXTRA_X = 20; // CHANGE: shifts selected task action overlays 10 px to the right
+    const TASK_BOARD_HEADER_OVERLAY_EXTRA_X = 20; // CHANGE: shifts the board-level task controls 10 px right
     const SCHEDULE_CARD_HORIZONTAL_INSET = 10; // CHANGE: day lanes own card x and width with fixed side gutters
     const WORKFLOW_CARD_FILL = { TODO: '#F8CECC', DOING: '#FFF2CC', DONE: '#D5E8D4' }; // NEW
 
@@ -5488,22 +5490,23 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
         return bounds ? { x: bounds.x, y: bounds.y, width: bounds.right - bounds.x, height: bounds.bottom - bounds.y } : null; // CHANGE
     } // NEW
 
-    function positionDomOverlayFromBounds(element, bounds, below, above, extraY) { // CHANGE
+    function positionDomOverlayFromBounds(element, bounds, below, above, extraY, extraX) { // CHANGE
         if (!element || !bounds || !element.parentNode) return false; // CHANGE
         const left = bounds.x; // CHANGE
         const topBase = bounds.y; // CHANGE
         const yOffset = Number.isFinite(Number(extraY)) ? Number(extraY) : 0; // NEW
-        element.style.left = Math.max(0, Math.round(left)) + 'px'; // NEW
+        const xOffset = Number.isFinite(Number(extraX)) ? Number(extraX) : 0; // NEW
+        element.style.left = Math.max(0, Math.round(left + xOffset)) + 'px'; // CHANGE
         if (below) element.style.top = Math.max(0, Math.round(topBase + bounds.height + 6 + yOffset)) + 'px'; // CHANGE
         else if (above) element.style.top = Math.max(0, Math.round(topBase - element.offsetHeight - 6 - yOffset)) + 'px'; // CHANGE
         else element.style.top = Math.max(0, Math.round(topBase + yOffset)) + 'px'; // CHANGE
         return true; // NEW
     } // NEW
 
-    function positionDomOverlayFromCellState(element, cell, below, above, extraY) { // CHANGE
+    function positionDomOverlayFromCellState(element, cell, below, above, extraY, extraX) { // CHANGE
         const state = graph.view && graph.view.getState ? graph.view.getState(cell) : null; // NEW
         const hostBounds = getStateHostBounds(cell, state, element && element.parentNode); // NEW
-        return positionDomOverlayFromBounds(element, hostBounds, below, above, extraY); // CHANGE
+        return positionDomOverlayFromBounds(element, hostBounds, below, above, extraY, extraX); // CHANGE
     } // NEW
 
     function registerTaskOverlayGestureElement(element) { // NEW
@@ -6153,7 +6156,7 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
             endWeekBtn.style.display = mode === 'WEEK' ? '' : 'none'; // NEW
             editHoursBtn.style.display = hasSelectedScheduleLane ? '' : 'none'; // NEW
             addBreakBtn.style.display = selectedScheduleDayOpen ? '' : 'none'; // CHANGE
-            if (!positionDomOverlayFromCellState(bar, board, false, true)) bar.style.display = 'none'; // CHANGE
+            if (!positionDomOverlayFromCellState(bar, board, false, true, 0, TASK_BOARD_HEADER_OVERLAY_EXTRA_X)) bar.style.display = 'none'; // CHANGE
         } // NEW
 
         const requestRefresh = createDeferredTaskOverlayRefresh(refresh); // CHANGE
@@ -6194,6 +6197,7 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
             if (model.getParent && !model.getParent(board)) return false; // NEW
             if (model.isVisible && model.isVisible(board) === false) return false; // NEW
             if (graph.isCellVisible && graph.isCellVisible(board) === false) return false; // NEW
+            if (graph.isCellCollapsed && graph.isCellCollapsed(board)) return false; // CHANGE: hide week hours overlay while the task board is collapsed
             return true; // NEW
         } // NEW
 
@@ -6447,7 +6451,7 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
             openDayBtn.style.display = hasVisibleCards || !isClosed ? 'none' : ''; // NEW
             closeDayBtn.style.display = hasVisibleCards || isClosed ? 'none' : ''; // NEW
             overlay.style.display = 'flex'; // NEW
-            if (!positionDomOverlayFromCellState(overlay, ctx.lane, true, false, TASK_ACTION_OVERLAY_EXTRA_Y)) overlay.style.display = 'none'; // CHANGE
+            if (!positionDomOverlayFromCellState(overlay, ctx.lane, true, false, TASK_ACTION_OVERLAY_EXTRA_Y, TASK_ACTION_OVERLAY_EXTRA_X)) overlay.style.display = 'none'; // CHANGE
         } // NEW
 
         const requestRefresh = createDeferredTaskOverlayRefresh(refresh); // NEW
@@ -6493,7 +6497,7 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
 
         function positionAssignmentPickerFromBounds(picker, bounds) { // NEW
             if (!picker || !bounds) return false; // NEW
-            picker.style.left = Math.max(0, Math.round(bounds.x)) + 'px'; // NEW
+            picker.style.left = Math.max(0, Math.round(bounds.x + TASK_ACTION_OVERLAY_EXTRA_X)) + 'px'; // CHANGE
             picker.style.top = Math.max(0, Math.round(bounds.y + bounds.height + 6 + TASK_ACTION_OVERLAY_EXTRA_Y)) + 'px'; // NEW
             return true; // NEW
         } // NEW
@@ -6726,7 +6730,7 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
             allocateBtn.style.display = selectionIsOnlyStagedWorkflowCards(cards) ? '' : 'none'; // NEW
             resetBtn.style.display = single ? (canEditCardDates(card) && hasCardDateOverride(card) ? '' : 'none') : (cards.some(hasCardDateOverride) ? '' : 'none'); // CHANGE
             clearBtn.style.display = single ? (getCardNote(card) ? '' : 'none') : (cards.some(getCardNote) ? '' : 'none'); // CHANGE
-            if (!positionDomOverlayFromBounds(overlay, bounds, true, false, TASK_ACTION_OVERLAY_EXTRA_Y)) overlay.style.display = 'none'; // CHANGE
+            if (!positionDomOverlayFromBounds(overlay, bounds, true, false, TASK_ACTION_OVERLAY_EXTRA_Y, TASK_ACTION_OVERLAY_EXTRA_X)) overlay.style.display = 'none'; // CHANGE
         } // NEW
 
         const requestRefresh = createDeferredTaskOverlayRefresh(refresh); // CHANGE

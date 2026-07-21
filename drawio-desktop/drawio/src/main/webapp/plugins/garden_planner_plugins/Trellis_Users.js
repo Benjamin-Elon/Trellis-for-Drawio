@@ -302,10 +302,21 @@ Draw.loadPlugin(function (ui) {
         return ACCESS_PRESETS.indexOf(preset) >= 0 ? preset : "viewer"; // NEW
     } // NEW
 
+    function expandImpliedCapabilities(capabilities) { // NEW
+        const caps = new Set((Array.isArray(capabilities) ? capabilities : []).map(String)); // NEW
+        if (caps.has(CAP_MANAGE_SCOPE_CONTENT)) { // NEW
+            caps.add(CAP_CREATE_PLANTINGS); // NEW
+            caps.add(CAP_MANAGE_OWN_PLANTINGS); // NEW
+            caps.add(CAP_MOVE_TASKS); // NEW
+            caps.add(CAP_EDIT_TASK_DETAILS); // NEW
+        } // NEW
+        return Array.from(caps); // NEW
+    } // NEW
+
     function normalizeCapabilities(capabilities, preset) { // NEW
         const base = Array.isArray(capabilities) ? capabilities : PRESET_CAPABILITIES[normalizePreset(preset)]; // NEW
         const allowed = new Set(DOMAIN_CAPABILITIES); // NEW
-        return Array.from(new Set((base || []).map(String).filter(function (capability) { return allowed.has(capability); }))).sort(); // NEW
+        return Array.from(new Set(expandImpliedCapabilities(base || []).filter(function (capability) { return allowed.has(capability); }))).sort(); // CHANGE
     } // NEW
 
     function normalizeGrant(grant) { // NEW
@@ -707,6 +718,11 @@ Draw.loadPlugin(function (ui) {
         return !!cell && (getAttr(cell, "tiler_group") === "1" || styleFlag(cell, "tiler_group")); // NEW
     } // NEW
 
+    function isGeneratedPlantTile(cell) { // NEW
+        if (!cell || getAttr(cell, "plant_tiler") !== "1") return false; // NEW
+        return getAttr(cell, "auto") === "1" || !!getAttr(cell, "tile_r") || !!getAttr(cell, "tile_c"); // NEW
+    } // NEW
+
     function isTaskBoard(cell) { // NEW
         const key = String(getAttr(cell, "board_key") || ""); // NEW
         return key === "KANBAN_BOARD" || key === "MAIN_KANBAN_BOARD"; // NEW
@@ -785,7 +801,7 @@ Draw.loadPlugin(function (ui) {
         if (user && isOwnerOfNearestAccessScope(cell, user.id)) DOMAIN_CAPABILITIES.forEach(function (capability) { caps.add(capability); }); // CHANGE
         if (user) directCapabilitiesForCell(cell, user.id).forEach(function (capability) { caps.add(capability); }); // NEW
         if (user && roleLinkedBoardGrantsForUser(user.id, cell).length) PRESET_CAPABILITIES.task.forEach(function (capability) { caps.add(capability); }); // NEW
-        return Array.from(caps).sort(); // NEW
+        return normalizeCapabilities(Array.from(caps), "viewer"); // CHANGE
     } // NEW
 
     function hasCapability(cell, capability) { // NEW
@@ -886,6 +902,10 @@ Draw.loadPlugin(function (ui) {
         return null;
     }
 
+    function nearestInheritedAccessGrant(cell, userId) { // NEW
+        return nearestAccessGrant(parentOf(cell), userId); // NEW
+    } // NEW
+
     function isOwnerOfNearestScope(cell, userId) {
         const owner = nearestOwnedAncestor(cell);
         return !!(owner && owner.ownerUserId === userId);
@@ -932,7 +952,7 @@ Draw.loadPlugin(function (ui) {
         if (user.admin) return true; // NEW
         if (isOwnerOfNearestScope(cell, user.id)) return true; // NEW
         if (canManagePlanting(cell)) return true; // NEW
-        return !!(previousParent && isOwnerOfNearestScope(previousParent, user.id)); // NEW
+        return !!(previousParent && (isOwnerOfNearestScope(previousParent, user.id) || hasCapability(previousParent, CAP_MANAGE_SCOPE_CONTENT))); // CHANGE
     } // NEW
 
     function canMoveCell(cell) { // NEW
@@ -1052,6 +1072,7 @@ Draw.loadPlugin(function (ui) {
         const owner = nearestOwnedAncestor(cell);
         const grants = getScopeGrants(cell); // CHANGE
         const current = currentUser(); // NEW
+        const currentInheritedGrant = current ? nearestInheritedAccessGrant(cell, current.id) : null; // NEW
         return {
             ownerUserId: owner && owner.ownerUserId || "",
             ownerCellId: owner && owner.cell && owner.cell.id || "",
@@ -1060,6 +1081,7 @@ Draw.loadPlugin(function (ui) {
             directGrants: grants, // NEW
             roleDerivedTask: !!(current && roleLinkedBoardGrantsForUser(current.id, cell).length), // NEW
             effectiveCapabilities: current ? effectiveCapabilitiesForCell(cell, current.id) : [], // NEW
+            inheritedAccessSource: currentInheritedGrant ? scopeSummaryForCell(currentInheritedGrant.cell) : null, // NEW
             effectiveOpen: !!nearestAccessGrant(cell, null),
             canEdit: canEditCell(cell),
             canAdd: canAddCell(cell),
@@ -1546,7 +1568,79 @@ Draw.loadPlugin(function (ui) {
         }); // NEW
     } // NEW
 
-    function changeAllowed(change) {
+    function isOrphanGeneratedPlantTileChildChange(change) { // NEW
+        const name = change && change.constructor && change.constructor.name; // NEW
+        if (name !== "mxChildChange") return false; // NEW
+        if (currentParentOfChange(change) || previousParentOfChange(change)) return false; // NEW
+        return isGeneratedPlantTile(cellFromChange(change)); // NEW
+    } // NEW
+
+    function cellStableId(cell) { // NEW
+        return cell && (cell.id || (typeof cell.getId === "function" && cell.getId())) || ""; // NEW
+    } // NEW
+
+    function collectAllowedCreatedPlantingIds(changes) { // NEW
+        const ids = new Set(); // NEW
+        (Array.isArray(changes) ? changes : []).forEach(function (change) { // NEW
+            const name = change && change.constructor && change.constructor.name; // NEW
+            const cell = cellFromChange(change); // NEW
+            if (name !== "mxChildChange" || !cell || !isTilerGroup(cell)) return; // NEW
+            const currentParent = currentParentOfChange(change); // NEW
+            const previousParent = previousParentOfChange(change); // NEW
+            if (currentParent && !previousParent && canCreatePlanting(currentParent)) ids.add(cellStableId(cell)); // NEW
+        }); // NEW
+        return ids; // NEW
+    } // NEW
+
+    function isCreatedPlantingInContext(cell, context) { // NEW
+        const ids = context && context.createdPlantingIds; // NEW
+        return !!(cell && isTilerGroup(cell) && ids && ids.has(cellStableId(cell))); // NEW
+    } // NEW
+
+    function isCreatedPlantingInitializationChange(change, context) { // NEW
+        const name = change && change.constructor && change.constructor.name; // NEW
+        if (name !== "mxCellAttributeChange" && name !== "mxValueChange" && name !== "mxStyleChange" && name !== "mxGeometryChange" && name !== "mxCollapseChange" && name !== "mxVisibleChange") return false; // NEW
+        return isCreatedPlantingInContext(cellFromChange(change), context); // NEW
+    } // NEW
+
+    function nearestCreatedPlantingForGeneratedTile(cell, context) { // NEW
+        if (!isGeneratedPlantTile(cell)) return null; // NEW
+        const planting = nearestPlanting(cell); // NEW
+        return isCreatedPlantingInContext(planting, context) ? planting : null; // NEW
+    } // NEW
+
+    function isGeneratedPlantTileInitializationChange(change, context) { // NEW
+        const name = change && change.constructor && change.constructor.name; // NEW
+        if (name !== "mxValueChange" && name !== "mxStyleChange" && name !== "mxGeometryChange" && name !== "mxCollapseChange" && name !== "mxVisibleChange") return false; // NEW
+        return !!nearestCreatedPlantingForGeneratedTile(cellFromChange(change), context); // NEW
+    } // NEW
+
+    function plantingContextAllowsGeneratedTileChurn(change) { // NEW
+        const name = change && change.constructor && change.constructor.name; // NEW
+        const cell = cellFromChange(change); // NEW
+        if (!name || !cell) return false; // NEW
+        if (change && change.__trellisUsersActorStamp) return false; // NEW
+        if (isOrphanGeneratedPlantTileChildChange(change)) return false; // NEW
+        if (name === "mxChildChange") { // NEW
+            const currentParent = currentParentOfChange(change); // NEW
+            const previousParent = previousParentOfChange(change); // NEW
+            if (currentParent && !previousParent && isTilerGroup(cell)) return canCreatePlanting(currentParent); // NEW
+            if (nearestPlanting(cell)) return canManagePlanting(cell); // NEW
+            return false; // NEW
+        } // NEW
+        return nearestPlanting(cell) ? canManagePlanting(cell) : false; // NEW
+    } // NEW
+
+    function editPermissionContext(changes) { // NEW
+        const source = Array.isArray(changes) ? changes : []; // NEW
+        const createdPlantingIds = collectAllowedCreatedPlantingIds(source); // NEW
+        return { // NEW
+            createdPlantingIds, // NEW
+            allowGeneratedPlantTileChurn: createdPlantingIds.size > 0 || source.some(plantingContextAllowsGeneratedTileChurn) // CHANGE
+        }; // NEW
+    } // NEW
+
+    function changeAllowed(change, context) { // CHANGE
         if (change && change.__trellisUsersActorStamp) return true; // NEW
         const name = change && change.constructor && change.constructor.name;
         const cell = cellFromChange(change);
@@ -1557,7 +1651,9 @@ Draw.loadPlugin(function (ui) {
         if (name === "mxChildChange") {
             const currentParent = currentParentOfChange(change);
             const previousParent = previousParentOfChange(change);
+            if (!currentParent && !previousParent && isGeneratedPlantTile(cell)) return !!(context && context.allowGeneratedPlantTileChurn); // NEW
             if (currentParent && !previousParent && isTilerGroup(cell)) return canCreatePlanting(currentParent); // NEW
+            if (currentParent && !previousParent && isGeneratedPlantTile(cell) && isCreatedPlantingInContext(currentParent, context)) return true; // NEW
             if (currentParent && previousParent && currentParent !== previousParent && isTaskCard(cell)) return canMoveTask(cell); // NEW
             if (currentParent && previousParent && currentParent === previousParent && isTaskCard(cell)) return canMoveTask(cell); // NEW
             if (currentParent && !canAddCell(currentParent)) return false;
@@ -1570,6 +1666,8 @@ Draw.loadPlugin(function (ui) {
             if (changedAttributeNames(change).some(function (attr) { return TASK_ASSIGNMENT_ATTRS.has(attr); })) return hasCapability(cell, CAP_MANAGE_SCOPE_CONTENT); // NEW
             return isTaskDetailOnlyChange(change) ? canEditTaskDetails(cell) : hasCapability(cell, CAP_MANAGE_SCOPE_CONTENT); // NEW
         } // NEW
+        if (isCreatedPlantingInitializationChange(change, context)) return true; // NEW
+        if (isGeneratedPlantTileInitializationChange(change, context)) return true; // NEW
         if (name === "mxCellAttributeChange") { // NEW
             if (nearestPlanting(cell)) return canManagePlanting(cell); // NEW
             return hasCapability(cell, CAP_MANAGE_SCOPE_CONTENT); // NEW
@@ -1607,8 +1705,9 @@ Draw.loadPlugin(function (ui) {
         const changes = edit && edit.changes || [];
         if (!changes.length) return;
         if (!isLoggedIn()) { rejectEdit(edit, "Log in before editing this diagram."); return; }
+        const permissionContext = editPermissionContext(changes); // NEW
         for (let i = 0; i < changes.length; i++) {
-            if (!changeAllowed(changes[i])) {
+            if (!changeAllowed(changes[i], permissionContext)) { // CHANGE
                 logDeniedChange(changes[i], i); // NEW
                 rejectEdit(edit, "Change rejected by Trellis user permissions.");
                 return;
@@ -2374,27 +2473,58 @@ Draw.loadPlugin(function (ui) {
 
     function appendCapabilityCheckboxes(parent, grant, onChange) { // NEW
         const selected = new Set(normalizeCapabilities(grant && grant.capabilities, grant && grant.preset)); // NEW
+        const inputsByCapability = {}; // NEW
         const wrap = document.createElement("div"); // NEW
         wrap.style.cssText = "display:grid;grid-template-columns:1fr 1fr;gap:3px 8px;margin-top:4px;color:#374151;"; // NEW
+        function syncInputs() { // NEW
+            const normalized = new Set(normalizeCapabilities(Array.from(selected), "viewer")); // NEW
+            Object.keys(inputsByCapability).forEach(function (capability) { inputsByCapability[capability].checked = normalized.has(capability); }); // NEW
+        } // NEW
         DOMAIN_CAPABILITIES.forEach(function (capability) { // NEW
             const label = document.createElement("label"); // NEW
             label.style.cssText = "display:flex;gap:4px;align-items:center;font-size:11px;"; // NEW
             const input = document.createElement("input"); // NEW
             input.type = "checkbox"; // NEW
             input.checked = selected.has(capability); // NEW
+            inputsByCapability[capability] = input; // NEW
             input.addEventListener("change", function () { // NEW
                 if (input.checked) selected.add(capability); else selected.delete(capability); // NEW
-                onChange(Array.from(selected).sort()); // NEW
+                const normalized = normalizeCapabilities(Array.from(selected), "viewer"); // NEW
+                selected.clear(); // NEW
+                normalized.forEach(function (capability) { selected.add(capability); }); // NEW
+                syncInputs(); // NEW
+                onChange(normalized); // CHANGE
             }); // NEW
             label.appendChild(input); // NEW
             label.appendChild(document.createTextNode(capabilityLabel(capability))); // NEW
             wrap.appendChild(label); // NEW
         }); // NEW
+        syncInputs(); // NEW
         parent.appendChild(wrap); // NEW
     } // NEW
 
     function grantForUser(summary, userId) { // NEW
         return (summary.directGrants || []).find(function (grant) { return grant.userId === userId; }) || { userId, preset: "viewer", capabilities: [] }; // NEW
+    } // NEW
+
+    function accessDisplayForUser(cell, summary, user) { // NEW
+        const directGrant = grantForUser(summary, user.id); // NEW
+        const directlyGranted = summary.directUserIds.indexOf(user.id) >= 0; // NEW
+        const inherited = nearestInheritedAccessGrant(cell, user.id); // NEW
+        const effectiveCapabilities = effectiveCapabilitiesForCell(cell, user.id); // NEW
+        return { // NEW
+            userId: user.id, // NEW
+            directGrant, // NEW
+            directlyGranted, // NEW
+            inheritedGrant: inherited ? publicGrant(inherited.grant) : null, // NEW
+            inheritedSource: inherited ? scopeSummaryForCell(inherited.cell) : null, // NEW
+            preset: directlyGranted ? directGrant.preset : (inherited && inherited.grant ? normalizePreset(inherited.grant.preset) : directGrant.preset), // NEW
+            capabilities: effectiveCapabilities // NEW
+        }; // NEW
+    } // NEW
+
+    function inheritedLabel(source) { // NEW
+        return source ? "Inherited from " + titleCaseScopeType(source.type) + ": " + source.label : ""; // NEW
     } // NEW
 
     function appendScopeSummary(parent, summaries) { // NEW
@@ -2415,6 +2545,15 @@ Draw.loadPlugin(function (ui) {
         const badge = document.createElement("span"); // NEW
         badge.textContent = "Granted"; // NEW
         badge.style.cssText = "display:inline-block;margin-left:6px;padding:1px 5px;border:1px solid #9CA3AF;border-radius:3px;color:#374151;font-size:10px;line-height:14px;"; // NEW
+        parent.appendChild(badge); // NEW
+    } // NEW
+
+    function appendInheritedBadge(parent, source) { // NEW
+        const label = inheritedLabel(source); // NEW
+        if (!label) return; // NEW
+        const badge = document.createElement("span"); // NEW
+        badge.textContent = label; // NEW
+        badge.style.cssText = "display:inline-block;margin-left:6px;padding:1px 5px;border:1px solid #BFDBFE;border-radius:3px;color:#1D4ED8;background:#EFF6FF;font-size:10px;line-height:14px;"; // NEW
         parent.appendChild(badge); // NEW
     } // NEW
 
@@ -2506,6 +2645,12 @@ Draw.loadPlugin(function (ui) {
         caps.style.cssText = "color:#4B5563;margin:4px 0;"; // NEW
         caps.textContent = "Your effective access: " + (summary.effectiveCapabilities.length ? summary.effectiveCapabilities.map(capabilityLabel).join(", ") : "Viewer"); // NEW
         box.appendChild(caps); // NEW
+        if (summary.inheritedAccessSource) { // NEW
+            const inherited = document.createElement("div"); // NEW
+            inherited.style.cssText = "color:#2563EB;margin:4px 0;"; // NEW
+            inherited.textContent = inheritedLabel(summary.inheritedAccessSource); // NEW
+            box.appendChild(inherited); // NEW
+        } // NEW
         if (summary.roleDerivedTask) { // NEW
             const roleDerived = document.createElement("div"); // NEW
             roleDerived.style.cssText = "color:#2563EB;margin:4px 0;"; // NEW
@@ -2528,15 +2673,19 @@ Draw.loadPlugin(function (ui) {
             box.appendChild(empty); // NEW
         } // NEW
         visibleGrantUsers.forEach(function (user) { // CHANGE
-            const grant = grantForUser(summary, user.id); // NEW
-            const directlyGranted = summary.directUserIds.indexOf(user.id) >= 0; // NEW
+            const access = accessDisplayForUser(cell, summary, user); // NEW
+            const grant = { userId: user.id, preset: access.preset, capabilities: access.capabilities }; // NEW
+            const directlyGranted = access.directlyGranted; // NEW
             const row = document.createElement("div"); // NEW
+            row.className = "trellis-users-access-row"; // NEW
+            row.setAttribute("data-trellis-users-user-id", user.id); // NEW
             row.style.cssText = "border-top:1px solid #F3F4F6;padding:6px 0;"; // NEW
             const head = document.createElement("div"); // NEW
             head.style.cssText = "display:grid;grid-template-columns:minmax(70px,1fr) 130px auto;gap:6px;align-items:center;"; // NEW
             const name = document.createElement("div"); // NEW
             name.textContent = user.name; // NEW
             if (directlyGranted) appendGrantedBadge(name); // NEW
+            if (access.inheritedSource) appendInheritedBadge(name, access.inheritedSource); // NEW
             head.appendChild(name); // NEW
             head.appendChild(makePresetSelect(grant.preset, function (preset) { // NEW
                 const result = setScopeGrant(cell, { userId: user.id, preset }); // NEW
@@ -2672,6 +2821,7 @@ Draw.loadPlugin(function (ui) {
             nearestOwnedAncestor,
             nearestAccessGrant,
             roleLinkedBoardGrantsForUser, // NEW
+            normalizeCapabilities, // NEW
             changeAllowed,
             composeInviteEmail, // NEW
             getDiagramLoginKey, // NEW

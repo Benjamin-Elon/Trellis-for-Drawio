@@ -341,9 +341,16 @@
 		else removeClass(outerDialog.container, 'trellis-splash-compact'); // NEW
 	} // NEW
 
+	function setSplashChromeActive(editorUi, active) { // NEW
+		if (editorUi == null || editorUi.container == null) return; // NEW
+		if (active) addClass(editorUi.container, 'trellis-splash-active'); // NEW
+		else removeClass(editorUi.container, 'trellis-splash-active'); // NEW
+	} // NEW
+
 	function decorateOuterDialog(editorUi, splashDialog, outerDialog) { // NEW
 		addClass(outerDialog.container, 'trellis-splash-dialog'); // NEW
 		addClass(outerDialog.bg, 'trellis-splash-backdrop'); // NEW
+		setSplashChromeActive(editorUi, true); // NEW
 		applyWorkspaceLayout(editorUi, outerDialog); // NEW
 		splashDialog.trellisOuterDialog = outerDialog; // NEW
 		updateCloseLabel(splashDialog, outerDialog); // NEW
@@ -364,8 +371,12 @@
 		if (typeof outerDialog.close == 'function' && !outerDialog.trellisSplashCloseWrapped) { // NEW
 			var baseClose = outerDialog.close; // NEW
 			outerDialog.close = function() { // CHANGE
-				if (typeof this.trellisSplashCleanup == 'function') this.trellisSplashCleanup(); // NEW
-				return baseClose.apply(this, arguments); // NEW
+				var result = baseClose.apply(this, arguments); // CHANGE
+				if (result !== false) { // NEW
+					if (typeof this.trellisSplashCleanup == 'function') this.trellisSplashCleanup(); // CHANGE
+					setSplashChromeActive(editorUi, false); // NEW
+				} // NEW
+				return result; // NEW
 			}; // CHANGE
 			outerDialog.trellisSplashCloseWrapped = true; // NEW
 		} // NEW
