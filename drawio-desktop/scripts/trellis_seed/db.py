@@ -10,7 +10,7 @@ from typing import Any
 
 from .jsonio import read_json, write_json
 from .migrations import apply_migrations, pending_migrations
-from .schema import CITY_COLUMNS, PLANT_COLUMNS, PLANTING_WINDOW_REFERENCE_COLUMNS, VARIETY_MATURITY_CLASSES, WEATHER_TABLES  # CHANGED
+from .schema import CITY_COLUMNS, COMPANION_COLUMNS, PLANT_COLUMNS, PLANTING_WINDOW_REFERENCE_COLUMNS, VARIETY_MATURITY_CLASSES, WEATHER_TABLES  # CHANGED
 from .validator import normalize_key, validate_run
 from .weather import checksum_rows
 
@@ -300,13 +300,18 @@ def _normalize_maturity_class(value: Any) -> str | None:  # ADDED
 
 
 def _upsert_companions(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> int:
+    companion_columns = set(_table_columns(conn, "Companions"))  # ADDED
+    writable_columns = [column for column in ("p1", "p2", "rating", "companion_type", "companion_type_id", "source_plant_id", "companion_plant_id", "start_offset_days") if column in companion_columns]  # ADDED
     for row in rows:
         relation_id = row.get("relation_id") or _find_companion_id(conn, row.get("p1"), row.get("p2"))
-        values = [row.get("p1"), row.get("p2"), row.get("rating"), row.get("companion_type"), row.get("companion_type_id")]
+        normalized = _normalize_companion_row(conn, row, companion_columns)  # ADDED
+        values = [normalized.get(column) for column in writable_columns]  # CHANGED
         if relation_id:
-            conn.execute("UPDATE Companions SET p1=?, p2=?, rating=?, companion_type=?, companion_type_id=? WHERE relation_id=?", values + [relation_id])
+            sets = ", ".join(f"{column}=?" for column in writable_columns)  # ADDED
+            conn.execute(f"UPDATE Companions SET {sets} WHERE relation_id=?", values + [relation_id])  # CHANGED
         else:
-            conn.execute("INSERT OR IGNORE INTO Companions (p1, p2, rating, companion_type, companion_type_id) VALUES (?, ?, ?, ?, ?)", values)
+            placeholders = ", ".join("?" for _ in writable_columns)  # ADDED
+            conn.execute(f"INSERT OR IGNORE INTO Companions ({', '.join(writable_columns)}) VALUES ({placeholders})", values)  # CHANGED
     return len(rows)
 
 
@@ -602,6 +607,28 @@ def _resolve_city_id(conn: sqlite3.Connection, row: dict[str, Any]) -> int:
     if not city_id:
         raise RuntimeError(f"Cannot resolve city row: {row}")
     return int(city_id)
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> list[str]:  # ADDED
+    return [str(info[1]) for info in conn.execute(f"PRAGMA table_info({table})").fetchall()]  # ADDED
+
+
+def _optional_int(value: Any) -> int | None:  # ADDED
+    if value in (None, ""):  # ADDED
+        return None  # ADDED
+    return int(value)  # ADDED
+
+
+def _normalize_companion_row(conn: sqlite3.Connection, row: dict[str, Any], existing_columns: set[str] | None = None) -> dict[str, Any]:  # ADDED
+    columns = existing_columns or set(_table_columns(conn, "Companions"))  # ADDED
+    normalized = {column: row.get(column) for column in COMPANION_COLUMNS if column in row}  # ADDED
+    if "source_plant_id" in columns:  # ADDED
+        normalized["source_plant_id"] = _optional_int(row.get("source_plant_id")) or _find_id_by_name(conn, "Plants", "plant_id", "plant_name", row.get("p1"))  # ADDED
+    if "companion_plant_id" in columns:  # ADDED
+        normalized["companion_plant_id"] = _optional_int(row.get("companion_plant_id")) or _find_id_by_name(conn, "Plants", "plant_id", "plant_name", row.get("p2"))  # ADDED
+    if "start_offset_days" in columns:  # ADDED
+        normalized["start_offset_days"] = _optional_int(row.get("start_offset_days"))  # ADDED
+    return normalized  # ADDED
 
 
 def _find_variety_id(conn: sqlite3.Connection, plant_id: int, variety_name: Any) -> int | None:

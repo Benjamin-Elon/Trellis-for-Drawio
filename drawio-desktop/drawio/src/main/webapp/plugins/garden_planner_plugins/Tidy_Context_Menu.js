@@ -112,7 +112,7 @@ Draw.loadPlugin(function (ui) {
             if (getCellAttribute(cell, trellisFlags[i]) === '1') return true; // NEW
         } // NEW
 
-        return String(getCellAttribute(cell, 'board_key') || '').trim().length > 0; // NEW
+        return String(getCellAttribute(cell, 'board_key') || '').trim().length > 0 || String(getCellAttribute(cell, 'lane_key') || '').trim().length > 0; // CHANGE: suppress task board lane XML hover tooltips too
     } // NEW
 
     /**

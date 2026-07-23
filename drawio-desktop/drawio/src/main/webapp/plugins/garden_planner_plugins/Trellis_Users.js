@@ -18,6 +18,13 @@ Draw.loadPlugin(function (ui) {
     const ATTR_ACCESS_GRANTS = "trellis_access_grants_json"; // NEW
     const ATTR_ACCESS_OPEN = "trellis_access_open";
     const ATTR_ROLE_USER = "trellis_role_user_id"; // NEW
+    const ATTR_ROLE_GARDEN_MODULE = "trellis_role_garden_module_id"; // NEW
+    const ATTR_ROLE_TEAM_MODULE = "trellis_role_team_module_id"; // NEW
+    const ATTR_ROLE_ARCHIVED_USER = "trellis_role_archived_user_id"; // NEW
+    const ATTR_ROLE_INACTIVE = "trellis_role_inactive"; // NEW
+    const ATTR_GARDEN_TEAM_MODULE = "trellis_team_module_id"; // NEW
+    const ATTR_TEAM_GARDEN_MODULE = "trellis_garden_module_id"; // NEW
+    const ATTR_TEAM_ROLE_ARCHIVE = "trellis_team_role_archive_json"; // NEW
     const ATTR_CREATED_BY = "createdByUserId";
     const ATTR_EDITED_BY = "lastEditedByUserId";
     const ATTR_ACTOR_NAME = "trellis_actor_name";
@@ -25,8 +32,8 @@ Draw.loadPlugin(function (ui) {
     const ATTR_REMEMBER_DIAGRAM_ID = "trellis_users_diagram_id"; // NEW
     const ATTR_HISTORY_ID = "trellis_history_id"; // NEW
 
-    const PROTECTED_ATTRS = new Set([ATTR_STORE, ATTR_OWNER, ATTR_ACCESS_USERS, ATTR_ACCESS_GRANTS, ATTR_ACCESS_OPEN, ATTR_ROLE_USER]); // CHANGE
-    const ACCESS_PRESETS = ["viewer", "grower", "task", "manager"]; // NEW
+    const PROTECTED_ATTRS = new Set([ATTR_STORE, ATTR_OWNER, ATTR_ACCESS_USERS, ATTR_ACCESS_GRANTS, ATTR_ACCESS_OPEN, ATTR_ROLE_USER, ATTR_ROLE_GARDEN_MODULE, ATTR_ROLE_TEAM_MODULE, ATTR_ROLE_ARCHIVED_USER, ATTR_ROLE_INACTIVE, ATTR_GARDEN_TEAM_MODULE, ATTR_TEAM_GARDEN_MODULE, ATTR_TEAM_ROLE_ARCHIVE]); // CHANGE
+    const ACCESS_PRESETS = ["visitor", "gardener", "coordinator"]; // CHANGE
     const CAP_CREATE_PLANTINGS = "create_plantings"; // NEW
     const CAP_MANAGE_OWN_PLANTINGS = "manage_own_plantings"; // NEW
     const CAP_MOVE_TASKS = "move_tasks"; // NEW
@@ -35,17 +42,19 @@ Draw.loadPlugin(function (ui) {
     const CAP_MANAGE_ACCESS = "manage_access"; // NEW
     const DOMAIN_CAPABILITIES = [CAP_CREATE_PLANTINGS, CAP_MANAGE_OWN_PLANTINGS, CAP_MOVE_TASKS, CAP_EDIT_TASK_DETAILS, CAP_MANAGE_SCOPE_CONTENT, CAP_MANAGE_ACCESS]; // NEW
     const PRESET_CAPABILITIES = { // NEW
-        viewer: [], // NEW
-        grower: [CAP_CREATE_PLANTINGS, CAP_MANAGE_OWN_PLANTINGS, CAP_MOVE_TASKS, CAP_EDIT_TASK_DETAILS], // CHANGE
-        task: [CAP_MOVE_TASKS, CAP_EDIT_TASK_DETAILS], // NEW
-        manager: [CAP_CREATE_PLANTINGS, CAP_MANAGE_OWN_PLANTINGS, CAP_MOVE_TASKS, CAP_EDIT_TASK_DETAILS, CAP_MANAGE_SCOPE_CONTENT, CAP_MANAGE_ACCESS] // NEW
+        visitor: [], // CHANGE
+        gardener: [CAP_CREATE_PLANTINGS, CAP_MANAGE_OWN_PLANTINGS, CAP_MOVE_TASKS, CAP_EDIT_TASK_DETAILS], // CHANGE
+        coordinator: [CAP_CREATE_PLANTINGS, CAP_MANAGE_OWN_PLANTINGS, CAP_MOVE_TASKS, CAP_EDIT_TASK_DETAILS, CAP_MANAGE_SCOPE_CONTENT, CAP_MANAGE_ACCESS] // CHANGE
     }; // NEW
     const TASK_DETAIL_ATTRS = new Set(["label", "title", "notes", "card_note", "start", "end", "due", "assigned_day", "task_estimated_hours", "scheduler_dates_locked"]); // NEW
     const TASK_ASSIGNMENT_ATTRS = new Set(["task_assignee_role_ids_json"]); // NEW
+    const SCOPE_GRANT_ATTRS = new Set([ATTR_ACCESS_USERS, ATTR_ACCESS_GRANTS, ATTR_ACCESS_OPEN]); // NEW
     const USER_ID_PREFIX = "user_";
     const PIN_SALT_PREFIX = "salt_";
     const DIAGRAM_ID_PREFIX = "diagram_users_"; // NEW
     const INVITE_ID_PREFIX = "invite_"; // NEW
+    const ACCESS_REQUEST_ID_PREFIX = "access_request_"; // NEW
+    const ACCESS_MESSAGE_ID_PREFIX = "access_message_"; // NEW
     const INVITE_CODE_SALT_PREFIX = "invite_salt_"; // NEW
     const INVITE_EXPIRY_MS = 14 * 24 * 60 * 60 * 1000; // NEW
     const REMEMBER_STORAGE_PREFIX = "trellis_users_remembered_login_v1:"; // NEW
@@ -67,6 +76,10 @@ Draw.loadPlugin(function (ui) {
     let resetPinUserId = ""; // NEW
     let peopleSearchText = ""; // NEW
     let peopleTypeFilter = "all"; // NEW
+    let openGardenAccessUserId = ""; // NEW
+    let gardenAccessSearchText = ""; // NEW
+    let gardenAccessOutsideHandler = null; // NEW
+    let gardenAccessKeyHandler = null; // NEW
     let authOverlay = null; // NEW
     let authStatusNode = null; // NEW
     let toolbarButton = null; // NEW
@@ -196,12 +209,64 @@ Draw.loadPlugin(function (ui) {
         }; // NEW
     } // NEW
 
+    function normalizeAccessRequest(request) { // NEW
+        const source = request || {}; // NEW
+        const id = String(source.id || "").trim(); // NEW
+        const requesterUserId = String(source.requesterUserId || "").trim(); // NEW
+        const scopeCellId = String(source.scopeCellId || "").trim(); // NEW
+        if (!id || !requesterUserId || !scopeCellId) return null; // NEW
+        const status = String(source.status || "pending").toLowerCase() === "denied" ? "denied" : "pending"; // NEW
+        return { // NEW
+            id, // NEW
+            requesterUserId, // NEW
+            scopeCellId, // NEW
+            scopeType: String(source.scopeType || "scope"), // NEW
+            scopeLabel: String(source.scopeLabel || source.scopeCellId || "Scope"), // NEW
+            requestedPreset: normalizePreset(source.requestedPreset || source.preset), // NEW
+            note: String(source.note || ""), // NEW
+            status, // NEW
+            createdAt: Number(source.createdAt) || nowMs(), // NEW
+            updatedAt: Number(source.updatedAt) || Number(source.createdAt) || nowMs(), // NEW
+            decidedBy: String(source.decidedBy || ""), // NEW
+            decidedAt: Number(source.decidedAt) || 0, // NEW
+            decisionNote: String(source.decisionNote || "") // NEW
+        }; // NEW
+    } // NEW
+
+    function normalizeAccessMessage(message) { // NEW
+        const source = message || {}; // NEW
+        const id = String(source.id || "").trim(); // NEW
+        const requesterUserId = String(source.requesterUserId || "").trim(); // NEW
+        const scopeCellId = String(source.scopeCellId || "").trim(); // NEW
+        const decision = String(source.decision || "").toLowerCase() === "denied" ? "denied" : "approved"; // NEW
+        if (!id || !requesterUserId || !scopeCellId) return null; // NEW
+        return { // NEW
+            id, // NEW
+            requestId: String(source.requestId || ""), // NEW
+            requesterUserId, // NEW
+            reviewerUserId: String(source.reviewerUserId || source.decidedBy || ""), // NEW
+            reviewerName: String(source.reviewerName || ""), // NEW
+            scopeCellId, // NEW
+            scopeAncestorCellIds: Array.isArray(source.scopeAncestorCellIds) ? Array.from(new Set(source.scopeAncestorCellIds.map(String).filter(Boolean))).sort() : [], // NEW
+            scopeType: String(source.scopeType || "scope"), // NEW
+            scopeLabel: String(source.scopeLabel || source.scopeCellId || "Scope"), // NEW
+            decision, // NEW
+            preset: normalizePreset(source.preset || source.grantedPreset || source.requestedPreset), // NEW
+            note: String(source.note || source.decisionNote || ""), // NEW
+            createdAt: Number(source.createdAt) || nowMs(), // NEW
+            readAt: Number(source.readAt) || 0, // NEW
+            dismissedAt: Number(source.dismissedAt) || 0 // NEW
+        }; // NEW
+    } // NEW
+
     function normalizeStore(raw) {
         const source = raw && typeof raw === "object" ? raw : {};
         const users = Array.isArray(source.users) ? source.users.map(normalizeUser).filter(Boolean) : [];
         const pendingUsers = Array.isArray(source.pendingUsers) ? source.pendingUsers.map(normalizePendingUser).filter(Boolean) : []; // NEW
         const invites = Array.isArray(source.invites) ? source.invites.map(normalizeInvite).filter(Boolean) : []; // NEW
-        return { schemaVersion: 1, usersEnabled: source.usersEnabled === true || source.usersEnabled === "1", users, pendingUsers, invites }; // CHANGE
+        const accessRequests = Array.isArray(source.accessRequests) ? source.accessRequests.map(normalizeAccessRequest).filter(Boolean) : []; // NEW
+        const accessMessages = Array.isArray(source.accessMessages) ? source.accessMessages.map(normalizeAccessMessage).filter(Boolean) : []; // NEW
+        return { schemaVersion: 1, usersEnabled: source.usersEnabled === true || source.usersEnabled === "1", users, pendingUsers, invites, accessRequests, accessMessages }; // CHANGE
     }
 
     function readStore() {
@@ -220,7 +285,14 @@ Draw.loadPlugin(function (ui) {
         }
         updateToolbarButton(); // NEW
         refreshPanel();
+        dispatchUsersStoreChanged(); // NEW
     }
+
+    function dispatchUsersStoreChanged() { // NEW
+        try { // NEW
+            if (window && typeof window.dispatchEvent === "function" && typeof window.CustomEvent === "function") window.dispatchEvent(new window.CustomEvent("trellisUsersStoreChanged")); // NEW
+        } catch (_) { } // NEW
+    } // NEW
 
     function stableHash(text) {
         let h = 2166136261;
@@ -297,9 +369,63 @@ Draw.loadPlugin(function (ui) {
         }; // NEW
     } // NEW
 
+    function publicAccessRequest(request) { // NEW
+        const normalized = normalizeAccessRequest(request); // NEW
+        if (!normalized) return null; // NEW
+        const requester = storedUserById(normalized.requesterUserId); // NEW
+        const scopeCell = model.getCell && model.getCell(normalized.scopeCellId); // NEW
+        return { // NEW
+            id: normalized.id, // NEW
+            requesterUserId: normalized.requesterUserId, // NEW
+            requesterName: requester ? requester.name : normalized.requesterUserId, // NEW
+            requesterDisabled: requester ? !!requester.disabled : true, // NEW
+            scopeCellId: normalized.scopeCellId, // NEW
+            scopeType: scopeCell ? (eligibleScopeType(scopeCell) || normalized.scopeType) : normalized.scopeType, // NEW
+            scopeLabel: scopeCell ? cellLabel(scopeCell) : normalized.scopeLabel, // NEW
+            requestedPreset: normalizePreset(normalized.requestedPreset), // NEW
+            note: normalized.note, // NEW
+            status: normalized.status, // NEW
+            createdAt: normalized.createdAt, // NEW
+            updatedAt: normalized.updatedAt, // NEW
+            decidedBy: normalized.decidedBy, // NEW
+            decidedAt: normalized.decidedAt, // NEW
+            decisionNote: normalized.decisionNote, // NEW
+            scopeMissing: !accessRequestScopeIsAvailable(scopeCell) // CHANGE
+        }; // NEW
+    } // NEW
+
+    function publicAccessMessage(message) { // NEW
+        const normalized = normalizeAccessMessage(message); // NEW
+        if (!normalized) return null; // NEW
+        const reviewer = storedUserById(normalized.reviewerUserId); // NEW
+        const scopeCell = model.getCell && model.getCell(normalized.scopeCellId); // NEW
+        return { // NEW
+            id: normalized.id, // NEW
+            requestId: normalized.requestId, // NEW
+            requesterUserId: normalized.requesterUserId, // NEW
+            reviewerUserId: normalized.reviewerUserId, // NEW
+            reviewerName: reviewer ? reviewer.name : (normalized.reviewerUserId || normalized.reviewerName), // CHANGE
+            scopeCellId: normalized.scopeCellId, // NEW
+            scopeAncestorCellIds: (normalized.scopeAncestorCellIds || []).slice(), // NEW
+            scopeType: scopeCell ? (eligibleScopeType(scopeCell) || normalized.scopeType) : normalized.scopeType, // NEW
+            scopeLabel: scopeCell ? cellLabel(scopeCell) : normalized.scopeLabel, // NEW
+            decision: normalized.decision, // NEW
+            preset: normalizePreset(normalized.preset), // NEW
+            note: normalized.note, // NEW
+            createdAt: normalized.createdAt, // NEW
+            readAt: normalized.readAt, // NEW
+            dismissedAt: normalized.dismissedAt, // NEW
+            unread: !normalized.readAt, // NEW
+            scopeMissing: !accessRequestScopeIsAvailable(scopeCell) // CHANGE
+        }; // NEW
+    } // NEW
+
     function normalizePreset(value) { // NEW
-        const preset = String(value || "viewer").trim().toLowerCase(); // NEW
-        return ACCESS_PRESETS.indexOf(preset) >= 0 ? preset : "viewer"; // NEW
+        const preset = String(value || "visitor").trim().toLowerCase(); // CHANGE
+        if (preset === "viewer") return "visitor"; // CHANGE
+        if (preset === "grower" || preset === "task") return "gardener"; // CHANGE
+        if (preset === "manager") return "coordinator"; // CHANGE
+        return ACCESS_PRESETS.indexOf(preset) >= 0 ? preset : "visitor"; // CHANGE
     } // NEW
 
     function expandImpliedCapabilities(capabilities) { // NEW
@@ -313,10 +439,14 @@ Draw.loadPlugin(function (ui) {
         return Array.from(caps); // NEW
     } // NEW
 
-    function normalizeCapabilities(capabilities, preset) { // NEW
-        const base = Array.isArray(capabilities) ? capabilities : PRESET_CAPABILITIES[normalizePreset(preset)]; // NEW
+    function normalizeCapabilityList(capabilities) { // NEW
+        const base = Array.isArray(capabilities) ? capabilities : []; // NEW
         const allowed = new Set(DOMAIN_CAPABILITIES); // NEW
         return Array.from(new Set(expandImpliedCapabilities(base || []).filter(function (capability) { return allowed.has(capability); }))).sort(); // CHANGE
+    } // NEW
+
+    function normalizeCapabilities(capabilities, preset) { // NEW
+        return normalizeCapabilityList(PRESET_CAPABILITIES[normalizePreset(preset)]); // CHANGE
     } // NEW
 
     function normalizeGrant(grant) { // NEW
@@ -710,6 +840,14 @@ Draw.loadPlugin(function (ui) {
         return !!cell && (styleFlag(cell, "module") || getAttr(cell, "garden_module") === "1" || getAttr(cell, "team_module") === "1"); // NEW
     } // NEW
 
+    function isGardenModule(cell) { // NEW
+        return !!cell && getAttr(cell, "garden_module") === "1"; // NEW
+    } // NEW
+
+    function isTeamModule(cell) { // NEW
+        return !!cell && getAttr(cell, "team_module") === "1"; // NEW
+    } // NEW
+
     function isGardenBed(cell) { // NEW
         return !!cell && (getAttr(cell, "garden_bed") === "1" || getAttr(cell, "gardenBed") === "1" || getAttr(cell, "is_garden_bed") === "1"); // NEW
     } // NEW
@@ -742,6 +880,77 @@ Draw.loadPlugin(function (ui) {
         return String(getAttr(cell, "linkedTo") || "").split(",").map(function (part) { return part.trim(); }).filter(Boolean).indexOf(target) >= 0; // NEW
     } // NEW
 
+    function cellId(cell) { // NEW
+        return cell && (cell.id || (cell.getId && cell.getId())) || ""; // NEW
+    } // NEW
+
+    function linkSet(cell) { // NEW
+        return new Set(String(getAttr(cell, "linkedTo") || "").split(",").map(function (part) { return part.trim(); }).filter(Boolean)); // NEW
+    } // NEW
+
+    function setLinkSet(cell, ids) { // NEW
+        setAttr(cell, "linkedTo", Array.from(ids || []).filter(Boolean).join(",")); // NEW
+    } // NEW
+
+    function addReciprocalLink(left, right) { // NEW
+        const modules = graph && graph.__trellisModules; // NEW
+        if (modules && typeof modules.addReciprocalLink === "function") return modules.addReciprocalLink(left, right); // NEW
+        const leftId = cellId(left); // NEW
+        const rightId = cellId(right); // NEW
+        if (!left || !right || !leftId || !rightId || left === right) return false; // NEW
+        const leftLinks = linkSet(left); // NEW
+        const rightLinks = linkSet(right); // NEW
+        let changed = false; // NEW
+        if (!leftLinks.has(rightId)) { leftLinks.add(rightId); setLinkSet(left, leftLinks); changed = true; } // NEW
+        if (!rightLinks.has(leftId)) { rightLinks.add(leftId); setLinkSet(right, rightLinks); changed = true; } // NEW
+        return changed; // NEW
+    } // NEW
+
+    function cellDisplayLabel(cell, fallback) { // NEW
+        const raw = getAttr(cell, "label") || (typeof (cell && cell.value) === "string" ? cell.value : ""); // NEW
+        if (document && document.createElement) { // NEW
+            const holder = document.createElement("div"); // NEW
+            holder.innerHTML = raw; // NEW
+            const text = String(holder.textContent || "").replace(/\s+/g, " ").trim(); // NEW
+            if (text) return text; // NEW
+        } // NEW
+        const text = String(raw || "").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim(); // NEW
+        return text || fallback || ""; // NEW
+    } // NEW
+
+    function allCellsMatching(predicate) { // NEW
+        const matches = []; // NEW
+        traverseCells(model.getRoot && model.getRoot(), function (cell) { if (predicate(cell)) matches.push(cell); }); // NEW
+        return matches; // NEW
+    } // NEW
+
+    function allGardenModules() { // NEW
+        return allCellsMatching(isGardenModule).sort(function (left, right) { return cellDisplayLabel(left, "Garden").localeCompare(cellDisplayLabel(right, "Garden"), undefined, { sensitivity: "base" }) || cellId(left).localeCompare(cellId(right)); }); // NEW
+    } // NEW
+
+    function findGardenModuleAncestor(cell) { // NEW
+        return nearestAncestorMatching(cell, isGardenModule); // NEW
+    } // NEW
+
+    function linkedPlantingGroupsForTask(cell) { // NEW
+        if (!isTaskCard(cell)) return []; // NEW
+        const id = cellId(cell); // NEW
+        const linkedIds = String(getAttr(cell, "linkedTo") || "").split(",").map(function (part) { return part.trim(); }).filter(Boolean); // NEW
+        return linkedIds.map(function (linkedId) { return model.getCell && model.getCell(linkedId); }).filter(function (linked) { return isTilerGroup(linked) && (!id || hasLink(linked, id)); }); // NEW
+    } // NEW
+
+    function userOwnsLinkedPlantingTask(cell, userId) { // NEW
+        return linkedPlantingGroupsForTask(cell).some(function (planting) { return getAttr(planting, ATTR_OWNER) === userId; }); // NEW
+    } // NEW
+
+    function userCreatedManualTask(cell, userId) { // NEW
+        return isTaskCard(cell) && linkedPlantingGroupsForTask(cell).length === 0 && getAttr(cell, ATTR_CREATED_BY) === userId; // NEW
+    } // NEW
+
+    function userCanWorkOwnTask(cell, userId) { // NEW
+        return !!(userId && isTaskCard(cell) && (userOwnsLinkedPlantingTask(cell, userId) || userCreatedManualTask(cell, userId))); // NEW
+    } // NEW
+
     function nearestAncestorMatching(cell, predicate) { // NEW
         let cursor = cell; // NEW
         while (cursor) { // NEW
@@ -756,6 +965,8 @@ Draw.loadPlugin(function (ui) {
     function nearestGardenBed(cell) { return nearestAncestorMatching(cell, isGardenBed); } // NEW
 
     function nearestTaskBoard(cell) { return nearestAncestorMatching(cell, isTaskBoard); } // NEW
+
+    function nearestUnownedModuleAncestor(cell) { return nearestAncestorMatching(cell, isUnownedModuleCell); } // NEW
 
     function directCapabilitiesForCell(cell, userId) { // NEW
         const caps = new Set(); // NEW
@@ -776,14 +987,279 @@ Draw.loadPlugin(function (ui) {
         return matches; // NEW
     } // NEW
 
+    function roleCardsForGardenUser(gardenCell, userId) { // NEW
+        const gardenId = cellId(gardenCell); // NEW
+        const cleanUserId = String(userId || "").trim(); // NEW
+        if (!gardenId || !cleanUserId) return []; // NEW
+        return roleCardsForUser(cleanUserId).filter(function (roleCard) { return getAttr(roleCard, ATTR_ROLE_GARDEN_MODULE) === gardenId; }); // NEW
+    } // NEW
+
+    function readOnlyTeamForGarden(gardenCell) { // NEW
+        const gardenId = cellId(gardenCell); // NEW
+        if (!gardenId) return null; // NEW
+        const typedId = getAttr(gardenCell, ATTR_GARDEN_TEAM_MODULE); // NEW
+        const typed = typedId && model.getCell ? model.getCell(typedId) : null; // NEW
+        if (typed && isTeamModule(typed) && getAttr(typed, ATTR_TEAM_GARDEN_MODULE) === gardenId) return typed; // NEW
+        return allCellsMatching(function (cell) { return isTeamModule(cell) && getAttr(cell, ATTR_TEAM_GARDEN_MODULE) === gardenId; })[0] || null; // NEW
+    } // NEW
+
+    function findTeamForGarden(gardenCell) { // NEW
+        const existing = readOnlyTeamForGarden(gardenCell); // NEW
+        if (existing) return existing; // NEW
+        const modules = graph && graph.__trellisModules; // NEW
+        if (modules && typeof modules.ensureGardenTeamModule === "function") return modules.ensureGardenTeamModule(gardenCell); // NEW
+        return null; // NEW
+    } // NEW
+
+    function childCells(cell) { // NEW
+        if (!cell) return []; // NEW
+        if (model.getChildren) return model.getChildren(cell) || []; // NEW
+        const count = model.getChildCount ? model.getChildCount(cell) : ((cell.children || []).length); // NEW
+        const out = []; // NEW
+        for (let i = 0; i < count; i++) out.push(model.getChildAt ? model.getChildAt(cell, i) : cell.children[i]); // NEW
+        return out.filter(Boolean); // NEW
+    } // NEW
+
+    function roleField(roleCard, flag) { // NEW
+        return childCells(roleCard).find(function (child) { return styleFlag(child, flag); }) || null; // NEW
+    } // NEW
+
+    function roleFieldTextValue(field) { // NEW
+        if (!field) return ""; // NEW
+        if (field.value && field.value.nodeType === 1) return String(getAttr(field, "label") || ""); // NEW
+        return String(field.value || ""); // NEW
+    } // NEW
+
+    function setRoleFieldText(roleCard, flag, text) { // NEW
+        const field = roleField(roleCard, flag); // NEW
+        if (!field) return false; // NEW
+        if (field.value && field.value.nodeType === 1) setAttr(field, "label", text || ""); // NEW
+        else if (model.setValue) model.setValue(field, text || ""); // NEW
+        else field.value = text || ""; // NEW
+        return true; // NEW
+    } // NEW
+
+    function setRoleFieldDefault(roleCard, flag, text) { // NEW
+        const field = roleField(roleCard, flag); // NEW
+        if (!field || roleFieldTextValue(field).trim()) return false; // NEW
+        return setRoleFieldText(roleCard, flag, text); // NEW
+    } // NEW
+
+    function roleTitleForGrant(grant) { // NEW
+        return presetLabel((grant && grant.preset) || "visitor"); // NEW
+    } // NEW
+
+    function makeRoleStatusCell(id, text) { // NEW
+        const style = "rounded=1;arcSize=8;whiteSpace=wrap;html=1;fillColor=#FEF3C7;strokeColor=#D97706;fontColor=#92400E;fontSize=10;align=center;verticalAlign=middle;spacing=2;role_status=1;"; // NEW
+        if (typeof mxCell !== "undefined" && typeof mxGeometry !== "undefined") { // NEW
+            const cell = new mxCell(text, new mxGeometry(10, 10, 96, 18), style); // NEW
+            cell.vertex = true; // NEW
+            if (typeof cell.setConnectable === "function") cell.setConnectable(false); // NEW
+            return cell; // NEW
+        } // NEW
+        return { // NEW
+            id, value: text, style, vertex: true, children: [], // NEW
+            getId: function () { return this.id; }, // NEW
+            getAttribute: function (key) { return this.value && this.value.nodeType === 1 ? this.value.getAttribute(key) : null; }, // NEW
+            setAttribute: function (key, value) { if (this.value && this.value.nodeType === 1) this.value.setAttribute(key, value); }, // NEW
+            removeAttribute: function (key) { if (this.value && this.value.nodeType === 1) this.value.removeAttribute(key); } // NEW
+        }; // NEW
+    } // NEW
+
+    function addChildCell(parent, child) { // NEW
+        if (!parent || !child) return; // NEW
+        if (!child.id) child.id = cellId(parent) + "-role-status"; // NEW
+        if (model.add) model.add(parent, child); // NEW
+        else { child.parent = parent; parent.children = parent.children || []; parent.children.push(child); if (model.index) model.index(child); } // NEW
+    } // NEW
+
+    function removeChildCell(child) { // NEW
+        if (!child) return; // NEW
+        if (model.remove) { model.remove(child); return; } // NEW
+        const parent = parentOf(child); // NEW
+        if (parent && parent.children) parent.children = parent.children.filter(function (candidate) { return candidate !== child; }); // NEW
+        child.parent = null; // NEW
+    } // NEW
+
+    function markRoleCardInactive(roleCard) { // NEW
+        if (!roleCard) return; // NEW
+        let status = roleField(roleCard, "role_status"); // NEW
+        if (!status) { status = makeRoleStatusCell(cellId(roleCard) + "-role-status", "Inactive - restorable"); addChildCell(roleCard, status); } // NEW
+        setRoleFieldText(roleCard, "role_status", "Inactive - restorable"); // NEW
+    } // NEW
+
+    function clearRoleCardInactiveMarker(roleCard) { // NEW
+        const status = roleField(roleCard, "role_status"); // NEW
+        if (status) removeChildCell(status); // NEW
+    } // NEW
+
+    function normalizeTeamRoleArchive(raw) { // NEW
+        const source = raw && typeof raw === "object" ? raw : {}; // NEW
+        const roles = source.roles && typeof source.roles === "object" ? source.roles : {}; // NEW
+        const normalizedRoles = {}; // NEW
+        Object.keys(roles).forEach(function (userId) { // NEW
+            const entry = roles[userId] || {}; // NEW
+            const cleanUserId = String(userId || "").trim(); // NEW
+            const roleCardId = String(entry.roleCardId || "").trim(); // NEW
+            if (!cleanUserId || !roleCardId) return; // NEW
+            normalizedRoles[cleanUserId] = { // NEW
+                roleCardId, // NEW
+                preset: normalizePreset(entry.preset || "visitor"), // NEW
+                archivedAt: Number(entry.archivedAt) || 0, // NEW
+                archivedBy: String(entry.archivedBy || "") // NEW
+            }; // NEW
+        }); // NEW
+        return { schemaVersion: 1, roles: normalizedRoles }; // NEW
+    } // NEW
+
+    function readTeamRoleArchive(teamCell) { // NEW
+        return normalizeTeamRoleArchive(parseJson(getAttr(teamCell, ATTR_TEAM_ROLE_ARCHIVE), null)); // NEW
+    } // NEW
+
+    function writeTeamRoleArchive(teamCell, archive) { // NEW
+        const normalized = normalizeTeamRoleArchive(archive); // NEW
+        setAttr(teamCell, ATTR_TEAM_ROLE_ARCHIVE, Object.keys(normalized.roles).length ? JSON.stringify(normalized) : ""); // NEW
+    } // NEW
+
+    function archivedRoleEntry(teamCell, userId) { // NEW
+        const archive = readTeamRoleArchive(teamCell); // NEW
+        return archive.roles[String(userId || "").trim()] || null; // NEW
+    } // NEW
+
+    function archiveGardenRoleCard(teamCell, userId, roleCard, grant) { // NEW
+        const cleanUserId = String(userId || "").trim(); // NEW
+        const roleCardId = cellId(roleCard); // NEW
+        if (!teamCell || !cleanUserId || !roleCardId) return; // NEW
+        const archive = readTeamRoleArchive(teamCell); // NEW
+        const actor = currentUser(); // NEW
+        archive.roles[cleanUserId] = { // NEW
+            roleCardId, // NEW
+            preset: normalizePreset((grant && grant.preset) || (archive.roles[cleanUserId] && archive.roles[cleanUserId].preset) || "visitor"), // NEW
+            archivedAt: nowMs(), // NEW
+            archivedBy: actor && actor.id || "" // NEW
+        }; // NEW
+        writeTeamRoleArchive(teamCell, archive); // NEW
+    } // NEW
+
+    function archivedRoleCardForUser(gardenCell, teamCell, userId) { // NEW
+        const entry = archivedRoleEntry(teamCell, userId); // NEW
+        const roleCard = entry && model.getCell ? model.getCell(entry.roleCardId) : null; // NEW
+        if (!roleCard || !isRoleCard(roleCard)) return null; // NEW
+        if (getAttr(roleCard, ATTR_ROLE_GARDEN_MODULE) !== cellId(gardenCell)) return null; // NEW
+        if (getAttr(roleCard, ATTR_ROLE_TEAM_MODULE) !== cellId(teamCell)) return null; // NEW
+        return roleCard; // NEW
+    } // NEW
+
+    function inactiveGardenRoleCardsForArchivedUser(gardenCell, userId) { // NEW
+        const gardenId = cellId(gardenCell); // NEW
+        const cleanUserId = String(userId || "").trim(); // NEW
+        if (!gardenId || !cleanUserId) return []; // NEW
+        return allCellsMatching(function (cell) { // NEW
+            return isRoleCard(cell) && getAttr(cell, ATTR_ROLE_GARDEN_MODULE) === gardenId && getAttr(cell, ATTR_ROLE_ARCHIVED_USER) === cleanUserId; // NEW
+        }); // NEW
+    } // NEW
+
+    function fillGardenRoleCard(roleCard, user, gardenCell, teamCell, grant) { // NEW
+        if (!roleCard || !user) return; // NEW
+        setAttr(roleCard, ATTR_ROLE_USER, user.id); // NEW
+        setAttr(roleCard, ATTR_ROLE_ARCHIVED_USER, ""); // NEW
+        setAttr(roleCard, ATTR_ROLE_INACTIVE, ""); // NEW
+        setAttr(roleCard, ATTR_ROLE_GARDEN_MODULE, cellId(gardenCell)); // NEW
+        setAttr(roleCard, ATTR_ROLE_TEAM_MODULE, cellId(teamCell)); // NEW
+        clearRoleCardInactiveMarker(roleCard); // NEW
+        setRoleFieldDefault(roleCard, "role_name", user.name || ""); // CHANGE
+        setRoleFieldDefault(roleCard, "role_title", roleTitleForGrant(grant)); // CHANGE
+        setRoleFieldDefault(roleCard, "role_contact", user.email || ""); // CHANGE
+    } // NEW
+
+    function taskBoardsInGarden(gardenCell) { // NEW
+        const boards = []; // NEW
+        traverseCells(gardenCell, function (cell) { if (cell !== gardenCell && isTaskBoard(cell)) boards.push(cell); }); // NEW
+        return boards; // NEW
+    } // NEW
+
+    function linkRoleCardToGardenBoards(roleCard, gardenCell) { // NEW
+        if (!roleCard || !gardenCell) return; // NEW
+        taskBoardsInGarden(gardenCell).forEach(function (board) { addReciprocalLink(roleCard, board); }); // NEW
+    } // NEW
+
+    function nextRoleCardPoint(teamCell) { // NEW
+        const geo = graph.getCellGeometry ? graph.getCellGeometry(teamCell) : (teamCell && teamCell.geometry); // NEW
+        const count = childCells(teamCell).filter(isRoleCard).length; // NEW
+        return { x: (geo && Number(geo.x) || 0) + 20 + ((count % 2) * 200), y: (geo && Number(geo.y) || 0) + 50 + (Math.floor(count / 2) * 84) }; // NEW
+    } // NEW
+
+    function createGardenRoleCard(gardenCell, teamCell) { // NEW
+        const modules = graph && graph.__trellisModules; // NEW
+        if (!modules || typeof modules.createRoleCard !== "function") return null; // NEW
+        const pt = nextRoleCardPoint(teamCell); // NEW
+        return modules.createRoleCard(teamCell, pt.x, pt.y); // NEW
+    } // NEW
+
+    function resizeTeamModuleForGardenRole(teamCell) { // NEW
+        const modules = graph && graph.__trellisModules; // NEW
+        if (teamCell && modules && typeof modules.applyModuleMargins === "function") modules.applyModuleMargins(teamCell, { allowShrink: false }); // NEW
+    } // NEW
+
+    function ensureGardenRoleCardForUser(gardenCell, userId, grant) { // NEW
+        const user = userById(userId); // NEW
+        if (!gardenCell || !isGardenModule(gardenCell) || !user) return null; // NEW
+        const team = findTeamForGarden(gardenCell); // NEW
+        if (!team) return null; // NEW
+        let roleCard = roleCardsForGardenUser(gardenCell, user.id)[0] || null; // NEW
+        if (!roleCard) roleCard = archivedRoleCardForUser(gardenCell, team, user.id); // NEW
+        if (!roleCard) roleCard = inactiveGardenRoleCardsForArchivedUser(gardenCell, user.id)[0] || null; // NEW
+        if (!roleCard) roleCard = createGardenRoleCard(gardenCell, team); // NEW
+        if (!roleCard) return null; // NEW
+        fillGardenRoleCard(roleCard, user, gardenCell, team, grant); // NEW
+        addReciprocalLink(gardenCell, team); // NEW
+        linkRoleCardToGardenBoards(roleCard, gardenCell); // NEW
+        resizeTeamModuleForGardenRole(team); // NEW
+        return roleCard; // NEW
+    } // NEW
+
+    function clearGardenRoleCardUser(gardenCell, userId, grant) { // NEW
+        const team = findTeamForGarden(gardenCell); // NEW
+        roleCardsForGardenUser(gardenCell, userId).forEach(function (roleCard) { // NEW
+            if (team) archiveGardenRoleCard(team, userId, roleCard, grant); // NEW
+            setAttr(roleCard, ATTR_ROLE_ARCHIVED_USER, userId); // CHANGE
+            setAttr(roleCard, ATTR_ROLE_INACTIVE, "1"); // NEW
+            setAttr(roleCard, ATTR_ROLE_USER, ""); // NEW
+            markRoleCardInactive(roleCard); // NEW
+        }); // NEW
+    } // NEW
+
+    function ensureGardenRoleCardsForUser(userId) { // NEW
+        const cleanUserId = String(userId || "").trim(); // NEW
+        if (!cleanUserId || !userById(cleanUserId)) return; // NEW
+        allGardenModules().forEach(function (garden) { // NEW
+            const grant = grantsFromAttr(garden).find(function (entry) { return entry.userId === cleanUserId; }); // NEW
+            if (grant) ensureGardenRoleCardForUser(garden, cleanUserId, grant); // NEW
+        }); // NEW
+    } // NEW
+
+    function syncGardenRoleCardsForGrantChange(gardenCell, previousGrants, nextGrants) { // NEW
+        if (!isGardenModule(gardenCell)) return; // NEW
+        const before = new Map((previousGrants || []).map(function (grant) { return [grant.userId, grant]; })); // NEW
+        const after = new Map((nextGrants || []).map(function (grant) { return [grant.userId, grant]; })); // NEW
+        before.forEach(function (grant, userId) { if (!after.has(userId)) clearGardenRoleCardUser(gardenCell, userId, grant); }); // CHANGE
+        after.forEach(function (grant, userId) { if (userById(userId)) ensureGardenRoleCardForUser(gardenCell, userId, grant); }); // NEW
+    } // NEW
+
+    function autoLinkGardenBoardMemberships(board) { // NEW
+        const garden = findGardenModuleAncestor(board); // NEW
+        if (!garden || !isTaskBoard(board)) return; // NEW
+        const gardenId = cellId(garden); // NEW
+        allCellsMatching(function (cell) { return isRoleCard(cell) && getAttr(cell, ATTR_ROLE_GARDEN_MODULE) === gardenId && !!getAttr(cell, ATTR_ROLE_USER); }).forEach(function (roleCard) { addReciprocalLink(roleCard, board); }); // NEW
+    } // NEW
+
     function roleLinkedBoardGrantsForUser(userId, targetCell) { // NEW
         const roleCards = roleCardsForUser(userId); // NEW
-        if (roleCards.length !== 1) return []; // NEW
-        const roleCard = roleCards[0]; // NEW
         const boards = []; // NEW
         const root = model.getRoot && model.getRoot(); // NEW
         traverseCells(root, function (cell) { // NEW
-            if (isTaskBoard(cell) && hasLink(cell, roleCard.id || (roleCard.getId && roleCard.getId())) && hasLink(roleCard, cell.id || (cell.getId && cell.getId()))) boards.push(cell); // NEW
+            if (!isTaskBoard(cell)) return; // NEW
+            if (roleCards.some(function (roleCard) { return hasLink(cell, cellId(roleCard)) && hasLink(roleCard, cellId(cell)); })) boards.push(cell); // CHANGE
         }); // NEW
         if (!targetCell) return boards; // NEW
         return boards.filter(function (board) { // NEW
@@ -800,8 +1276,7 @@ Draw.loadPlugin(function (ui) {
         if (user && user.admin) DOMAIN_CAPABILITIES.forEach(function (capability) { caps.add(capability); }); // NEW
         if (user && isOwnerOfNearestAccessScope(cell, user.id)) DOMAIN_CAPABILITIES.forEach(function (capability) { caps.add(capability); }); // CHANGE
         if (user) directCapabilitiesForCell(cell, user.id).forEach(function (capability) { caps.add(capability); }); // NEW
-        if (user && roleLinkedBoardGrantsForUser(user.id, cell).length) PRESET_CAPABILITIES.task.forEach(function (capability) { caps.add(capability); }); // NEW
-        return normalizeCapabilities(Array.from(caps), "viewer"); // CHANGE
+        return normalizeCapabilityList(Array.from(caps)); // CHANGE
     } // NEW
 
     function hasCapability(cell, capability) { // NEW
@@ -817,7 +1292,7 @@ Draw.loadPlugin(function (ui) {
         (scopeCellIds || []).forEach(function (cellId) { // NEW
             const cell = model.getCell && model.getCell(cellId); // NEW
             if (!cell) return; // NEW
-            setScopeGrantInternal(cell, { userId, preset: source.preset || "viewer", capabilities: source.capabilities }); // CHANGE
+            setScopeGrantInternal(cell, { userId, preset: source.preset || "visitor", capabilities: source.capabilities }); // CHANGE
         }); // NEW
     } // NEW
 
@@ -859,21 +1334,23 @@ Draw.loadPlugin(function (ui) {
     } // NEW
 
     function setScopeGrant(cell, grant) { // NEW
-        if (!cell || !canManageAccess(cell)) return { ok: false, reason: "You cannot manage access for this cell." }; // NEW
+        if (!cell || !canManageScopeGrants(cell)) return { ok: false, reason: "Select a module, garden bed, or task board to manage access." }; // CHANGE
         const normalized = normalizeGrant(grant); // NEW
         if (!normalized || !storedOrPendingUserById(normalized.userId)) return { ok: false, reason: "Unknown user." }; // NEW
+        const previousGrants = grantsFromAttr(cell); // NEW
         graph[INTERNAL_FLAG] = true; // NEW
         model.beginUpdate(); // NEW
-        try { setScopeGrantInternal(cell, normalized); } finally { model.endUpdate(); graph[INTERNAL_FLAG] = false; } // NEW
+        try { setScopeGrantInternal(cell, normalized); syncGardenRoleCardsForGrantChange(cell, previousGrants, grantsFromAttr(cell)); } finally { model.endUpdate(); graph[INTERNAL_FLAG] = false; } // CHANGE
         refreshPanel(); // NEW
         return { ok: true, grant: publicGrant(normalized) }; // NEW
     } // NEW
 
     function removeScopeGrant(cell, userId) { // NEW
-        if (!cell || !canManageAccess(cell)) return { ok: false, reason: "You cannot manage access for this cell." }; // NEW
+        if (!cell || !canManageScopeGrants(cell)) return { ok: false, reason: "Select a module, garden bed, or task board to manage access." }; // CHANGE
+        const previousGrants = grantsFromAttr(cell); // NEW
         graph[INTERNAL_FLAG] = true; // NEW
         model.beginUpdate(); // NEW
-        try { setGrantsAttr(cell, grantsFromAttr(cell).filter(function (grant) { return grant.userId !== userId; })); } finally { model.endUpdate(); graph[INTERNAL_FLAG] = false; } // NEW
+        try { setGrantsAttr(cell, grantsFromAttr(cell).filter(function (grant) { return grant.userId !== userId; })); syncGardenRoleCardsForGrantChange(cell, previousGrants, grantsFromAttr(cell)); } finally { model.endUpdate(); graph[INTERNAL_FLAG] = false; } // CHANGE
         refreshPanel(); // NEW
         return { ok: true }; // NEW
     } // NEW
@@ -916,13 +1393,27 @@ Draw.loadPlugin(function (ui) {
         return !!(owner && owner.ownerUserId === userId && !isTilerGroup(owner.cell)); // NEW
     } // NEW
 
+    function isUnownedModuleCell(cell) { // NEW
+        return isModuleCell(cell) && !getAttr(cell, ATTR_OWNER); // NEW
+    } // NEW
+
+    function canClaimUnownedModule(cell, userId) { // NEW
+        return !!(userId && isUnownedModuleCell(cell)); // NEW
+    } // NEW
+
+    function canDeleteModuleBoundary(cell, user) { // NEW
+        return !!(cell && isModuleCell(cell) && user && (user.admin || getAttr(cell, ATTR_OWNER) === user.id)); // NEW
+    } // NEW
+
     function canEditCell(cell) {
         if (!isEnabled()) return true; // NEW
         const user = currentUser();
         if (!user || !cell || cell === model.getRoot()) return false;
         if (user.admin) return true;
+        if (canClaimUnownedModule(cell, user.id)) return true; // NEW
+        if (canClaimUnownedModule(nearestUnownedModuleAncestor(cell), user.id)) return true; // NEW
         if (isOwnerOfNearestScope(cell, user.id)) return true;
-        if (isTaskCard(cell) || nearestTaskBoard(cell)) return hasCapability(cell, CAP_EDIT_TASK_DETAILS); // CHANGE
+        if (isTaskCard(cell)) return canEditTaskDetails(cell); // CHANGE
         const planting = nearestPlanting(cell); // NEW
         if (planting) return canManagePlanting(planting); // NEW
         return hasCapability(cell, CAP_MANAGE_SCOPE_CONTENT); // CHANGE
@@ -934,6 +1425,7 @@ Draw.loadPlugin(function (ui) {
         if (!user) return false;
         if (user.admin) return true;
         if (!parent || parent === model.getRoot() || parent === graph.getDefaultParent()) return true;
+        if (canClaimUnownedModule(parent, user.id)) return true; // NEW
         return isOwnerOfNearestScope(parent, user.id) || hasCapability(parent, CAP_MANAGE_SCOPE_CONTENT); // CHANGE
     }
 
@@ -941,7 +1433,9 @@ Draw.loadPlugin(function (ui) {
         if (!isEnabled()) return true; // NEW
         const user = currentUser();
         if (!user || !cell || cell === model.getRoot() || cell === graph.getDefaultParent()) return false;
+        if (isModuleCell(cell)) return canDeleteModuleBoundary(cell, user); // NEW
         if (user.admin) return true;
+        if (canClaimUnownedModule(nearestUnownedModuleAncestor(parentOf(cell)), user.id)) return true; // NEW
         return isOwnerOfNearestScope(cell, user.id) || canManagePlanting(cell) || hasCapability(cell, CAP_MANAGE_SCOPE_CONTENT); // CHANGE
     }
 
@@ -949,7 +1443,9 @@ Draw.loadPlugin(function (ui) {
         if (!isEnabled()) return true; // NEW
         const user = currentUser(); // NEW
         if (!user || !cell || cell === model.getRoot() || cell === graph.getDefaultParent()) return false; // NEW
+        if (isModuleCell(cell)) return canDeleteModuleBoundary(cell, user); // NEW
         if (user.admin) return true; // NEW
+        if (canClaimUnownedModule(previousParent, user.id)) return true; // NEW
         if (isOwnerOfNearestScope(cell, user.id)) return true; // NEW
         if (canManagePlanting(cell)) return true; // NEW
         return !!(previousParent && (isOwnerOfNearestScope(previousParent, user.id) || hasCapability(previousParent, CAP_MANAGE_SCOPE_CONTENT))); // CHANGE
@@ -960,6 +1456,8 @@ Draw.loadPlugin(function (ui) {
         const user = currentUser(); // NEW
         if (!user || !cell || cell === model.getRoot() || cell === graph.getDefaultParent()) return false; // NEW
         if (user.admin) return true; // NEW
+        if (canClaimUnownedModule(cell, user.id)) return true; // NEW
+        if (canClaimUnownedModule(nearestUnownedModuleAncestor(cell), user.id)) return true; // NEW
         if (isOwnerOfNearestScope(cell, user.id)) return true; // CHANGE
         if (isTaskCard(cell)) return canMoveTask(cell); // NEW
         if (nearestPlanting(cell)) return canManagePlanting(cell); // NEW
@@ -988,14 +1486,20 @@ Draw.loadPlugin(function (ui) {
 
     function canMoveTask(cell) { // NEW
         if (!isEnabled()) return true; // NEW
+        const user = currentUser(); // NEW
+        if (!user || !cell) return false; // NEW
+        if (user.admin || isOwnerOfNearestScope(cell, user.id) || hasCapability(cell, CAP_MANAGE_SCOPE_CONTENT)) return true; // CHANGE
         const board = nearestTaskBoard(cell); // NEW
-        return !!board && hasCapability(board, CAP_MOVE_TASKS); // NEW
+        return !!board && hasCapability(board, CAP_MOVE_TASKS) && userCanWorkOwnTask(cell, user.id); // CHANGE
     } // NEW
 
     function canEditTaskDetails(cell) { // NEW
         if (!isEnabled()) return true; // NEW
+        const user = currentUser(); // NEW
+        if (!user || !cell) return false; // NEW
+        if (user.admin || isOwnerOfNearestScope(cell, user.id) || hasCapability(cell, CAP_MANAGE_SCOPE_CONTENT)) return true; // CHANGE
         const board = nearestTaskBoard(cell); // NEW
-        return !!board && hasCapability(board, CAP_EDIT_TASK_DETAILS); // NEW
+        return !!board && hasCapability(board, CAP_EDIT_TASK_DETAILS) && userCanWorkOwnTask(cell, user.id); // CHANGE
     } // NEW
 
     function canManageAccess(cell) {
@@ -1005,6 +1509,10 @@ Draw.loadPlugin(function (ui) {
         if (user.admin) return true;
         return isOwnerOfNearestAccessScope(cell, user.id) || hasCapability(cell, CAP_MANAGE_ACCESS); // CHANGE
     }
+
+    function canManageScopeGrants(cell) { // NEW
+        return !!eligibleScopeType(cell) && canManageAccess(cell); // NEW
+    } // NEW
 
     function canTransferOwnership(cell) { // NEW
         if (!isEnabled()) return false; // NEW
@@ -1069,6 +1577,265 @@ Draw.loadPlugin(function (ui) {
         return eligible; // NEW
     } // NEW
 
+    function nearestAccessRequestScope(cell) { // NEW
+        return nearestAncestorMatching(cell, function (candidate) { return !!eligibleScopeType(candidate); }); // NEW
+    } // NEW
+
+    function accessRequestScopeSummary(cell) { // NEW
+        const scopeCell = nearestAccessRequestScope(cell); // NEW
+        if (!scopeCell) return null; // NEW
+        return { id: cellId(scopeCell), type: eligibleScopeType(scopeCell), label: cellLabel(scopeCell), cell: scopeCell }; // NEW
+    } // NEW
+
+    function accessRequestMatches(request, userId, scopeCellId) { // NEW
+        return request && request.requesterUserId === userId && request.scopeCellId === scopeCellId && (request.status === "pending" || request.status === "denied"); // NEW
+    } // NEW
+
+    function getAccessRequestForCurrentUser(cell) { // NEW
+        const user = currentUser(); // NEW
+        if (!isEnabled() || !user) return null; // NEW
+        const scope = accessRequestScopeSummary(cell); // NEW
+        if (!scope) return null; // NEW
+        const request = readStore().accessRequests.find(function (entry) { return accessRequestMatches(entry, user.id, scope.id); }); // NEW
+        return publicAccessRequest(request); // NEW
+    } // NEW
+
+    function requestAccess(cell, options) { // NEW
+        const source = options || {}; // NEW
+        if (!isEnabled()) return { ok: false, reason: "Users are not enabled for this diagram." }; // NEW
+        const user = currentUser(); // NEW
+        if (!user) return { ok: false, reason: "Log in before requesting access." }; // NEW
+        if (!cell) return { ok: false, reason: "Select a cell before requesting access." }; // NEW
+        if (canEditCell(cell)) return { ok: false, reason: "You already have edit access to this cell." }; // NEW
+        const scope = accessRequestScopeSummary(cell); // NEW
+        if (!scope || !scope.id) return { ok: false, reason: "Select a module, garden bed, or task board to request access." }; // NEW
+        const store = readStore(); // NEW
+        const existing = store.accessRequests.find(function (entry) { return accessRequestMatches(entry, user.id, scope.id); }); // NEW
+        const timestamp = nowMs(); // NEW
+        if (existing) { // NEW
+            existing.scopeType = scope.type; // NEW
+            existing.scopeLabel = scope.label; // NEW
+            existing.requestedPreset = normalizePreset(source.requestedPreset || source.preset || existing.requestedPreset); // NEW
+            existing.note = String(source.note || ""); // NEW
+            existing.status = "pending"; // NEW
+            existing.updatedAt = timestamp; // NEW
+            existing.decidedBy = ""; // NEW
+            existing.decidedAt = 0; // NEW
+            existing.decisionNote = ""; // NEW
+        } else { // NEW
+            store.accessRequests.push({ // NEW
+                id: makeId(ACCESS_REQUEST_ID_PREFIX), // NEW
+                requesterUserId: user.id, // NEW
+                scopeCellId: scope.id, // NEW
+                scopeType: scope.type, // NEW
+                scopeLabel: scope.label, // NEW
+                requestedPreset: normalizePreset(source.requestedPreset || source.preset), // NEW
+                note: String(source.note || ""), // NEW
+                status: "pending", // NEW
+                createdAt: timestamp, // NEW
+                updatedAt: timestamp, // NEW
+                decidedBy: "", // NEW
+                decidedAt: 0, // NEW
+                decisionNote: "" // NEW
+            }); // NEW
+        } // NEW
+        writeStore(store); // NEW
+        showStatus("Access request sent for " + scope.label + "."); // NEW
+        return { ok: true, request: getAccessRequestForCurrentUser(cell) }; // NEW
+    } // NEW
+
+    function cellContainsCell(rootCell, targetCell) { // NEW
+        if (!rootCell || !targetCell) return false; // NEW
+        let cursor = targetCell; // NEW
+        while (cursor) { // NEW
+            if (cursor === rootCell) return true; // NEW
+            cursor = parentOf(cursor); // NEW
+        } // NEW
+        return false; // NEW
+    } // NEW
+
+    function scopeFilterCell(options) { // NEW
+        const source = options || {}; // NEW
+        if (source.scopeCell) return source.scopeCell; // NEW
+        if (source.moduleCell) return source.moduleCell; // NEW
+        const id = String(source.scopeCellId || source.moduleCellId || "").trim(); // NEW
+        return id && model.getCell ? model.getCell(id) : null; // NEW
+    } // NEW
+
+    function accessRequestScopeIsAvailable(cell) { // NEW
+        return !!(cell && cell !== model.getRoot() && cell !== graph.getDefaultParent() && parentOf(cell)); // NEW
+    } // NEW
+
+    function accessRequestInScope(request, filterCell) { // NEW
+        if (!filterCell) return true; // NEW
+        const scopeCell = model.getCell && model.getCell(request.scopeCellId); // NEW
+        return accessRequestScopeIsAvailable(scopeCell) && cellContainsCell(filterCell, scopeCell); // NEW
+    } // NEW
+
+    function canReviewAccessRequest(request) { // NEW
+        const user = currentUser(); // NEW
+        if (!isEnabled() || !user || !request || request.status !== "pending") return false; // NEW
+        const scopeCell = model.getCell && model.getCell(request.scopeCellId); // NEW
+        if (!accessRequestScopeIsAvailable(scopeCell)) return false; // NEW
+        if (user.admin) return true; // NEW
+        return accessRequestScopeIsAvailable(scopeCell) && isOwnerOfNearestAccessScope(scopeCell, user.id); // NEW
+    } // NEW
+
+    function listIncomingAccessRequests(options) { // NEW
+        if (!isEnabled() || !isLoggedIn()) return []; // NEW
+        const filterCell = scopeFilterCell(options); // NEW
+        return readStore().accessRequests.filter(function (request) { // NEW
+            return request.status === "pending" && accessRequestInScope(request, filterCell) && canReviewAccessRequest(request); // NEW
+        }).map(publicAccessRequest).filter(Boolean); // NEW
+    } // NEW
+
+    function incomingAccessRequestCount(options) { // NEW
+        return listIncomingAccessRequests(options).length; // NEW
+    } // NEW
+
+    function cellAncestorIds(cell) { // NEW
+        const ids = []; // NEW
+        let cursor = cell; // NEW
+        while (cursor) { // NEW
+            const id = cellId(cursor); // NEW
+            if (id) ids.push(id); // NEW
+            cursor = parentOf(cursor); // NEW
+        } // NEW
+        return ids; // NEW
+    } // NEW
+
+    function accessMessageInScope(message, filterCell) { // NEW
+        if (!filterCell) return true; // NEW
+        const filterId = cellId(filterCell); // NEW
+        const scopeCell = model.getCell && model.getCell(message.scopeCellId); // NEW
+        if (accessRequestScopeIsAvailable(scopeCell)) return cellContainsCell(filterCell, scopeCell); // NEW
+        return !!(filterId && (message.scopeCellId === filterId || (message.scopeAncestorCellIds || []).indexOf(filterId) >= 0)); // NEW
+    } // NEW
+
+    function addAccessDecisionMessage(store, request, decision, preset, note, actor) { // NEW
+        const scopeCell = model.getCell && model.getCell(request.scopeCellId); // NEW
+        const reviewer = actor || currentUser(); // NEW
+        store.accessMessages = store.accessMessages || []; // NEW
+        store.accessMessages.push({ // NEW
+            id: makeId(ACCESS_MESSAGE_ID_PREFIX), // NEW
+            requestId: request.id, // NEW
+            requesterUserId: request.requesterUserId, // NEW
+            reviewerUserId: reviewer ? reviewer.id : "", // NEW
+            reviewerName: reviewer ? reviewer.name : "", // NEW
+            scopeCellId: request.scopeCellId, // NEW
+            scopeAncestorCellIds: cellAncestorIds(scopeCell), // NEW
+            scopeType: scopeCell ? (eligibleScopeType(scopeCell) || request.scopeType) : request.scopeType, // NEW
+            scopeLabel: scopeCell ? cellLabel(scopeCell) : request.scopeLabel, // NEW
+            decision: decision === "denied" ? "denied" : "approved", // NEW
+            preset: normalizePreset(preset || request.requestedPreset), // NEW
+            note: String(note || ""), // NEW
+            createdAt: nowMs(), // NEW
+            readAt: 0, // NEW
+            dismissedAt: 0 // NEW
+        }); // NEW
+    } // NEW
+
+    function listAccessMessages(options) { // NEW
+        const user = currentUser(); // NEW
+        if (!isEnabled() || !user) return []; // NEW
+        const filterCell = scopeFilterCell(options); // NEW
+        return readStore().accessMessages.filter(function (message) { // NEW
+            return message.requesterUserId === user.id && !message.dismissedAt && accessMessageInScope(message, filterCell); // NEW
+        }).map(publicAccessMessage).filter(Boolean); // NEW
+    } // NEW
+
+    function unreadAccessMessageCount(options) { // NEW
+        return listAccessMessages(options).filter(function (message) { return !message.readAt; }).length; // NEW
+    } // NEW
+
+    function updateCurrentUserAccessMessage(messageId, updater) { // NEW
+        const user = currentUser(); // NEW
+        if (!isEnabled() || !user) return { ok: false, reason: "Log in before updating messages." }; // NEW
+        const store = readStore(); // NEW
+        const message = (store.accessMessages || []).find(function (entry) { return entry.id === messageId && entry.requesterUserId === user.id; }); // NEW
+        if (!message) return { ok: false, reason: "Access message was not found." }; // NEW
+        updater(message, nowMs()); // NEW
+        writeStore(store); // NEW
+        return { ok: true, message: publicAccessMessage(message) }; // NEW
+    } // NEW
+
+    function markAccessMessageRead(messageId) { // NEW
+        return updateCurrentUserAccessMessage(messageId, function (message, timestamp) { if (!message.readAt) message.readAt = timestamp; }); // NEW
+    } // NEW
+
+    function dismissAccessMessage(messageId) { // NEW
+        return updateCurrentUserAccessMessage(messageId, function (message, timestamp) { message.dismissedAt = timestamp; if (!message.readAt) message.readAt = timestamp; }); // NEW
+    } // NEW
+
+    function requesterAlreadyHasRequestedAccess(scopeCell, requester, requestedPreset) { // NEW
+        if (!scopeCell || !requester) return false; // NEW
+        if (requester.admin || isOwnerOfNearestAccessScope(scopeCell, requester.id)) return true; // NEW
+        const grant = nearestAccessGrant(scopeCell, requester.id); // NEW
+        const caps = effectiveCapabilitiesForCell(scopeCell, requester.id); // NEW
+        const preset = normalizePreset(requestedPreset); // NEW
+        if (preset === "visitor") return !!grant; // NEW
+        if (preset === "gardener") return caps.indexOf(CAP_CREATE_PLANTINGS) >= 0 || caps.indexOf(CAP_MOVE_TASKS) >= 0 || caps.indexOf(CAP_EDIT_TASK_DETAILS) >= 0 || caps.indexOf(CAP_MANAGE_SCOPE_CONTENT) >= 0; // NEW
+        return caps.indexOf(CAP_MANAGE_SCOPE_CONTENT) >= 0 || caps.indexOf(CAP_MANAGE_ACCESS) >= 0; // NEW
+    } // NEW
+
+    function removeAccessRequestFromStore(store, requestId) { // NEW
+        store.accessRequests = (store.accessRequests || []).filter(function (entry) { return entry.id !== requestId; }); // NEW
+    } // NEW
+
+    function approveAccessRequest(requestId, options) { // NEW
+        const source = options || {}; // NEW
+        const store = readStore(); // NEW
+        const request = store.accessRequests.find(function (entry) { return entry.id === requestId && entry.status === "pending"; }); // NEW
+        if (!request) return { ok: false, reason: "No pending access request was found." }; // NEW
+        const scopeCell = model.getCell && model.getCell(request.scopeCellId); // NEW
+        if (!accessRequestScopeIsAvailable(scopeCell)) return { ok: false, reason: "The requested scope is no longer available." }; // NEW
+        if (!canReviewAccessRequest(request)) return { ok: false, reason: "You cannot approve this access request." }; // NEW
+        const requester = userById(request.requesterUserId); // NEW
+        if (!requester) return { ok: false, reason: "The requester is disabled or unavailable." }; // NEW
+        const preset = normalizePreset(source.requestedPreset || source.preset || request.requestedPreset); // NEW
+        if (requesterAlreadyHasRequestedAccess(scopeCell, requester, preset)) { // NEW
+            removeAccessRequestFromStore(store, request.id); // NEW
+            writeStore(store); // NEW
+            return { ok: true, alreadyGranted: true }; // NEW
+        } // NEW
+        const previousGrants = grantsFromAttr(scopeCell); // NEW
+        const actor = currentUser(); // NEW
+        graph[INTERNAL_FLAG] = true; // NEW
+        model.beginUpdate(); // NEW
+        try { // NEW
+            setScopeGrantInternal(scopeCell, { userId: requester.id, preset }); // NEW
+            syncGardenRoleCardsForGrantChange(scopeCell, previousGrants, grantsFromAttr(scopeCell)); // NEW
+            addAccessDecisionMessage(store, request, "approved", preset, source.decisionNote, actor); // NEW
+            removeAccessRequestFromStore(store, request.id); // NEW
+            setAttr(metadataCell(), ATTR_STORE, JSON.stringify(normalizeStore(store))); // NEW
+        } finally { // NEW
+            model.endUpdate(); // NEW
+            graph[INTERNAL_FLAG] = false; // NEW
+        } // NEW
+        refreshPanel(); // NEW
+        updateToolbarButton(); // NEW
+        dispatchUsersStoreChanged(); // NEW
+        showStatus("Access approved for " + requester.name + "."); // NEW
+        return { ok: true, request: publicAccessRequest(request), preset }; // NEW
+    } // NEW
+
+    function denyAccessRequest(requestId, decisionNote) { // NEW
+        const store = readStore(); // NEW
+        const request = store.accessRequests.find(function (entry) { return entry.id === requestId && entry.status === "pending"; }); // NEW
+        if (!request) return { ok: false, reason: "No pending access request was found." }; // NEW
+        if (!canReviewAccessRequest(request)) return { ok: false, reason: "You cannot deny this access request." }; // NEW
+        const actor = currentUser(); // NEW
+        request.status = "denied"; // NEW
+        request.decidedBy = actor ? actor.id : ""; // NEW
+        request.decidedAt = nowMs(); // NEW
+        request.decisionNote = String(decisionNote || ""); // NEW
+        request.updatedAt = request.decidedAt; // NEW
+        addAccessDecisionMessage(store, request, "denied", request.requestedPreset, request.decisionNote, actor); // NEW
+        writeStore(store); // NEW
+        showStatus("Access request denied."); // NEW
+        return { ok: true, request: publicAccessRequest(request) }; // NEW
+    } // NEW
+
     function getAccessSummary(cell) {
         const owner = nearestOwnedAncestor(cell);
         const grants = getScopeGrants(cell); // CHANGE
@@ -1080,14 +1847,15 @@ Draw.loadPlugin(function (ui) {
             directOpen: getAttr(cell, ATTR_ACCESS_OPEN) === "1",
             directUserIds: grants.map(function (grant) { return grant.userId; }), // CHANGE
             directGrants: grants, // NEW
-            roleDerivedTask: !!(current && roleLinkedBoardGrantsForUser(current.id, cell).length), // NEW
             effectiveCapabilities: current ? effectiveCapabilitiesForCell(cell, current.id) : [], // NEW
+            inheritedAccessGrant: currentInheritedGrant ? publicGrant(currentInheritedGrant.grant) : null, // CHANGE
             inheritedAccessSource: currentInheritedGrant ? scopeSummaryForCell(currentInheritedGrant.cell) : null, // NEW
             effectiveOpen: !!nearestAccessGrant(cell, null),
             canEdit: canEditCell(cell),
             canAdd: canAddCell(cell),
             canDelete: canDeleteCell(cell),
             canManageAccess: canManageAccess(cell),
+            canManageScopeGrants: canManageScopeGrants(cell), // NEW
             canTransferOwnership: canTransferOwnership(cell) // NEW
         };
     }
@@ -1172,14 +1940,16 @@ Draw.loadPlugin(function (ui) {
     }
 
     function setAccess(cell, options) {
-        if (!cell || !canManageAccess(cell)) return { ok: false, reason: "You cannot manage access for this cell." };
+        if (!cell || !canManageScopeGrants(cell)) return { ok: false, reason: "Select a module, garden bed, or task board to manage access." }; // CHANGE
         const source = options || {};
+        const previousGrants = grantsFromAttr(cell); // NEW
         graph[INTERNAL_FLAG] = true;
         model.beginUpdate();
         try {
             setAttr(cell, ATTR_ACCESS_OPEN, ""); // CHANGE
-            const grants = (source.userIds || []).filter(function (id) { return !!storedOrPendingUserById(id); }).map(function (userId) { return normalizeGrant({ userId, preset: source.preset || "viewer", capabilities: source.capabilities }); }); // CHANGE
+            const grants = (source.userIds || []).filter(function (id) { return !!storedOrPendingUserById(id); }).map(function (userId) { return normalizeGrant({ userId, preset: source.preset || "visitor", capabilities: source.capabilities }); }); // CHANGE
             setGrantsAttr(cell, grants); // CHANGE
+            syncGardenRoleCardsForGrantChange(cell, previousGrants, grantsFromAttr(cell)); // NEW
         } finally {
             model.endUpdate();
             graph[INTERNAL_FLAG] = false;
@@ -1205,12 +1975,24 @@ Draw.loadPlugin(function (ui) {
         return { id: cell.id || (cell.getId && cell.getId()) || "", cell, label: cellLabel(cell) }; // NEW
     } // NEW
 
+    function getUserGardenRoleCard(userId, gardenCell) { // NEW
+        const matches = roleCardsForGardenUser(gardenCell, String(userId || "")); // NEW
+        if (matches.length !== 1) return null; // NEW
+        const cell = matches[0]; // NEW
+        return { id: cellId(cell), cell, label: cellLabel(cell), gardenId: cellId(gardenCell) }; // NEW
+    } // NEW
+
     function listRoleCards() { // NEW
         const cards = []; // NEW
         traverseCells(model.getRoot && model.getRoot(), function (cell) { // NEW
             if (isRoleCard(cell)) cards.push({ id: cell.id || (cell.getId && cell.getId()) || "", cell, label: cellLabel(cell), userId: getAttr(cell, ATTR_ROLE_USER) || "" }); // NEW
         }); // NEW
         return cards.sort(function (left, right) { return left.label.localeCompare(right.label, undefined, { sensitivity: "base" }) || left.id.localeCompare(right.id); }); // NEW
+    } // NEW
+
+    function listGardenRoleCards(gardenCell) { // NEW
+        const gardenId = cellId(gardenCell); // NEW
+        return listRoleCards().filter(function (role) { return getAttr(role.cell, ATTR_ROLE_GARDEN_MODULE) === gardenId; }); // NEW
     } // NEW
 
     function setUserRoleCard(userId, roleCard) { // NEW
@@ -1221,8 +2003,9 @@ Draw.loadPlugin(function (ui) {
         graph[INTERNAL_FLAG] = true; // NEW
         model.beginUpdate(); // NEW
         try { // NEW
+            const gardenId = getAttr(roleCard, ATTR_ROLE_GARDEN_MODULE) || ""; // NEW
             traverseCells(model.getRoot && model.getRoot(), function (cell) { // NEW
-                if (isRoleCard(cell) && cleanUserId && getAttr(cell, ATTR_ROLE_USER) === cleanUserId && cell !== roleCard) setAttr(cell, ATTR_ROLE_USER, ""); // NEW
+                if (isRoleCard(cell) && cleanUserId && getAttr(cell, ATTR_ROLE_USER) === cleanUserId && cell !== roleCard && (gardenId ? getAttr(cell, ATTR_ROLE_GARDEN_MODULE) === gardenId : !getAttr(cell, ATTR_ROLE_GARDEN_MODULE))) setAttr(cell, ATTR_ROLE_USER, ""); // CHANGE
             }); // NEW
             setAttr(roleCard, ATTR_ROLE_USER, cleanUserId); // NEW
         } finally { // NEW
@@ -1269,7 +2052,7 @@ Draw.loadPlugin(function (ui) {
         if (emailExists(store, email)) return { ok: false, reason: "That email is already invited or already belongs to a user." }; // NEW
         const scopeCheck = canInviteScopes(source.scopeCellIds || source.cells || []); // NEW
         if (!scopeCheck.ok) return { ok: false, reason: scopeCheck.reason }; // NEW
-        const preset = normalizePreset(source.preset || "viewer"); // NEW
+        const preset = normalizePreset(source.preset || "visitor"); // CHANGE
         const capabilities = normalizeCapabilities(source.capabilities, preset); // NEW
         const code = makeInviteCode(); // NEW
         const codeSalt = makeId(INVITE_CODE_SALT_PREFIX); // NEW
@@ -1319,6 +2102,9 @@ Draw.loadPlugin(function (ui) {
         invite.status = "accepted"; // NEW
         writeStore(store); // NEW
         currentUserId = user.id; // NEW
+        graph[INTERNAL_FLAG] = true; // NEW
+        model.beginUpdate(); // NEW
+        try { ensureGardenRoleCardsForUser(user.id); } finally { model.endUpdate(); graph[INTERNAL_FLAG] = false; } // NEW
         showStatus("Invite accepted. Logged in as " + name + "."); // NEW
         closeAuthOverlay(true); // NEW
         refreshPanel(); // NEW
@@ -1557,6 +2343,11 @@ Draw.loadPlugin(function (ui) {
             const cell = cellFromChange(change); // NEW
             if (!cell) return; // NEW
             const keyBase = String(cell.id || (cell.getId && cell.getId()) || ""); // NEW
+            [cell, currentParentOfChange(change), previousParentOfChange(change)].forEach(function (moduleCell) { // NEW
+                if (!isUnownedModuleCell(moduleCell)) return; // NEW
+                const moduleKey = cellStableId(moduleCell) + ":createdOwner"; // NEW
+                if (!stamped.has(moduleKey)) { stampCreatedOwner(moduleCell, edit); stamped.add(moduleKey); } // NEW
+            }); // NEW
             if (name === "mxChildChange" && currentParentOfChange(change) && !previousParentOfChange(change) && isTilerGroup(cell)) { // CHANGE
                 const key = keyBase + ":createdOwner"; // NEW
                 if (!stamped.has(key)) { stampCreatedOwner(cell, edit); stamped.add(key); } // CHANGE
@@ -1647,8 +2438,12 @@ Draw.loadPlugin(function (ui) {
         const cell = cellFromChange(change);
         if (!name || !cell) return true;
         if (roleUserLinkChanged(change)) return canTransferOwnership(cell); // NEW
+        const changedAttrs = (name === "mxCellAttributeChange" || name === "mxValueChange") ? changedAttributeNames(change) : []; // NEW
+        if (changedAttrs.indexOf(ATTR_OWNER) >= 0) return canTransferOwnership(cell); // NEW
+        if (changedAttrs.some(function (attr) { return SCOPE_GRANT_ATTRS.has(attr); })) return canManageScopeGrants(cell); // NEW
         if ((name === "mxCellAttributeChange" || name === "mxValueChange") && PROTECTED_ATTRS.has(String(change.key || "")) && !canManageAccess(cell)) return false; // CHANGE
         if ((name === "mxCellAttributeChange" || name === "mxValueChange") && protectedAttrsChanged(change) && !canManageAccess(cell)) return false; // CHANGE
+        if ((name === "mxCellAttributeChange" || name === "mxValueChange") && isModuleCell(cell)) return canEditCell(cell); // NEW
         if (name === "mxChildChange") {
             const currentParent = currentParentOfChange(change);
             const previousParent = previousParentOfChange(change);
@@ -2162,6 +2957,7 @@ Draw.loadPlugin(function (ui) {
         panel.appendChild(rosterNode);
         panel.appendChild(accessNode);
         host.appendChild(panel);
+        installGardenAccessDismissHandlers(); // NEW
         installSelectionListener();
         refreshPanel();
     }
@@ -2347,29 +3143,8 @@ Draw.loadPlugin(function (ui) {
 
     function appendAdminUserRow(parent, user) { // NEW
         const row = document.createElement("div"); // NEW
-        row.style.cssText = "display:grid;grid-template-columns:minmax(80px,1fr) minmax(120px,160px) auto auto auto;gap:6px;align-items:center;padding:3px 0;"; // CHANGE
+        row.style.cssText = "display:grid;grid-template-columns:minmax(80px,1fr) auto auto auto;gap:6px;align-items:center;padding:3px 0;"; // CHANGE
         row.appendChild(document.createTextNode(user.name + (user.admin ? " - admin" : "") + (user.disabled ? " - disabled" : ""))); // NEW
-        const roleSelect = document.createElement("select"); // NEW
-        roleSelect.style.cssText = "box-sizing:border-box;width:100%;padding:3px 5px;font:12px Arial,sans-serif;"; // NEW
-        const none = document.createElement("option"); // NEW
-        none.value = ""; // NEW
-        none.textContent = "No role card"; // NEW
-        roleSelect.appendChild(none); // NEW
-        listRoleCards().forEach(function (role) { // NEW
-            const option = document.createElement("option"); // NEW
-            option.value = role.id; // NEW
-            option.textContent = role.label + (role.userId && role.userId !== user.id ? " (linked)" : ""); // NEW
-            roleSelect.appendChild(option); // NEW
-        }); // NEW
-        const linked = getUserRoleCard(user.id); // NEW
-        roleSelect.value = linked ? linked.id : ""; // NEW
-        roleSelect.addEventListener("change", function () { // NEW
-            const role = roleSelect.value ? (model.getCell && model.getCell(roleSelect.value)) : (linked && linked.cell); // NEW
-            if (!role) return; // NEW
-            const result = setUserRoleCard(roleSelect.value ? user.id : "", role); // NEW
-            if (!result.ok) showStatus(result.reason); // NEW
-        }); // NEW
-        row.appendChild(roleSelect); // NEW
         const adminToggle = makeButton(user.admin ? "Regular" : "Admin", function () { // NEW
             const result = setUserAdmin(user.id, !user.admin); // NEW
             if (!result.ok) showStatus(result.reason); // NEW
@@ -2386,7 +3161,132 @@ Draw.loadPlugin(function (ui) {
         row.appendChild(disableToggle); // NEW
         row.appendChild(resetPin); // NEW
         parent.appendChild(row); // NEW
+        appendGardenAccessDropdown(parent, user); // CHANGE
         if (resetPinUserId === user.id) appendResetPinRow(parent, user); // NEW
+    } // NEW
+
+    function gardenGrantForUser(garden, userId) { // NEW
+        return grantsFromAttr(garden).find(function (entry) { return entry.userId === userId; }) || null; // NEW
+    } // NEW
+
+    function archivedGardenRoleCardForUi(garden, userId) { // NEW
+        const team = readOnlyTeamForGarden(garden); // CHANGE
+        return (team && archivedRoleCardForUser(garden, team, userId)) || inactiveGardenRoleCardsForArchivedUser(garden, userId)[0] || null; // NEW
+    } // NEW
+
+    function archivedGardenPresetForUi(garden, userId) { // NEW
+        const team = readOnlyTeamForGarden(garden); // CHANGE
+        const entry = team && archivedRoleEntry(team, userId); // NEW
+        return normalizePreset(entry && entry.preset); // NEW
+    } // NEW
+
+    function gardenAccessStatusLabel(garden, userId, grant) { // NEW
+        if (grant) return getUserGardenRoleCard(userId, garden) ? "Active" : "Missing role"; // NEW
+        return archivedGardenRoleCardForUi(garden, userId) ? "Inactive/restorable" : "Missing"; // NEW
+    } // NEW
+
+    function gardenAccessMatchesSearch(garden) { // NEW
+        const query = String(gardenAccessSearchText || "").trim().toLowerCase(); // NEW
+        if (!query) return true; // NEW
+        return cellDisplayLabel(garden, "Garden").toLowerCase().indexOf(query) >= 0; // NEW
+    } // NEW
+
+    function closeGardenAccessPopover() { // NEW
+        if (!openGardenAccessUserId) return; // NEW
+        openGardenAccessUserId = ""; // NEW
+        refreshPanel(); // NEW
+    } // NEW
+
+    function installGardenAccessDismissHandlers() { // NEW
+        if (!document || gardenAccessOutsideHandler) return; // NEW
+        gardenAccessOutsideHandler = function (evt) { // NEW
+            if (!openGardenAccessUserId) return; // NEW
+            const target = evt && evt.target; // NEW
+            if (target && target.closest && target.closest(".trellis-users-garden-access-dropdown")) return; // NEW
+            closeGardenAccessPopover(); // NEW
+        }; // NEW
+        gardenAccessKeyHandler = function (evt) { // NEW
+            if (!openGardenAccessUserId || !evt || evt.key !== "Escape") return; // NEW
+            openGardenAccessUserId = ""; // NEW
+            refreshPanel(); // NEW
+        }; // NEW
+        document.addEventListener("mousedown", gardenAccessOutsideHandler, true); // NEW
+        document.addEventListener("keydown", gardenAccessKeyHandler, true); // NEW
+    } // NEW
+
+    function appendGardenAccessDropdown(parent, user) { // NEW
+        const gardens = allGardenModules(); // NEW
+        if (!gardens.length) return; // NEW
+        const activeCount = gardens.filter(function (garden) { return !!gardenGrantForUser(garden, user.id); }).length; // NEW
+        const isOpen = openGardenAccessUserId === user.id; // NEW
+        const dropdown = document.createElement("div"); // CHANGE
+        dropdown.className = "trellis-users-garden-access-dropdown"; // NEW
+        dropdown.setAttribute("data-trellis-users-user-id", user.id); // NEW
+        dropdown.style.cssText = "position:relative;margin-left:12px;padding:2px 0 4px 0;color:#374151;"; // CHANGE
+        const button = makeButton("Garden access (" + activeCount + ")", function () { // NEW
+            openGardenAccessUserId = isOpen ? "" : user.id; // NEW
+            refreshPanel(); // NEW
+        }); // NEW
+        button.className = (button.className || "") + " trellis-users-garden-access-button"; // NEW
+        button.setAttribute("aria-haspopup", "dialog"); // NEW
+        button.setAttribute("aria-expanded", isOpen ? "true" : "false"); // NEW
+        dropdown.appendChild(button); // NEW
+        if (!isOpen) { parent.appendChild(dropdown); return; } // NEW
+        const popover = document.createElement("div"); // NEW
+        popover.className = "trellis-users-garden-access-popover"; // NEW
+        popover.setAttribute("role", "dialog"); // NEW
+        popover.setAttribute("aria-label", "Garden access"); // NEW
+        popover.style.cssText = "position:absolute;left:0;top:28px;z-index:" + (USERS_UI_LAYER_Z + 2) + ";width:360px;max-width:calc(100vw - 32px);max-height:360px;overflow:auto;background:#fff;border:1px solid #111;border-radius:4px;box-shadow:0 4px 16px rgba(0,0,0,.22);padding:6px;box-sizing:border-box;"; // NEW
+        const search = makeInput("search", "Search gardens"); // NEW
+        search.className = (search.className || "") + " trellis-users-garden-access-search"; // NEW
+        search.setAttribute("aria-label", "Search gardens"); // NEW
+        search.value = gardenAccessSearchText; // NEW
+        search.style.cssText = "box-sizing:border-box;width:100%;margin-bottom:5px;padding:4px 6px;font:12px Arial,sans-serif;"; // NEW
+        search.addEventListener("input", function () { gardenAccessSearchText = search.value || ""; refreshPanel(); }); // NEW
+        popover.appendChild(search); // NEW
+        const visibleGardens = gardens.filter(gardenAccessMatchesSearch); // NEW
+        visibleGardens.forEach(function (garden) { // CHANGE
+            const grant = gardenGrantForUser(garden, user.id); // NEW
+            const accessRow = document.createElement("div"); // NEW
+            accessRow.className = "trellis-users-garden-access-row"; // NEW
+            accessRow.setAttribute("data-trellis-users-garden-id", cellId(garden)); // NEW
+            accessRow.setAttribute("data-trellis-users-user-id", user.id); // NEW
+            accessRow.style.cssText = "display:grid;grid-template-columns:18px minmax(90px,1fr) minmax(104px,128px) minmax(104px,130px);gap:6px;align-items:center;padding:2px 0;"; // CHANGE
+            const checkbox = document.createElement("input"); // NEW
+            checkbox.type = "checkbox"; // NEW
+            checkbox.checked = !!grant; // NEW
+            checkbox.setAttribute("aria-label", "Garden access for " + cellDisplayLabel(garden, "Garden")); // NEW
+            accessRow.appendChild(checkbox); // NEW
+            const gardenName = document.createElement("div"); // NEW
+            gardenName.textContent = cellDisplayLabel(garden, "Garden"); // NEW
+            accessRow.appendChild(gardenName); // NEW
+            const presetSelect = makePresetSelect((grant && grant.preset) || archivedGardenPresetForUi(garden, user.id), function (preset) { // NEW
+                if (!checkbox.checked) return; // NEW
+                const result = setScopeGrant(garden, { userId: user.id, preset }); // NEW
+                if (!result.ok) showStatus(result.reason); // NEW
+            }); // NEW
+            accessRow.appendChild(presetSelect); // NEW
+            const status = document.createElement("div"); // NEW
+            status.textContent = gardenAccessStatusLabel(garden, user.id, grant); // NEW
+            status.style.cssText = "font-size:11px;color:" + (grant ? "#047857" : (archivedGardenRoleCardForUi(garden, user.id) ? "#92400E" : "#6B7280")) + ";"; // NEW
+            accessRow.appendChild(status); // NEW
+            checkbox.addEventListener("change", function () { // NEW
+                openGardenAccessUserId = user.id; // NEW
+                const result = checkbox.checked ? setScopeGrant(garden, { userId: user.id, preset: presetSelect.value }) : removeScopeGrant(garden, user.id); // NEW
+                if (!result.ok) showStatus(result.reason); // NEW
+            }); // NEW
+            popover.appendChild(accessRow); // CHANGE
+        }); // NEW
+        if (!visibleGardens.length) { // NEW
+            const empty = document.createElement("div"); // NEW
+            empty.className = "trellis-users-garden-access-empty"; // NEW
+            empty.textContent = "No matching gardens"; // NEW
+            empty.style.cssText = "color:#6B7280;padding:4px 2px;"; // NEW
+            popover.appendChild(empty); // NEW
+        } // NEW
+        dropdown.appendChild(popover); // NEW
+        parent.appendChild(dropdown); // NEW
+        setTimeout(function () { if (search && typeof search.focus === "function") search.focus(); }, 0); // NEW
     } // NEW
 
     function appendUserGroup(parent, titleText, users) { // NEW
@@ -2447,28 +3347,6 @@ Draw.loadPlugin(function (ui) {
         return normalized.charAt(0).toUpperCase() + normalized.slice(1); // NEW
     } // NEW
 
-    function capabilityLabel(capability) { // NEW
-        return ({ // NEW
-            create_plantings: "Create plantings", // NEW
-            manage_own_plantings: "Manage own plantings", // NEW
-            move_tasks: "Move tasks", // NEW
-            edit_task_details: "Edit task details", // NEW
-            manage_scope_content: "Manage scope content", // NEW
-            manage_access: "Manage access" // NEW
-        })[capability] || capability; // NEW
-    } // NEW
-
-    function capabilityDescription(capability) { // NEW
-        return ({ // NEW
-            create_plantings: "Create new planting groups in granted garden beds/modules.", // NEW
-            manage_own_plantings: "Edit, move, resize, schedule, and delete planting groups the user owns.", // NEW
-            move_tasks: "Move task cards between lanes/days and reorder task schedules in granted task boards.", // NEW
-            edit_task_details: "Edit task titles, notes, dates, estimates, and other non-assignment task details.", // NEW
-            manage_scope_content: "Manage all non-access content in the scope, including plantings and task content.", // NEW
-            manage_access: "Invite users and change grants for the scope; ownership transfer remains owner/admin-only." // NEW
-        })[capability] || capabilityLabel(capability); // NEW
-    } // NEW
-
     function makePresetSelect(value, onChange) { // NEW
         const select = document.createElement("select"); // NEW
         select.style.cssText = "box-sizing:border-box;width:100%;padding:4px 6px;font:12px Arial,sans-serif;"; // NEW
@@ -2483,42 +3361,15 @@ Draw.loadPlugin(function (ui) {
         return select; // NEW
     } // NEW
 
-    function appendCapabilityCheckboxes(parent, grant, onChange) { // NEW
-        const selected = new Set(normalizeCapabilities(grant && grant.capabilities, grant && grant.preset)); // NEW
-        const inputsByCapability = {}; // NEW
-        const wrap = document.createElement("div"); // NEW
-        wrap.style.cssText = "display:grid;grid-template-columns:1fr 1fr;gap:3px 8px;margin-top:4px;color:#374151;"; // NEW
-        function syncInputs() { // NEW
-            const normalized = new Set(normalizeCapabilities(Array.from(selected), "viewer")); // NEW
-            Object.keys(inputsByCapability).forEach(function (capability) { inputsByCapability[capability].checked = normalized.has(capability); }); // NEW
-        } // NEW
-        DOMAIN_CAPABILITIES.forEach(function (capability) { // NEW
-            const label = document.createElement("label"); // NEW
-            label.style.cssText = "display:flex;gap:4px;align-items:center;font-size:11px;"; // NEW
-            label.title = capabilityDescription(capability); // NEW
-            const input = document.createElement("input"); // NEW
-            input.type = "checkbox"; // NEW
-            input.title = label.title; // NEW
-            input.checked = selected.has(capability); // NEW
-            inputsByCapability[capability] = input; // NEW
-            input.addEventListener("change", function () { // NEW
-                if (input.checked) selected.add(capability); else selected.delete(capability); // NEW
-                const normalized = normalizeCapabilities(Array.from(selected), "viewer"); // NEW
-                selected.clear(); // NEW
-                normalized.forEach(function (capability) { selected.add(capability); }); // NEW
-                syncInputs(); // NEW
-                onChange(normalized); // CHANGE
-            }); // NEW
-            label.appendChild(input); // NEW
-            label.appendChild(document.createTextNode(capabilityLabel(capability))); // NEW
-            wrap.appendChild(label); // NEW
-        }); // NEW
-        syncInputs(); // NEW
-        parent.appendChild(wrap); // NEW
+    function grantForUser(summary, userId) { // NEW
+        return (summary.directGrants || []).find(function (grant) { return grant.userId === userId; }) || { userId, preset: "visitor", capabilities: [] }; // CHANGE
     } // NEW
 
-    function grantForUser(summary, userId) { // NEW
-        return (summary.directGrants || []).find(function (grant) { return grant.userId === userId; }) || { userId, preset: "viewer", capabilities: [] }; // NEW
+    function effectiveAccessLabel(capabilities) { // NEW
+        const caps = new Set(capabilities || []); // NEW
+        if (caps.has(CAP_MANAGE_SCOPE_CONTENT) || caps.has(CAP_MANAGE_ACCESS)) return presetLabel("coordinator"); // NEW
+        if (caps.has(CAP_CREATE_PLANTINGS) || caps.has(CAP_MANAGE_OWN_PLANTINGS) || caps.has(CAP_MOVE_TASKS) || caps.has(CAP_EDIT_TASK_DETAILS)) return presetLabel("gardener"); // NEW
+        return presetLabel("visitor"); // NEW
     } // NEW
 
     function accessDisplayForUser(cell, summary, user) { // NEW
@@ -2537,8 +3388,10 @@ Draw.loadPlugin(function (ui) {
         }; // NEW
     } // NEW
 
-    function inheritedLabel(source) { // NEW
-        return source ? "Inherited from " + titleCaseScopeType(source.type) + ": " + source.label : ""; // NEW
+    function inheritedLabel(source, grant) { // CHANGE
+        if (!source) return ""; // CHANGE
+        const access = grant ? effectiveAccessLabel(grant.capabilities || normalizeCapabilities(null, grant.preset)) : "Inherited"; // CHANGE
+        return access + " in " + source.label; // CHANGE
     } // NEW
 
     function appendScopeSummary(parent, summaries) { // NEW
@@ -2562,13 +3415,207 @@ Draw.loadPlugin(function (ui) {
         parent.appendChild(badge); // NEW
     } // NEW
 
-    function appendInheritedBadge(parent, source) { // NEW
-        const label = inheritedLabel(source); // NEW
+    function appendInheritedBadge(parent, source, grant) { // CHANGE
+        const label = inheritedLabel(source, grant); // CHANGE
         if (!label) return; // NEW
         const badge = document.createElement("span"); // NEW
         badge.textContent = label; // NEW
         badge.style.cssText = "display:inline-block;margin-left:6px;padding:1px 5px;border:1px solid #BFDBFE;border-radius:3px;color:#1D4ED8;background:#EFF6FF;font-size:10px;line-height:14px;"; // NEW
         parent.appendChild(badge); // NEW
+    } // NEW
+
+    function makeAccessDialogShell(titleText, width) { // NEW
+        if (typeof document === "undefined") return null; // NEW
+        const overlay = document.createElement("div"); // NEW
+        overlay.className = "trellis-users-access-dialog"; // NEW
+        overlay.style.cssText = "position:fixed;inset:0;z-index:" + USERS_UI_LAYER_Z + ";background:rgba(0,0,0,.24);display:flex;align-items:flex-start;justify-content:center;padding-top:72px;box-sizing:border-box;font:12px Arial,sans-serif;"; // NEW
+        overlay.addEventListener("mousedown", function (evt) { if (evt.target === overlay) closeAccessDialog(overlay); }); // NEW
+        const box = document.createElement("div"); // NEW
+        box.style.cssText = "width:" + (width || 420) + "px;max-width:calc(100vw - 32px);background:#fff;border:1px solid #111;border-radius:4px;box-shadow:0 12px 32px rgba(0,0,0,.24);padding:14px;box-sizing:border-box;"; // NEW
+        const header = document.createElement("div"); // NEW
+        header.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px;"; // NEW
+        const title = document.createElement("div"); // NEW
+        title.textContent = titleText; // NEW
+        title.style.cssText = "font-weight:700;font-size:15px;"; // NEW
+        header.appendChild(title); // NEW
+        header.appendChild(makeButton("Close", function () { closeAccessDialog(overlay); })); // NEW
+        box.appendChild(header); // NEW
+        overlay.appendChild(box); // NEW
+        return { overlay, box }; // NEW
+    } // NEW
+
+    function closeAccessDialog(dialog) { // NEW
+        if (dialog && dialog.parentNode) dialog.parentNode.removeChild(dialog); // NEW
+    } // NEW
+
+    function makeTextArea(placeholder) { // NEW
+        const text = document.createElement("textarea"); // NEW
+        text.placeholder = placeholder || ""; // NEW
+        text.rows = 3; // NEW
+        text.style.cssText = "box-sizing:border-box;width:100%;padding:5px 6px;border:1px solid #D1D5DB;border-radius:3px;font:12px Arial,sans-serif;resize:vertical;"; // NEW
+        return text; // NEW
+    } // NEW
+
+    function openAccessRequestDialog(cell) { // NEW
+        const scope = accessRequestScopeSummary(cell); // NEW
+        if (!scope) { showStatus("Select a module, garden bed, or task board to request access."); return; } // NEW
+        const shell = makeAccessDialogShell("Request access", 420); // NEW
+        if (!shell) return; // NEW
+        const currentRequest = getAccessRequestForCurrentUser(cell); // NEW
+        const scopeText = document.createElement("div"); // NEW
+        scopeText.style.cssText = "color:#374151;margin-bottom:8px;line-height:18px;"; // NEW
+        scopeText.textContent = titleCaseScopeType(scope.type) + ": " + scope.label; // NEW
+        const preset = makePresetSelect(currentRequest && currentRequest.requestedPreset || "gardener", function () { }); // NEW
+        preset.style.marginBottom = "8px"; // NEW
+        const note = makeTextArea("Optional note"); // NEW
+        note.value = currentRequest && currentRequest.status === "pending" ? currentRequest.note : ""; // NEW
+        const status = document.createElement("div"); // NEW
+        status.style.cssText = "min-height:18px;color:#4B5563;margin:8px 0;"; // NEW
+        const actions = document.createElement("div"); // NEW
+        actions.style.cssText = "display:flex;justify-content:flex-end;gap:8px;"; // NEW
+        actions.appendChild(makeButton("Cancel", function () { closeAccessDialog(shell.overlay); })); // NEW
+        actions.appendChild(makeButton("Send Request", function () { // NEW
+            const result = requestAccess(cell, { requestedPreset: preset.value, note: note.value }); // NEW
+            if (!result.ok) { status.textContent = result.reason; return; } // NEW
+            closeAccessDialog(shell.overlay); // NEW
+        })); // NEW
+        shell.box.appendChild(scopeText); // NEW
+        shell.box.appendChild(preset); // NEW
+        shell.box.appendChild(note); // NEW
+        shell.box.appendChild(status); // NEW
+        shell.box.appendChild(actions); // NEW
+        (document.body || graph.container).appendChild(shell.overlay); // NEW
+        note.focus(); // NEW
+    } // NEW
+
+    function appendRequesterAccessRequestStatus(parent, cell) { // NEW
+        const request = getAccessRequestForCurrentUser(cell); // NEW
+        if (!request) return; // NEW
+        const status = document.createElement("div"); // NEW
+        status.className = "trellis-users-access-request-status"; // NEW
+        status.style.cssText = "border:1px solid " + (request.status === "denied" ? "#FCA5A5" : "#FDE68A") + ";background:" + (request.status === "denied" ? "#FEF2F2" : "#FFFBEB") + ";color:#374151;border-radius:3px;padding:5px 6px;margin:6px 0;line-height:16px;"; // NEW
+        status.textContent = request.status === "denied" ? "Access request denied" : "Access request pending"; // NEW
+        status.textContent += " (" + presetLabel(request.requestedPreset) + ")."; // NEW
+        if (request.status === "denied" && request.decisionNote) status.textContent += " " + request.decisionNote; // NEW
+        parent.appendChild(status); // NEW
+    } // NEW
+
+    function openMessagesDialog(options) { // NEW
+        if (!isEnabled() || !isLoggedIn()) { // NEW
+            showAuthDialog({ blocking: false, message: isEnabled() ? "Log in to review access messages." : "Enable users before reviewing access messages." }); // NEW
+            return { ok: false, reason: "Login required." }; // NEW
+        } // NEW
+        const shell = makeAccessDialogShell("Messages", 560); // NEW
+        if (!shell) return { ok: false, reason: "Document UI is unavailable." }; // NEW
+        const list = document.createElement("div"); // NEW
+        list.className = "trellis-users-messages-list"; // NEW
+        const render = function () { // NEW
+            clearNode(list); // NEW
+            const requests = listIncomingAccessRequests(options); // NEW
+            const responses = listAccessMessages(options); // NEW
+            if (!requests.length && !responses.length) { // NEW
+                const empty = document.createElement("div"); // NEW
+                empty.style.cssText = "color:#6B7280;padding:8px 0;"; // NEW
+                empty.textContent = "No messages."; // CHANGE
+                list.appendChild(empty); // NEW
+                return; // NEW
+            } // NEW
+            if (requests.length) { // NEW
+                const requestTitle = document.createElement("div"); // NEW
+                requestTitle.className = "trellis-users-messages-section-title"; // NEW
+                requestTitle.style.cssText = "font-weight:700;margin:4px 0 6px;"; // NEW
+                requestTitle.textContent = "Access requests"; // NEW
+                list.appendChild(requestTitle); // NEW
+                requests.forEach(function (request) { // NEW
+                    const row = document.createElement("div"); // NEW
+                    row.className = "trellis-users-message-row"; // NEW
+                    row.setAttribute("data-trellis-users-request-id", request.id); // NEW
+                    row.style.cssText = "border-top:1px solid #E5E7EB;padding:10px 0;"; // NEW
+                    const head = document.createElement("div"); // NEW
+                    head.style.cssText = "font-weight:700;margin-bottom:4px;"; // NEW
+                    head.textContent = request.requesterName + " requested " + presetLabel(request.requestedPreset) + " access"; // NEW
+                    const scope = document.createElement("div"); // NEW
+                    scope.style.cssText = "color:#374151;margin-bottom:4px;"; // NEW
+                    scope.textContent = titleCaseScopeType(request.scopeType) + ": " + request.scopeLabel; // NEW
+                    const note = document.createElement("div"); // NEW
+                    note.style.cssText = "color:#6B7280;margin-bottom:6px;white-space:pre-wrap;"; // NEW
+                    note.textContent = request.note || "No note."; // NEW
+                    const preset = makePresetSelect(request.requestedPreset, function () { }); // NEW
+                    const decisionNote = makeTextArea("Optional response note"); // CHANGE
+                    const status = document.createElement("div"); // NEW
+                    status.style.cssText = "min-height:16px;color:#4B5563;margin-top:6px;"; // NEW
+                    const actions = document.createElement("div"); // NEW
+                    actions.style.cssText = "display:grid;grid-template-columns:1fr auto auto;gap:8px;align-items:start;"; // NEW
+                    actions.appendChild(preset); // NEW
+                    actions.appendChild(makeButton("Approve", function () { // NEW
+                        const result = approveAccessRequest(request.id, { preset: preset.value, decisionNote: decisionNote.value }); // CHANGE
+                        if (!result.ok) { status.textContent = result.reason; return; } // NEW
+                        render(); // NEW
+                    })); // NEW
+                    actions.appendChild(makeButton("Deny", function () { // NEW
+                        const result = denyAccessRequest(request.id, decisionNote.value); // NEW
+                        if (!result.ok) { status.textContent = result.reason; return; } // NEW
+                        render(); // NEW
+                    })); // NEW
+                    row.appendChild(head); // NEW
+                    row.appendChild(scope); // NEW
+                    row.appendChild(note); // NEW
+                    row.appendChild(decisionNote); // NEW
+                    row.appendChild(actions); // NEW
+                    row.appendChild(status); // NEW
+                    list.appendChild(row); // NEW
+                }); // NEW
+            } // NEW
+            if (responses.length) { // NEW
+                const responseTitle = document.createElement("div"); // NEW
+                responseTitle.className = "trellis-users-responses-section-title"; // NEW
+                responseTitle.style.cssText = "font-weight:700;margin:12px 0 6px;"; // NEW
+                responseTitle.textContent = "Responses"; // NEW
+                list.appendChild(responseTitle); // NEW
+                responses.forEach(function (message) { // NEW
+                    const row = document.createElement("div"); // NEW
+                    row.className = "trellis-users-response-message-row"; // NEW
+                    row.setAttribute("data-trellis-users-message-id", message.id); // NEW
+                    row.style.cssText = "border-top:1px solid #E5E7EB;padding:10px 0;"; // NEW
+                    const head = document.createElement("div"); // NEW
+                    head.style.cssText = "font-weight:700;margin-bottom:4px;"; // NEW
+                    head.textContent = "Access " + (message.decision === "denied" ? "denied" : "approved") + " for " + presetLabel(message.preset); // NEW
+                    const scope = document.createElement("div"); // NEW
+                    scope.style.cssText = "color:#374151;margin-bottom:4px;"; // NEW
+                    scope.textContent = titleCaseScopeType(message.scopeType) + ": " + message.scopeLabel + (message.scopeMissing ? " (unavailable)" : ""); // NEW
+                    const reviewer = document.createElement("div"); // NEW
+                    reviewer.style.cssText = "color:#6B7280;margin-bottom:4px;"; // NEW
+                    reviewer.textContent = message.reviewerName ? "Reviewed by " + message.reviewerName + "." : "Reviewer unavailable."; // NEW
+                    const note = document.createElement("div"); // NEW
+                    note.style.cssText = "color:#6B7280;margin-bottom:6px;white-space:pre-wrap;"; // NEW
+                    note.textContent = message.note || "No response note."; // NEW
+                    const actions = document.createElement("div"); // NEW
+                    actions.style.cssText = "display:flex;justify-content:flex-end;gap:8px;"; // NEW
+                    if (message.unread) { // NEW
+                        actions.appendChild(makeButton("Mark read", function () { // NEW
+                            const result = markAccessMessageRead(message.id); // NEW
+                            if (!result.ok) { showStatus(result.reason); return; } // NEW
+                            render(); // NEW
+                        })); // NEW
+                    } // NEW
+                    actions.appendChild(makeButton("Dismiss", function () { // NEW
+                        const result = dismissAccessMessage(message.id); // NEW
+                        if (!result.ok) { showStatus(result.reason); return; } // NEW
+                        render(); // NEW
+                    })); // NEW
+                    row.appendChild(head); // NEW
+                    row.appendChild(scope); // NEW
+                    row.appendChild(reviewer); // NEW
+                    row.appendChild(note); // NEW
+                    row.appendChild(actions); // NEW
+                    list.appendChild(row); // NEW
+                }); // NEW
+            } // NEW
+        }; // NEW
+        render(); // NEW
+        shell.box.appendChild(list); // NEW
+        (document.body || graph.container).appendChild(shell.overlay); // NEW
+        return { ok: true }; // NEW
     } // NEW
 
     function appendAccessSection(parent) {
@@ -2577,7 +3624,7 @@ Draw.loadPlugin(function (ui) {
         if (!cell || cell === model.getRoot()) {
             const empty = document.createElement("div");
             empty.style.cssText = "border-top:1px solid #E5E7EB;padding-top:8px;color:#6B7280;";
-            empty.textContent = "Select a module, board, or cell to manage access.";
+            empty.textContent = "Select a module, garden bed, or task board to manage access."; // CHANGE
             parent.appendChild(empty);
             return;
         }
@@ -2603,11 +3650,27 @@ Draw.loadPlugin(function (ui) {
         ownerText.style.cssText = "color:#4B5563;margin:4px 0;";
         ownerText.textContent = "Owner: " + (owner ? owner.name : (summary.ownerUserId || "none"));
         box.appendChild(ownerText);
-        if (!summary.canManageAccess) {
+        if (!summary.canManageScopeGrants) { // CHANGE
+            const caps = document.createElement("div"); // NEW
+            caps.style.cssText = "color:#4B5563;margin:4px 0;"; // NEW
+            caps.textContent = "Your effective access: " + effectiveAccessLabel(summary.effectiveCapabilities); // NEW
+            box.appendChild(caps); // NEW
+            if (summary.inheritedAccessSource) { // NEW
+                const inherited = document.createElement("div"); // NEW
+                inherited.style.cssText = "color:#2563EB;margin:4px 0;"; // NEW
+                inherited.textContent = inheritedLabel(summary.inheritedAccessSource, summary.inheritedAccessGrant); // CHANGE
+                box.appendChild(inherited); // NEW
+            } // NEW
             const denied = document.createElement("div");
             denied.style.color = "#6B7280";
-            denied.textContent = summary.canEdit ? "You can edit this cell." : "You do not have access to this cell.";
+            denied.textContent = summary.canManageAccess ? "Select a module, garden bed, or task board to manage grants." : (summary.canEdit ? "You can edit this cell." : "You do not have access to this cell."); // CHANGE
             box.appendChild(denied);
+            if (!summary.canEdit) { // NEW
+                appendRequesterAccessRequestStatus(box, cell); // NEW
+                const requestButton = makeButton("Request Access", function () { openAccessRequestDialog(cell); }); // NEW
+                requestButton.className = "trellis-users-request-access-button"; // NEW
+                box.appendChild(requestButton); // NEW
+            } // NEW
             parent.appendChild(box);
             return;
         }
@@ -2657,19 +3720,13 @@ Draw.loadPlugin(function (ui) {
         } // NEW
         const caps = document.createElement("div"); // NEW
         caps.style.cssText = "color:#4B5563;margin:4px 0;"; // NEW
-        caps.textContent = "Your effective access: " + (summary.effectiveCapabilities.length ? summary.effectiveCapabilities.map(capabilityLabel).join(", ") : "Viewer"); // NEW
+        caps.textContent = "Your effective access: " + effectiveAccessLabel(summary.effectiveCapabilities); // CHANGE
         box.appendChild(caps); // NEW
         if (summary.inheritedAccessSource) { // NEW
             const inherited = document.createElement("div"); // NEW
             inherited.style.cssText = "color:#2563EB;margin:4px 0;"; // NEW
-            inherited.textContent = inheritedLabel(summary.inheritedAccessSource); // NEW
+            inherited.textContent = inheritedLabel(summary.inheritedAccessSource, summary.inheritedAccessGrant); // CHANGE
             box.appendChild(inherited); // NEW
-        } // NEW
-        if (summary.roleDerivedTask) { // NEW
-            const roleDerived = document.createElement("div"); // NEW
-            roleDerived.style.cssText = "color:#2563EB;margin:4px 0;"; // NEW
-            roleDerived.textContent = "Task access also comes from your linked role card."; // NEW
-            box.appendChild(roleDerived); // NEW
         } // NEW
         const grantUsers = listUsers().filter(function (user) { return !user.admin && !user.disabled; }); // NEW
         const visibleGrantUsers = grantUsers.filter(userMatchesPeopleFilter); // NEW
@@ -2699,21 +3756,17 @@ Draw.loadPlugin(function (ui) {
             const name = document.createElement("div"); // NEW
             name.textContent = user.name; // NEW
             if (directlyGranted) appendGrantedBadge(name); // NEW
-            if (access.inheritedSource) appendInheritedBadge(name, access.inheritedSource); // NEW
+            if (access.inheritedSource) appendInheritedBadge(name, access.inheritedSource, access.inheritedGrant); // CHANGE
             head.appendChild(name); // NEW
             head.appendChild(makePresetSelect(grant.preset, function (preset) { // NEW
                 const result = setScopeGrant(cell, { userId: user.id, preset }); // NEW
                 if (!result.ok) showStatus(result.reason); // NEW
             })); // NEW
             head.appendChild(makeButton(directlyGranted ? "Remove" : "Apply", function () { // CHANGE
-                const result = directlyGranted ? removeScopeGrant(cell, user.id) : setScopeGrant(cell, { userId: user.id, preset: grant.preset || "viewer" }); // CHANGE
+                const result = directlyGranted ? removeScopeGrant(cell, user.id) : setScopeGrant(cell, { userId: user.id, preset: grant.preset || "visitor" }); // CHANGE
                 if (!result.ok) showStatus(result.reason); // NEW
             })); // NEW
             row.appendChild(head); // NEW
-            appendCapabilityCheckboxes(row, grant, function (capabilities) { // NEW
-                const result = setScopeGrant(cell, { userId: user.id, preset: grant.preset || "viewer", capabilities }); // NEW
-                if (!result.ok) showStatus(result.reason); // NEW
-            }); // NEW
             box.appendChild(row); // NEW
         });
         parent.appendChild(box);
@@ -2756,6 +3809,14 @@ Draw.loadPlugin(function (ui) {
     }
 
     model.addListener(mxEvent.CHANGE, inspectModelChange);
+    if (graph.addListener && mxEvent && mxEvent.ADD_CELLS) graph.addListener(mxEvent.ADD_CELLS, function (_sender, evt) { // NEW
+        const cells = evt && evt.getProperty ? (evt.getProperty("cells") || []) : []; // NEW
+        cells.forEach(autoLinkGardenBoardMemberships); // NEW
+    }); // NEW
+    if (graph.addListener && mxEvent && mxEvent.CELLS_ADDED) graph.addListener(mxEvent.CELLS_ADDED, function (_sender, evt) { // NEW
+        const cells = evt && evt.getProperty ? (evt.getProperty("cells") || []) : []; // NEW
+        cells.forEach(autoLinkGardenBoardMemberships); // NEW
+    }); // NEW
     installAction();
     installToolbarButton(); // NEW
     installFileLoadedGate(); // NEW
@@ -2798,6 +3859,17 @@ Draw.loadPlugin(function (ui) {
         listPendingInvites, // NEW
         canInviteScopes, // NEW
         getEligibleShareScopes, // NEW
+        requestAccess, // NEW
+        getAccessRequestForCurrentUser, // NEW
+        listIncomingAccessRequests, // NEW
+        approveAccessRequest, // NEW
+        denyAccessRequest, // NEW
+        openMessagesDialog, // NEW
+        incomingAccessRequestCount, // NEW
+        listAccessMessages, // NEW
+        unreadAccessMessageCount, // NEW
+        markAccessMessageRead, // NEW
+        dismissAccessMessage, // NEW
         getScopeGrants, // NEW
         setScopeGrant, // NEW
         removeScopeGrant, // NEW
@@ -2816,6 +3888,13 @@ Draw.loadPlugin(function (ui) {
             accessGrants: ATTR_ACCESS_GRANTS, // NEW
             accessOpen: ATTR_ACCESS_OPEN,
             roleUser: ATTR_ROLE_USER, // NEW
+            roleArchivedUser: ATTR_ROLE_ARCHIVED_USER, // NEW
+            roleInactive: ATTR_ROLE_INACTIVE, // NEW
+            roleGardenModule: ATTR_ROLE_GARDEN_MODULE, // NEW
+            roleTeamModule: ATTR_ROLE_TEAM_MODULE, // NEW
+            gardenTeamModule: ATTR_GARDEN_TEAM_MODULE, // NEW
+            teamGardenModule: ATTR_TEAM_GARDEN_MODULE, // NEW
+            teamRoleArchive: ATTR_TEAM_ROLE_ARCHIVE, // NEW
             createdBy: ATTR_CREATED_BY,
             editedBy: ATTR_EDITED_BY
         },
@@ -2835,6 +3914,17 @@ Draw.loadPlugin(function (ui) {
             nearestOwnedAncestor,
             nearestAccessGrant,
             roleLinkedBoardGrantsForUser, // NEW
+            ensureGardenRoleCardForUser, // NEW
+            ensureGardenRoleCardsForUser, // NEW
+            getUserGardenRoleCard, // NEW
+            readTeamRoleArchive, // NEW
+            archivedRoleEntry, // NEW
+            allGardenModules, // NEW
+            nearestAccessRequestScope, // NEW
+            accessRequestScopeSummary, // NEW
+            publicAccessMessage, // NEW
+            normalizeAccessMessage, // NEW
+            autoLinkGardenBoardMemberships, // NEW
             normalizeCapabilities, // NEW
             changeAllowed,
             composeInviteEmail, // NEW

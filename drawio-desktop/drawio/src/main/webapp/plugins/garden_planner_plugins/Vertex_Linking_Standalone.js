@@ -1530,8 +1530,9 @@ Draw.loadPlugin(function (ui) {
         } // NEW
 
         function getPlantingOccupancyRange(cell) { // NEW
-            const start = parseTaskOverlayDate(getAttr(cell, 'transplant_date')) || parseTaskOverlayDate(getAttr(cell, 'sow_date')); // NEW
-            const end = parseTaskOverlayDate(getAttr(cell, 'harvest_end')); // NEW
+            const perennial = String(getAttr(cell, 'perennial') || '') === '1' || !!String(getAttr(cell, 'lifespan_start') || '').trim(); // ADDED
+            const start = perennial ? parseTaskOverlayDate(getAttr(cell, 'lifespan_start')) : (parseTaskOverlayDate(getAttr(cell, 'transplant_date')) || parseTaskOverlayDate(getAttr(cell, 'sow_date'))); // CHANGED
+            const end = perennial ? parseTaskOverlayDate(getAttr(cell, 'lifespan_end')) : parseTaskOverlayDate(getAttr(cell, 'harvest_end')); // CHANGED
             if (!start || !end || end.dayNumber < start.dayNumber) return { startISO: null, endISO: null }; // NEW
             return { startISO: start.iso, endISO: end.iso }; // NEW
         } // NEW
@@ -1561,10 +1562,72 @@ Draw.loadPlugin(function (ui) {
                 : null; // ADDED
         } // ADDED
 
+        function getDerivedScheduleDialogOpener() { // ADDED
+            return window.USL && window.USL.scheduler && typeof window.USL.scheduler.openDerivedScheduleDialog === 'function' // ADDED
+                ? window.USL.scheduler.openDerivedScheduleDialog // ADDED
+                : null; // ADDED
+        } // ADDED
+
         function getSetPlantDialogOpener() { // ADDED
             return window.USL && window.USL.scheduler && typeof window.USL.scheduler.openSetPlantDialog === 'function' // ADDED
                 ? window.USL.scheduler.openSetPlantDialog // ADDED
                 : null; // ADDED
+        } // ADDED
+
+        function sourceOccupancyCompleteForDerived(cell) { // ADDED
+            if (!isTilerGroup(cell)) return false; // ADDED
+            const perennial = String(getAttr(cell, 'perennial') || '') === '1' || !!String(getAttr(cell, 'lifespan_start') || '').trim(); // ADDED
+            const start = perennial ? String(getAttr(cell, 'lifespan_start') || '').trim() : (String(getAttr(cell, 'transplant_date') || '').trim() || String(getAttr(cell, 'sow_date') || '').trim()); // ADDED
+            const end = perennial ? String(getAttr(cell, 'lifespan_end') || '').trim() : String(getAttr(cell, 'harvest_end') || '').trim(); // ADDED
+            return !!(start && end); // ADDED
+        } // ADDED
+
+        function sourceIsAnnual(cell) { // ADDED
+            if (String(getAttr(cell, 'perennial') || '') === '1' || String(getAttr(cell, 'lifespan_start') || '').trim()) return false; // CHANGED
+            return String(getAttr(cell, 'annual') || '') === '1' || !!String(getAttr(cell, 'harvest_end') || '').trim(); // CHANGED
+        } // ADDED
+
+        function styleDerivedActionButton(button, enabled, color) { // ADDED
+            button.style.border = '1px solid ' + color; // ADDED
+            button.style.borderRadius = '5px'; // ADDED
+            button.style.background = enabled ? '#ffffff' : '#f1f3f4'; // ADDED
+            button.style.color = enabled ? color : '#9aa0a6'; // ADDED
+            button.style.cursor = enabled ? 'pointer' : 'default'; // ADDED
+            button.style.fontSize = '10px'; // ADDED
+            button.style.fontWeight = 'bold'; // ADDED
+            button.style.padding = '4px 7px'; // ADDED
+            button.style.whiteSpace = 'nowrap'; // ADDED
+        } // ADDED
+
+        function createDerivedScheduleActionButton(entry, mode) { // ADDED
+            const source = entry && entry.sourceId ? model.getCell(entry.sourceId) : null; // ADDED
+            if (!isTilerGroup(source) || !hasTilerSchedule(source)) return null; // ADDED
+            const opener = getDerivedScheduleDialogOpener(); // ADDED
+            const allowed = canScheduleTilerGroup(source); // ADDED
+            const hasDates = sourceOccupancyCompleteForDerived(source); // ADDED
+            const annualOk = mode !== 'turnover' || sourceIsAnnual(source); // ADDED
+            const enabled = !!(opener && allowed && hasDates && annualOk); // ADDED
+            const button = document.createElement('button'); // ADDED
+            button.type = 'button'; // ADDED
+            button.textContent = mode === 'turnover' ? 'Add Turnover' : 'Add Companion'; // ADDED
+            button.disabled = !enabled; // ADDED
+            button.title = !opener ? 'Scheduler plugin is unavailable.' : (!allowed ? 'You do not have permission to schedule this planting group.' : (!hasDates ? 'Source occupancy dates are required.' : (!annualOk ? 'Turnover is available only for annual source groups.' : button.textContent))); // ADDED
+            styleDerivedActionButton(button, enabled, mode === 'turnover' ? '#92400e' : '#166534'); // ADDED
+            mxEvent.addListener(button, 'mousedown', consumeOverlayControlEvent); // ADDED
+            mxEvent.addListener(button, 'dblclick', consumeOverlayControlEvent); // ADDED
+            mxEvent.addListener(button, 'click', async function (evt) { // ADDED
+                consumeOverlayControlEvent(evt); // ADDED
+                if (!enabled) return; // ADDED
+                const liveSource = model.getCell(entry.sourceId); // ADDED
+                if (!isTilerGroup(liveSource)) return; // ADDED
+                try { // ADDED
+                    await opener(ui, liveSource, { mode }); // ADDED
+                    setTimeout(refresh, 0); // ADDED
+                } catch (e) { // ADDED
+                    mxUtils.alert('Derived scheduling error: ' + (e && e.message ? e.message : String(e))); // ADDED
+                } // ADDED
+            }); // ADDED
+            return button; // ADDED
         } // ADDED
 
         function hasAssignedPlant(cell) { // ADDED
@@ -1664,6 +1727,26 @@ Draw.loadPlugin(function (ui) {
             if (evt && evt.preventDefault) evt.preventDefault(); // ADDED
         } // ADDED
 
+        function existingCompanionSourceCell(cell) { // ADDED
+            if (String(getAttr(cell, 'derived_mode') || '').trim().toLowerCase() !== 'companion') return null; // ADDED
+            const sourceId = String(getAttr(cell, 'derived_source_group_id') || '').trim(); // ADDED
+            if (!sourceId) return null; // ADDED
+            const source = model.getCell(sourceId); // ADDED
+            return isTilerGroup(source) ? source : null; // ADDED
+        } // ADDED
+
+        function scheduleActionButtonLabelFor(source) { // ADDED
+            if (hasTilerSchedule(source) && existingCompanionSourceCell(source)) return 'Edit companion'; // ADDED
+            return hasTilerSchedule(source) ? 'Edit schedule' : 'Set schedule'; // ADDED
+        } // ADDED
+
+        function scheduleActionButtonTitleFor(source, opener, allowed) { // ADDED
+            if (!allowed) return 'You do not have permission to schedule this planting group.'; // ADDED
+            if (!opener) return 'Scheduler plugin is unavailable.'; // ADDED
+            if (hasTilerSchedule(source) && existingCompanionSourceCell(source)) return 'Opens companion scheduling for this derived companion.'; // ADDED
+            return scheduleActionButtonLabelFor(source); // ADDED
+        } // ADDED
+
         function createScheduleActionButton(entry) { // ADDED
             const source = entry && entry.sourceId ? model.getCell(entry.sourceId) : null; // ADDED
             if (!isTilerGroup(source)) return null; // ADDED
@@ -1671,8 +1754,8 @@ Draw.loadPlugin(function (ui) {
             const allowed = canScheduleTilerGroup(source); // NEW
             const button = document.createElement('button'); // ADDED
             button.type = 'button'; // ADDED
-            button.textContent = hasTilerSchedule(source) ? 'Edit schedule' : 'Set schedule'; // ADDED
-            button.title = !allowed ? 'You do not have permission to schedule this planting group.' : (opener ? button.textContent : 'Scheduler plugin is unavailable.'); // CHANGE
+            button.textContent = scheduleActionButtonLabelFor(source); // CHANGED
+            button.title = scheduleActionButtonTitleFor(source, opener, allowed); // CHANGED
             button.disabled = !opener || !allowed; // CHANGE
             button.style.border = '1px solid #2563eb'; // ADDED
             button.style.borderRadius = '5px'; // ADDED
@@ -1882,6 +1965,10 @@ Draw.loadPlugin(function (ui) {
             actions.appendChild(toggle); // CHANGED
             const scheduleButton = createScheduleActionButton(entry); // ADDED
             if (scheduleButton) actions.appendChild(scheduleButton); // ADDED
+            const companionButton = createDerivedScheduleActionButton(entry, 'companion'); // ADDED
+            if (companionButton) actions.appendChild(companionButton); // ADDED
+            const turnoverButton = createDerivedScheduleActionButton(entry, 'turnover'); // ADDED
+            if (turnoverButton) actions.appendChild(turnoverButton); // ADDED
             header.appendChild(actions); // ADDED
             const secondaryActionRow = createSecondaryActionRow(entry); // ADDED
             if (secondaryActionRow) header.appendChild(secondaryActionRow); // ADDED
@@ -1922,6 +2009,10 @@ Draw.loadPlugin(function (ui) {
                 scheduleButton.style.alignSelf = 'flex-start'; // ADDED
                 header.appendChild(scheduleButton); // ADDED
             } // ADDED
+            const companionButton = createDerivedScheduleActionButton(entry, 'companion'); // ADDED
+            if (companionButton) { companionButton.style.alignSelf = 'flex-start'; header.appendChild(companionButton); } // ADDED
+            const turnoverButton = createDerivedScheduleActionButton(entry, 'turnover'); // ADDED
+            if (turnoverButton) { turnoverButton.style.alignSelf = 'flex-start'; header.appendChild(turnoverButton); } // ADDED
             const setPlantButton = createSetPlantActionButton(entry); // ADDED
             if (setPlantButton) { // ADDED
                 setPlantButton.style.alignSelf = 'flex-start'; // ADDED
@@ -2039,8 +2130,7 @@ Draw.loadPlugin(function (ui) {
             header.style.color = '#3c4043'; // CHANGE
             header.style.fontWeight = 'bold'; // CHANGE
             header.style.fontSize = '10px'; // CHANGE
-            header.style.cursor = 'pointer'; // CHANGE
-            header.setAttribute('title', collapsed ? 'Expand lane' : 'Collapse lane'); // CHANGE
+            header.style.cursor = 'pointer'; // CHANGE: visible toggle replaces browser title tooltip
 
             const toggle = document.createElement('span'); // CHANGE
             toggle.textContent = collapsed ? '+' : '-'; // CHANGE
@@ -2236,6 +2326,42 @@ Draw.loadPlugin(function (ui) {
             return row; // NEW
         } // NEW
 
+        function occupancyRangesOverlap(left, right) { // ADDED
+            return !!(left && right && left.startDay <= right.endDay && right.startDay <= left.endDay); // ADDED
+        } // ADDED
+
+        function makeRelationshipBadge(text, color) { // ADDED
+            const badge = document.createElement('span'); // ADDED
+            badge.textContent = text; // ADDED
+            badge.style.display = 'inline-block'; // ADDED
+            badge.style.marginTop = '2px'; // ADDED
+            badge.style.marginRight = '4px'; // ADDED
+            badge.style.padding = '1px 4px'; // ADDED
+            badge.style.borderRadius = '4px'; // ADDED
+            badge.style.border = '1px solid ' + color; // ADDED
+            badge.style.color = color; // ADDED
+            badge.style.fontSize = '9px'; // ADDED
+            badge.style.fontWeight = '700'; // ADDED
+            return badge; // ADDED
+        } // ADDED
+
+        function renderOccupancyRelationshipBadges(entry, labelCell, item, range) { // ADDED
+            const rel = item && item.relationship; // ADDED
+            if (!rel || !range) return ''; // CHANGED
+            const source = entry && entry.sourceId ? model.getCell(entry.sourceId) : null; // ADDED
+            const sourceRange = occupancyRangeForItem(fallbackOccupancyForSource(source).items[0]); // ADDED
+            if (rel.mode === 'companion') { // ADDED
+                if (!occupancyRangesOverlap(sourceRange, range)) return ''; // CHANGED
+                const offset = rel.startOffsetDays !== '' ? rel.startOffsetDays + 'd' : 'same day'; // ADDED
+                labelCell.appendChild(makeRelationshipBadge('companion ' + offset, '#166534')); // ADDED
+                return 'Companion relationship: ' + offset + ' from source planting.'; // ADDED
+            } else if (rel.mode === 'turnover') { // ADDED
+                const gap = rel.gapDays !== '' ? rel.gapDays + 'd gap' : 'turnover'; // ADDED
+                return 'Turnover relationship: ' + gap + '.'; // CHANGED
+            } // ADDED
+            return ''; // ADDED
+        } // ADDED
+
         function renderOccupancyRow(entry, grid, item, range, minDay, totalDays, todayPct) { // NEW
             const selected = item && item.cellId === entry.sourceId; // NEW
             const row = makeOccupancyRow(entry, item); // NEW
@@ -2252,6 +2378,11 @@ Draw.loadPlugin(function (ui) {
             const label = makeTextSpan(item.label || item.cellId || 'Planting', null); // NEW
             label.style.fontSize = '10px'; // NEW
             labelCell.appendChild(label); // NEW
+            const relationshipTooltip = renderOccupancyRelationshipBadges(entry, labelCell, item, range); // CHANGED
+            if (relationshipTooltip) { // ADDED
+                row.title = relationshipTooltip; // ADDED
+                labelCell.title = relationshipTooltip; // ADDED
+            } // ADDED
             row.appendChild(labelCell); // NEW
 
             const track = document.createElement('div'); // NEW
@@ -2270,6 +2401,7 @@ Draw.loadPlugin(function (ui) {
                 track.appendChild(todayLine); // NEW
             } // NEW
             renderOccupancyBar(track, range, selected, minDay, totalDays); // NEW
+            if (relationshipTooltip) track.title = relationshipTooltip; // ADDED
             row.appendChild(track); // NEW
             grid.appendChild(row); // NEW
         } // NEW

@@ -1051,6 +1051,30 @@ Draw.loadPlugin(function (ui) {
         return users.getEligibleShareScopes(selectedCellsForShare()); // NEW
     } // NEW
 
+    function incomingMessagesCount(moduleCell) { // NEW
+        const users = trellisUsersApi(); // NEW
+        if (!users) return 0; // CHANGE
+        const incoming = typeof users.incomingAccessRequestCount === "function" ? Math.max(0, Number(users.incomingAccessRequestCount({ scopeCell: moduleCell })) || 0) : 0; // NEW
+        const unread = typeof users.unreadAccessMessageCount === "function" ? Math.max(0, Number(users.unreadAccessMessageCount({ scopeCell: moduleCell })) || 0) : 0; // NEW
+        return incoming + unread; // CHANGE
+    } // NEW
+
+    function messagesButtonLabel(moduleCell) { // NEW
+        const count = incomingMessagesCount(moduleCell); // NEW
+        return count ? "Messages (" + count + ")" : "Messages"; // NEW
+    } // NEW
+
+    function openToolbarMessagesDialog(moduleCell) { // NEW
+        const users = trellisUsersApi(); // NEW
+        if (!users) { alertShareStatus("Trellis Users is unavailable."); return; } // NEW
+        if (typeof users.openMessagesDialog === "function") { users.openMessagesDialog({ scopeCell: moduleCell }); return; } // NEW
+        if (typeof users.showAuthDialog === "function" && (!users.isEnabled || !users.isEnabled() || !users.isLoggedIn || !users.isLoggedIn())) { // NEW
+            users.showAuthDialog({ blocking: false, message: users.isEnabled && users.isEnabled() ? "Log in to review access messages." : "Enable users before reviewing access messages." }); // NEW
+            return; // NEW
+        } // NEW
+        alertShareStatus("Access messages are unavailable in this Trellis build."); // NEW
+    } // NEW
+
     function setButtonDisabled(button, disabled, title) { // NEW
         if (!button) return; // NEW
         button.disabled = !!disabled; // NEW
@@ -1250,6 +1274,24 @@ Draw.loadPlugin(function (ui) {
         controls.style.gap = BTN_GAP + "px"; // NEW
         controls.style.flexWrap = "wrap"; // NEW
         controls.style.boxSizing = "border-box"; // NEW
+        controls.style.justifyContent = "space-between"; // NEW
+        controls.style.width = "100%"; // NEW
+
+        const leftControls = document.createElement("div"); // NEW
+        leftControls.className = "trellis-garden-dashboard-toolbar-left"; // NEW
+        leftControls.style.display = "flex"; // NEW
+        leftControls.style.alignItems = "center"; // NEW
+        leftControls.style.gap = BTN_GAP + "px"; // NEW
+        leftControls.style.flexWrap = "wrap"; // NEW
+
+        const rightActions = document.createElement("div"); // NEW
+        rightActions.className = "trellis-garden-dashboard-toolbar-right"; // NEW
+        rightActions.style.display = "flex"; // NEW
+        rightActions.style.alignItems = "center"; // NEW
+        rightActions.style.justifyContent = "flex-end"; // NEW
+        rightActions.style.gap = BTN_GAP + "px"; // NEW
+        rightActions.style.flexWrap = "wrap"; // NEW
+        rightActions.style.marginLeft = "auto"; // NEW
 
         const prev = createYearButton("<", "Previous year"); // NEW
         const next = createYearButton(">", "Next year"); // NEW
@@ -1273,6 +1315,7 @@ Draw.loadPlugin(function (ui) {
         const equipmentBtn = createToolbarButton("Equipment", "Open garden equipment"); // NEW
         const irrigationBtn = createToolbarButton("Irrigation", "Open irrigation planner"); // NEW
         const allocateBtn = createToolbarButton("Allocate", "Allocate the current plan"); // NEW
+        const messagesBtn = createToolbarButton("Messages", "Review access requests"); // NEW
         const exportBtn = createToolbarButton("Export", "Export dashboard CSV"); // NEW
         const shareBtn = createToolbarButton("Share", "Share selected module(s), task board(s), or garden bed(s)"); // NEW
         const tableBtn = createToolbarButton("Table", "Show dashboard table"); // NEW
@@ -1286,22 +1329,25 @@ Draw.loadPlugin(function (ui) {
         table.style.paddingTop = "8px"; // NEW
         table.style.boxSizing = "border-box"; // NEW
 
-        controls.appendChild(prev); // NEW
-        controls.appendChild(yearLabel); // NEW
-        controls.appendChild(next); // NEW
-        controls.appendChild(planBtn); // NEW
-        controls.appendChild(equipmentBtn); // NEW
-        controls.appendChild(irrigationBtn); // NEW
-        controls.appendChild(allocateBtn); // NEW
-        controls.appendChild(exportBtn); // NEW
-        controls.appendChild(shareBtn); // NEW
-        controls.appendChild(tableBtn); // NEW
+        leftControls.appendChild(prev); // NEW
+        leftControls.appendChild(yearLabel); // NEW
+        leftControls.appendChild(next); // NEW
+        leftControls.appendChild(planBtn); // NEW
+        leftControls.appendChild(equipmentBtn); // NEW
+        leftControls.appendChild(irrigationBtn); // NEW
+        leftControls.appendChild(allocateBtn); // NEW
+        rightActions.appendChild(messagesBtn); // NEW
+        rightActions.appendChild(exportBtn); // NEW
+        rightActions.appendChild(shareBtn); // NEW
+        rightActions.appendChild(tableBtn); // NEW
+        controls.appendChild(leftControls); // NEW
+        controls.appendChild(rightActions); // NEW
         panel.appendChild(controls); // NEW
         panel.appendChild(table); // NEW
         wrap.appendChild(panel); // NEW
         host.appendChild(wrap); // NEW
 
-        viewportToolbar = { wrap, panel, controls, prev, next, yearLabel, planBtn, equipmentBtn, irrigationBtn, allocateBtn, exportBtn, shareBtn, tableBtn, table }; // CHANGE
+        viewportToolbar = { wrap, panel, controls, leftControls, rightActions, prev, next, yearLabel, planBtn, equipmentBtn, irrigationBtn, allocateBtn, messagesBtn, exportBtn, shareBtn, tableBtn, table }; // CHANGE
 
         mxEvent.addListener(wrap, "mousedown", function (evt) { mxEvent.consume(evt); }); // NEW
         mxEvent.addListener(wrap, "click", function (evt) { evt.stopPropagation(); }); // NEW
@@ -1341,6 +1387,7 @@ Draw.loadPlugin(function (ui) {
             const safeName = String(metrics.moduleName || "garden").replace(/[^\w\-]+/g, "_").slice(0, 60); // NEW
             downloadCsv(`${safeName}_${year}_dashboard.csv`, buildDashboardCsvSingleTable(metrics, year)); // NEW
         }); // NEW
+        messagesBtn.addEventListener("click", function () { openToolbarMessagesDialog(activeToolbarModule); }); // NEW
         shareBtn.addEventListener("click", function () { openShareGardenCanvasDialog(); }); // NEW
         tableBtn.addEventListener("click", function () { // NEW
             if (!activeToolbarModule) return; // NEW
@@ -1367,6 +1414,8 @@ Draw.loadPlugin(function (ui) {
         const year = getToolbarYear(moduleCell); // NEW
         const expanded = toolbarExpandedByModuleId.get(cellId(moduleCell)) === true; // NEW
         entry.yearLabel.textContent = String(year); // NEW
+        entry.messagesBtn.textContent = messagesButtonLabel(moduleCell); // NEW
+        entry.messagesBtn.title = "Review access requests"; // NEW
         entry.tableBtn.textContent = expanded ? "Hide Table" : "Table"; // NEW
         entry.tableBtn.title = expanded ? "Hide dashboard table" : "Show dashboard table"; // NEW
         const shareState = shareSelectionState(); // NEW
@@ -2164,6 +2213,7 @@ Draw.loadPlugin(function (ui) {
         model.addListener(mxEvent.CHANGE, scheduleViewportToolbarRefresh); // NEW
     } // NEW
     window.addEventListener("resize", scheduleViewportToolbarRefresh); // NEW
+    window.addEventListener("trellisUsersStoreChanged", scheduleViewportToolbarRefresh); // NEW
     const viewportToolbarHost = getViewportToolbarContainer(); // CHANGE
     if (viewportToolbarHost && viewportToolbarHost.addEventListener) { // NEW
         viewportToolbarHost.addEventListener("scroll", scheduleViewportToolbarRefresh); // NEW

@@ -365,15 +365,21 @@ test("createModuleAtPoint creates garden module with settings-needed event", asy
     const harness = makeHarness(); // NEW
     const mod = harness.graph.__trellisModules.createModuleAtPoint({ x: 30, y: 40 }, "garden"); // NEW
     await new Promise(resolve => setTimeout(resolve, 5)); // NEW
+    const team = harness.root.children.find(child => child !== mod && child.getAttribute("team_module") === "1"); // NEW
     assert.equal(mod.getAttribute("garden_module"), "1"); // NEW
     assert.equal(mod.getAttribute("team_module"), null); // NEW
+    assert.ok(team); // NEW
+    assert.equal(mod.getAttribute("trellis_team_module_id"), team.id); // NEW
+    assert.equal(team.getAttribute("trellis_garden_module_id"), mod.id); // NEW
+    assert.match(mod.getAttribute("linkedTo") || "", new RegExp(team.id)); // NEW
+    assert.match(team.getAttribute("linkedTo") || "", new RegExp(mod.id)); // NEW
     assert.match(mod.style, /swimlaneFillColor=#B9E0A5/); // NEW
     assert.equal(mod.geometry.width, 440); // NEW
     assert.equal(mod.geometry.height, 340); // NEW
     assert.equal(harness.selectedCell, mod); // NEW
-    assert.equal(harness.firedEvents.length, 1); // NEW
-    assert.equal(harness.firedEvents[0].name, "usl:gardenModuleNeedsSettings"); // NEW
-    assert.equal(harness.firedEvents[0].getProperty("cell"), mod); // NEW
+    const settingsEvents = harness.firedEvents.filter(event => event.name === "usl:gardenModuleNeedsSettings"); // CHANGE
+    assert.equal(settingsEvents.length, 1); // CHANGE
+    assert.equal(settingsEvents[0].getProperty("cell"), mod); // CHANGE
 }); // NEW
 
 test("createModuleAtPoint creates team module", () => { // NEW
@@ -383,6 +389,27 @@ test("createModuleAtPoint creates team module", () => { // NEW
     assert.equal(mod.getAttribute("garden_module"), null); // NEW
     assert.match(mod.style, /swimlaneFillColor=#FFF2CC/); // NEW
     assert.equal(harness.selectedCell, mod); // NEW
+}); // NEW
+
+test("garden companion team repair reuses typed team module", () => { // NEW
+    const harness = makeHarness(); // NEW
+    const garden = harness.graph.__trellisModules.createModuleAtPoint({ x: 30, y: 40 }, "garden"); // NEW
+    const team = harness.model.getCell(garden.getAttribute("trellis_team_module_id")); // NEW
+    const repaired = harness.graph.__trellisModules.ensureGardenTeamModule(garden); // NEW
+    assert.equal(repaired, team); // NEW
+    assert.equal(harness.root.children.filter(child => child.getAttribute("team_module") === "1").length, 1); // NEW
+}); // NEW
+
+test("module cells cannot be dropped under non-module parents", () => { // NEW
+    const harness = makeHarness(); // NEW
+    const nonModule = new TestCell("plain", new TestGeometry(0, 0, 400, 300), "shape=rectangle;"); // NEW
+    nonModule.vertex = true; // NEW
+    harness.model.add(harness.root, nonModule); // NEW
+    const mod = harness.graph.__trellisModules.createModuleAtPoint({ x: 11, y: 22 }, "regular"); // NEW
+    assert.equal(harness.graph.isValidDropTarget(nonModule, [mod]), false); // NEW
+    harness.model.add(nonModule, mod); // NEW
+    harness.graph.fireEvent(makeEventObject("cellsMoved", ["cells", [mod]])); // NEW
+    assert.equal(harness.model.getParent(mod), harness.root); // NEW
 }); // NEW
 
 test("promptSetModuleMargin updates style and reapplies module sizing", async () => { // NEW

@@ -27,6 +27,15 @@ function sourceBetween(source, startMarker, endMarker) { // NEW
     return source.slice(startIndex, endIndex); // NEW
 } // NEW
 
+test("lane overlay headers do not use browser title tooltips", () => { // NEW
+    const source = readSource(); // NEW
+    const headerSource = sourceBetween(source, "function createLaneHeader", "function renderCardView"); // NEW
+
+    assert.doesNotMatch(headerSource, /setAttribute\('title'|\.title\s*=/); // NEW
+    assert.match(headerSource, /toggle\.textContent = collapsed \? '\+' : '-'/); // NEW
+    assert.match(headerSource, /setLaneGroupCollapsed\(group, !isLaneGroupCollapsed\(group\)\)/); // NEW
+}); // NEW
+
 test("planting overlay has Cards, Schedule, and Occupancy modes", () => { // NEW
     const source = readSource(); // NEW
 
@@ -53,10 +62,23 @@ test("schedule action button mirrors Trellis user planting permissions", () => {
     assert.match(helperSource, /window\.Trellis && window\.Trellis\.users/); // NEW
     assert.match(helperSource, /users\.isEnabled\(\)[\s\S]*users\.canManagePlanting\(cell\)/); // NEW
     assert.match(buttonSource, /const allowed = canScheduleTilerGroup\(source\);/); // NEW
-    assert.match(buttonSource, /button\.title = !allowed \? 'You do not have permission to schedule this planting group\.'/); // NEW
+    assert.match(buttonSource, /button\.title = scheduleActionButtonTitleFor\(source, opener, allowed\);/); // CHANGED
     assert.match(buttonSource, /button\.disabled = !opener \|\| !allowed;/); // NEW
     assert.match(buttonSource, /if \(!canScheduleTilerGroup\(liveSource\)\) return;/); // NEW
 }); // NEW
+
+test("schedule action button label reflects companion edit mode", () => { // ADDED
+    const source = readSource(); // ADDED
+    const helperSource = sourceBetween(source, "function existingCompanionSourceCell", "function createScheduleActionButton"); // ADDED
+    const buttonSource = sourceBetween(source, "function createScheduleActionButton", "function createSetPlantActionButton"); // ADDED
+    assert.match(helperSource, /String\(getAttr\(cell, 'derived_mode'\) \|\| ''\)\.trim\(\)\.toLowerCase\(\) !== 'companion'/); // ADDED
+    assert.match(helperSource, /const source = model\.getCell\(sourceId\);/); // ADDED
+    assert.match(helperSource, /return isTilerGroup\(source\) \? source : null;/); // ADDED
+    assert.match(helperSource, /if \(hasTilerSchedule\(source\) && existingCompanionSourceCell\(source\)\) return 'Edit companion';/); // ADDED
+    assert.match(helperSource, /return hasTilerSchedule\(source\) \? 'Edit schedule' : 'Set schedule';/); // ADDED
+    assert.match(helperSource, /return 'Opens companion scheduling for this derived companion\.';/); // ADDED
+    assert.match(buttonSource, /button\.textContent = scheduleActionButtonLabelFor\(source\);/); // ADDED
+}); // ADDED
 
 test("occupancy uses navigator API with selected-group fallback", () => { // NEW
     const source = readSource(); // NEW
@@ -71,9 +93,35 @@ test("occupancy interval prefers transplant date, then sow date, and requires ha
 
     assert.match(source, /parseTaskOverlayDate\(getAttr\(cell, 'transplant_date'\)\) \|\| parseTaskOverlayDate\(getAttr\(cell, 'sow_date'\)\)/); // NEW
     assert.match(source, /parseTaskOverlayDate\(getAttr\(cell, 'harvest_end'\)\)/); // NEW
+    assert.match(source, /parseTaskOverlayDate\(getAttr\(cell, 'lifespan_start'\)\)/); // ADDED
+    assert.match(source, /parseTaskOverlayDate\(getAttr\(cell, 'lifespan_end'\)\)/); // ADDED
     assert.match(source, /if \(!start \|\| !end \|\| end\.dayNumber < start\.dayNumber\) return \{ startISO: null, endISO: null \};/); // NEW
     assert.match(source, /renderOccupancyUnscheduledSection\(entry, body, unscheduledItems\);/); // NEW
 }); // NEW
+
+test("derived schedule actions are gated by schedule dates and annual turnover", () => { // ADDED
+    const source = readSource(); // ADDED
+    const helperSource = sourceBetween(source, "function createDerivedScheduleActionButton", "function hasAssignedPlant"); // ADDED
+    assert.match(helperSource, /button\.textContent = mode === 'turnover' \? 'Add Turnover' : 'Add Companion';/); // ADDED
+    assert.match(helperSource, /const hasDates = sourceOccupancyCompleteForDerived\(source\);/); // ADDED
+    assert.match(helperSource, /const annualOk = mode !== 'turnover' \|\| sourceIsAnnual\(source\);/); // ADDED
+    assert.match(helperSource, /await opener\(ui, liveSource, \{ mode \}\);/); // ADDED
+}); // ADDED
+
+test("occupancy relationship badges require companion overlap and expose turnover gaps by tooltip", () => { // CHANGED
+    const source = readSource(); // ADDED
+    const badgeSource = sourceBetween(source, "function renderOccupancyRelationshipBadges", "function renderOccupancyRow"); // ADDED
+    assert.match(badgeSource, /if \(rel\.mode === 'companion'\) \{/); // ADDED
+    assert.match(badgeSource, /if \(!occupancyRangesOverlap\(sourceRange, range\)\) return '';/); // CHANGED
+    assert.match(badgeSource, /makeRelationshipBadge\('companion ' \+ offset, '#166534'\)/); // ADDED
+    assert.match(badgeSource, /rel\.gapDays !== '' \? rel\.gapDays \+ 'd gap' : 'turnover'/); // ADDED
+    assert.match(badgeSource, /return 'Turnover relationship: ' \+ gap \+ '\.';/); // ADDED
+    assert.doesNotMatch(badgeSource, /makeRelationshipBadge\(gap, '#92400e'\)/); // ADDED
+    const rowSource = sourceBetween(source, "function renderOccupancyRow", "function renderScheduleRow"); // ADDED
+    assert.match(rowSource, /const relationshipTooltip = renderOccupancyRelationshipBadges\(entry, labelCell, item, range\);/); // ADDED
+    assert.match(rowSource, /row\.title = relationshipTooltip;/); // ADDED
+    assert.match(rowSource, /track\.title = relationshipTooltip;/); // ADDED
+}); // ADDED
 
 test("occupancy rows select and reveal their planting group", () => { // NEW
     const source = readSource(); // NEW

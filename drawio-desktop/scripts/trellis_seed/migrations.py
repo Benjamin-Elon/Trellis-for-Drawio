@@ -46,6 +46,8 @@ def pending_migrations(conn: sqlite3.Connection) -> list[str]:
         pending.append("create CityWeatherForecastDaily")
     if "CompanionEvidence" not in tables:
         pending.append("create CompanionEvidence")
+    if "Companions" in tables and any(column not in table_columns(conn, "Companions") for column in ("source_plant_id", "companion_plant_id", "start_offset_days")):
+        pending.append("add directional companion timing columns")  # ADDED
     if "PlantingWindowReferences" not in tables:
         pending.append("create PlantingWindowReferences")
     if "VarietyTaskTemplates" not in tables or "method_id" not in table_columns(conn, "VarietyTaskTemplates"):
@@ -92,6 +94,16 @@ def apply_migrations(conn: sqlite3.Connection) -> list[str]:
     if "PlantVarieties" in tables and "maturity_class" not in table_columns(conn, "PlantVarieties"):
         conn.execute("ALTER TABLE PlantVarieties ADD COLUMN maturity_class TEXT;")  # ADDED
         applied.append("added PlantVarieties.maturity_class")  # ADDED
+    if "Companions" in tables:
+        companion_columns = set(table_columns(conn, "Companions"))  # ADDED
+        for column, column_type in (("source_plant_id", "INTEGER"), ("companion_plant_id", "INTEGER"), ("start_offset_days", "INTEGER")):  # ADDED
+            if column not in companion_columns:  # ADDED
+                conn.execute(f"ALTER TABLE Companions ADD COLUMN {column} {column_type};")  # ADDED
+                applied.append(f"added Companions.{column}")  # ADDED
+        if {"source_plant_id", "companion_plant_id"}.issubset(set(table_columns(conn, "Companions"))) and "Plants" in tables:  # ADDED
+            resolved = _backfill_companion_plant_ids(conn)  # ADDED
+            if resolved:  # ADDED
+                applied.append(f"backfilled {resolved} companion plant id pair(s)")  # ADDED
     if "VarietyTaskTemplates" in tables and "method_id" not in table_columns(conn, "VarietyTaskTemplates"):
         suffix = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
         conn.execute(f"ALTER TABLE VarietyTaskTemplates RENAME TO VarietyTaskTemplates_legacy_{suffix};")
@@ -205,6 +217,43 @@ def apply_migrations(conn: sqlite3.Connection) -> list[str]:
         if label not in tables or label == "VarietyTaskTemplates":
             applied.append(f"ensured {label}")
     return applied
+
+
+def _normalize_name(value: object) -> str:  # ADDED
+    return str(value or "").strip().casefold()  # ADDED
+
+
+def _plant_ids_by_name(conn: sqlite3.Connection) -> dict[str, int]:  # ADDED
+    out: dict[str, int] = {}  # ADDED
+    if "Plants" not in existing_tables(conn):  # ADDED
+        return out  # ADDED
+    for row in conn.execute("SELECT plant_id, plant_name FROM Plants WHERE plant_name IS NOT NULL;"):  # ADDED
+        key = _normalize_name(row[1])  # ADDED
+        if key and key not in out:  # ADDED
+            out[key] = int(row[0])  # ADDED
+    return out  # ADDED
+
+
+def _backfill_companion_plant_ids(conn: sqlite3.Connection) -> int:  # ADDED
+    plant_ids = _plant_ids_by_name(conn)  # ADDED
+    if not plant_ids:  # ADDED
+        return 0  # ADDED
+    resolved = 0  # ADDED
+    for row in conn.execute("SELECT relation_id, p1, p2, source_plant_id, companion_plant_id FROM Companions;"):  # ADDED
+        if row[3] is not None and row[4] is not None:  # ADDED
+            continue  # ADDED
+        source_id = plant_ids.get(_normalize_name(row[1]))  # ADDED
+        companion_id = plant_ids.get(_normalize_name(row[2]))  # ADDED
+        next_source_id = row[3] if row[3] is not None else source_id  # ADDED
+        next_companion_id = row[4] if row[4] is not None else companion_id  # ADDED
+        if next_source_id is None and next_companion_id is None:  # CHANGED
+            continue  # ADDED
+        conn.execute(  # ADDED
+            "UPDATE Companions SET source_plant_id=?, companion_plant_id=? WHERE relation_id=?;",  # ADDED
+            [next_source_id, next_companion_id, row[0]],  # CHANGED
+        )  # ADDED
+        resolved += 1  # ADDED
+    return resolved  # ADDED
 
 
 def _rebuild_cities_without_unique_name(conn: sqlite3.Connection) -> None:  # ADDED

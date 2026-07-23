@@ -11,6 +11,7 @@ from .schema import (
     CITY_CLIMATE_BANDS,
     CITY_COLUMNS,
     CITY_GEO_IDENTITY_COLUMNS,  # ADDED
+    COMPANION_COLUMNS,  # ADDED
     GENERATED_TABLES,
     PLANTING_WINDOW_CONFIDENCE,
     PLANTING_WINDOW_REFERENCE_COLUMNS,
@@ -222,8 +223,18 @@ def validate_row(
         else:
             errors.extend(f"{prefix}.{e}" for e in validate_task_template(template))
     elif table == "Companions":
+        unknown = sorted(set(row) - COMPANION_COLUMNS)  # ADDED
+        if unknown:
+            errors.append(f"{prefix} has unknown columns: {unknown}")  # ADDED
         if not row.get("p1") or not row.get("p2"):
             errors.append(f"{prefix} needs p1 and p2.")
+        for key in ("source_plant_id", "companion_plant_id", "start_offset_days"):  # ADDED
+            if row.get(key) in (None, ""):
+                continue
+            try:
+                int(row.get(key))
+            except (TypeError, ValueError):
+                errors.append(f"{prefix}.{key} must be an integer when provided.")  # ADDED
     elif table == "PlantVarieties":
         unknown = sorted(set(row) - PLANT_VARIETY_COLUMNS)  # ADDED
         if unknown:

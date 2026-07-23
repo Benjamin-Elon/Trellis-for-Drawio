@@ -982,12 +982,40 @@ Draw.loadPlugin(function (ui) {
     } // NEW
 
     function plantingOccupancyWindowOf(cell) { // NEW
-        const startISO = dateAttrISO(cell, 'transplant_date') || dateAttrISO(cell, 'sow_date'); // NEW
-        const endISO = dateAttrISO(cell, 'harvest_end'); // NEW
+        const perennial = cell && cell.getAttribute && (cell.getAttribute('perennial') === '1' || cell.getAttribute('lifespan_start')); // ADDED
+        const startISO = perennial ? dateAttrISO(cell, 'lifespan_start') : (dateAttrISO(cell, 'transplant_date') || dateAttrISO(cell, 'sow_date')); // CHANGED
+        const endISO = perennial ? dateAttrISO(cell, 'lifespan_end') : dateAttrISO(cell, 'harvest_end'); // CHANGED
         const start = startISO ? parseISO(startISO) : null; // NEW
         const end = endISO ? parseISO(endISO) : null; // NEW
         return start && end && end >= start ? { startISO, endISO } : { startISO: null, endISO: null }; // NEW
     } // NEW
+
+    function derivedRelationshipFor(member, selected) { // ADDED
+        if (!member || !selected || !member.getAttribute) return null; // ADDED
+        const selectedId = String(selected.id || ''); // ADDED
+        const memberId = String(member.id || ''); // ADDED
+        const selectedSourceId = String(selected.getAttribute?.('derived_source_group_id') || '').trim(); // ADDED
+        const derivedCell = String(member.getAttribute('derived_source_group_id') || '').trim() === selectedId // CHANGED
+            ? member // ADDED
+            : (selectedSourceId && selectedSourceId === memberId ? selected : null); // ADDED
+        if (!derivedCell || !derivedCell.getAttribute) return null; // ADDED
+        const mode = String(derivedCell.getAttribute('derived_mode') || '').trim(); // CHANGED
+        if (!mode) return null; // ADDED
+        if (mode === 'companion') { // ADDED
+            return { // ADDED
+                mode, // ADDED
+                relationId: String(derivedCell.getAttribute('companion_relation_id') || ''), // CHANGED
+                rating: String(derivedCell.getAttribute('companion_rating') || ''), // CHANGED
+                companionType: String(derivedCell.getAttribute('companion_type') || ''), // CHANGED
+                startOffsetDays: String(derivedCell.getAttribute('companion_start_offset_days') || ''), // CHANGED
+                recommendedStartOffsetDays: String(derivedCell.getAttribute('companion_recommended_start_offset_days') || '') // CHANGED
+            }; // ADDED
+        } // ADDED
+        if (mode === 'turnover') { // ADDED
+            return { mode, gapDays: String(derivedCell.getAttribute('turnover_gap_days') || '') }; // CHANGED
+        } // ADDED
+        return null; // ADDED
+    } // ADDED
 
     function plantingOccupancyLabel(cell) { // NEW
         const plant = cell && cell.getAttribute ? (cell.getAttribute('plant_name') || cell.getAttribute('crop_name') || '') : ''; // NEW
@@ -1007,7 +1035,7 @@ Draw.loadPlugin(function (ui) {
             selectedId: selected.id, // NEW
             items: order.map(member => { // NEW
                 const window = plantingOccupancyWindowOf(member); // NEW
-                return { cellId: member.id, label: plantingOccupancyLabel(member), startISO: window.startISO, endISO: window.endISO }; // NEW
+                return { cellId: member.id, label: plantingOccupancyLabel(member), startISO: window.startISO, endISO: window.endISO, relationship: derivedRelationshipFor(member, selected) }; // CHANGED
             }) // NEW
         }; // NEW
     } // NEW

@@ -2918,8 +2918,9 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
         const affectedBoards = new Map(); // NEW
         const groupLinkSet = getLinkSet(grp);
         const preserveCardIds = opts && opts.preserveCardIds instanceof Set ? opts.preserveCardIds : new Set(); // NEW
+        const insideUpdate = !!(opts && opts.insideUpdate); // NEW
 
-        model.beginUpdate();
+        if (!insideUpdate) model.beginUpdate(); // CHANGE
         try {
             for (const c of linkedCells) {
                 if (!isKanbanCard(c)) continue;
@@ -2949,14 +2950,14 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
             setLinkSet(grp, groupLinkSet);
 
         } finally {
-            model.endUpdate();
+            if (!insideUpdate) model.endUpdate(); // CHANGE
         }
 
         const boards = Array.from(affectedBoards.values()); // NEW
 
         const shouldReflow = !opts || opts.reflow !== false; // NEW
         if (shouldReflow) { // NEW
-            boards.forEach(board => scanAndReflowBoard(board)); // NEW
+            boards.forEach(board => scanAndReflowBoard(board, opts && opts.insideUpdate ? { insideUpdate: true } : undefined)); // CHANGE
         } // NEW
 
         return boards; // NEW
@@ -2965,11 +2966,12 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
 
 
     // -------------------- Task creation and card commands -------------------- // CHANGE
-    function createTasks(tasks, targetGroupId, opts) {
+    function createTasks(tasks, targetGroupId, opts) { // CHANGE
         if (!Array.isArray(tasks) || tasks.length === 0) return [];
 
         const reflow = !opts || opts.reflow !== false;
         const assignmentIdsByTaskKey = opts && opts.assignmentIdsByTaskKey; // NEW
+        const insideUpdate = !!(opts && opts.insideUpdate); // NEW
 
         let gardenModule = null;
         const grp = model.getCell(targetGroupId);
@@ -2980,7 +2982,7 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
 
         const out = [];
 
-        model.beginUpdate();
+        if (!insideUpdate) model.beginUpdate(); // CHANGE
         try {
             const { board, lanes } = boardLayoutService.ensureBoardTemplateIn(gardenModule, { insideUpdate: true });   // CHANGE
 
@@ -3016,7 +3018,7 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
             }
 
         } finally {
-            model.endUpdate();
+            if (!insideUpdate) model.endUpdate(); // CHANGE
         }
 
         if (out.length) {
@@ -3121,16 +3123,19 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
         return { group: grp, records }; // ADDED
     } // ADDED
 
-    function replaceTasksPreservingAssignments(targetGroupId, tasks) { // NEW
+    function replaceTasksPreservingAssignments(targetGroupId, tasks, opts) { // CHANGE
         const normalizedTasks = Array.isArray(tasks) ? tasks : []; // NEW
-        return runTrellisHistoryTransaction({ category: "Tasks", action: "replace", origin: "Garden_Task_Manager", title: "Replace linked tasks", affectedCellIds: [targetGroupId].filter(Boolean) }, function () { // NEW
+        const options = opts || {}; // NEW
+        const operation = function () { // NEW
             const source = buildDifferentialTaskSyncRecords(targetGroupId); // NEW
             const preservation = planTaskAssignmentReplacement(source && source.records, normalizedTasks); // NEW
             const assignmentIdsByTaskKey = new Map(preservation.preserved.map(entry => [entry.key, entry.roleIds])); // NEW
             const preserveCardIds = new Set(preservation.retainMissing.map(record => String(record.card && (record.card.id || (record.card.getId && record.card.getId())) || ''))); // NEW
-            removeTasksLinkedOnlyTo(targetGroupId, { reflow: !normalizedTasks.length, preserveCardIds }); // CHANGE
-            if (normalizedTasks.length) createTasks(normalizedTasks, targetGroupId, { reflow: true, assignmentIdsByTaskKey }); // NEW
-        }); // NEW
+            removeTasksLinkedOnlyTo(targetGroupId, { reflow: !normalizedTasks.length, preserveCardIds, insideUpdate: !!options.insideUpdate }); // CHANGE
+            return normalizedTasks.length ? createTasks(normalizedTasks, targetGroupId, { reflow: true, assignmentIdsByTaskKey, insideUpdate: !!options.insideUpdate }) : []; // CHANGE
+        }; // NEW
+        if (options.insideUpdate) return operation(); // NEW
+        return runTrellisHistoryTransaction({ category: "Tasks", action: "replace", origin: "Garden_Task_Manager", title: "Replace linked tasks", affectedCellIds: [targetGroupId].filter(Boolean) }, operation); // CHANGE
     } // NEW
 
     function applyGeneratedTaskAttributesToCard(card, task, lanes) { // ADDED
@@ -3166,20 +3171,21 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
         opts = opts || {}; // ADDED
         const targetGroupId = opts.targetGroupId; // ADDED
         const tasks = Array.isArray(opts.tasks) ? opts.tasks : []; // CHANGE: the sync command owns its input guard and does not depend on an undefined global normalizer
+        const insideUpdate = !!opts.insideUpdate; // NEW
         const syncSource = buildDifferentialTaskSyncRecords(targetGroupId); // ADDED
         if (!syncSource) return []; // ADDED
         const plan = planDifferentialTaskSync(syncSource.records, tasks); // ADDED
         if (plan.legacyReplace) { // ADDED
-            return replaceTasksPreservingAssignments(targetGroupId, tasks); // CHANGE
+            return replaceTasksPreservingAssignments(targetGroupId, tasks, { insideUpdate }); // CHANGE
         } // ADDED
         if (!plan.updates.length && !plan.removes.length && !plan.missing.length) { // CHANGE
-            if (plan.creates.length) createTasks(plan.creates.map(item => item.task), targetGroupId, { reflow: true }); // ADDED
+            if (plan.creates.length) createTasks(plan.creates.map(item => item.task), targetGroupId, { reflow: true, insideUpdate }); // CHANGE
             return plan; // ADDED
         } // ADDED
 
         const affectedBoards = new Map(); // ADDED
         const gardenModule = findGardenModuleAncestor(syncSource.group); // ADDED
-        model.beginUpdate(); // ADDED
+        if (!insideUpdate) model.beginUpdate(); // CHANGE
         try { // ADDED
             const template = boardLayoutService.ensureBoardTemplateIn(gardenModule, { insideUpdate: true }); // CHANGE
             plan.updates.forEach(item => { // ADDED
@@ -3194,11 +3200,11 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
                 markGeneratedTaskCardMissing(item.record.card, affectedBoards); // NEW
             }); // NEW
         } finally { // ADDED
-            model.endUpdate(); // ADDED
+            if (!insideUpdate) model.endUpdate(); // CHANGE
         } // ADDED
 
-        if (plan.creates.length) createTasks(plan.creates.map(item => item.task), targetGroupId, { reflow: true }); // ADDED
-        affectedBoards.forEach(board => scanAndReflowBoard(board, { skipPurge: true })); // ADDED
+        if (plan.creates.length) createTasks(plan.creates.map(item => item.task), targetGroupId, { reflow: true, insideUpdate }); // CHANGE
+        affectedBoards.forEach(board => scanAndReflowBoard(board, { skipPurge: true, insideUpdate })); // CHANGE
         return plan; // ADDED
     } // ADDED
 
@@ -5350,8 +5356,16 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
     } // NEW
 
     function createTaskCommandRuntime({ boardLayout, transactions }) { // CHANGE: command seam for UI, events, and menu entrypoints
-        function replaceTasks(targetGroupId, tasks) { // CHANGE
-            return replaceTasksPreservingAssignments(targetGroupId, tasks); // CHANGE
+        function replaceTasks(targetGroupId, tasks, opts) { // CHANGE
+            return replaceTasksPreservingAssignments(targetGroupId, tasks, opts); // CHANGE
+        } // CHANGE
+
+        function applySchedulerTaskReplacement(detail, opts) { // NEW
+            const replacement = normalizeTaskReplacementDetail(detail); // NEW
+            const options = opts || {}; // NEW
+            if ((replacement.mode !== 'replace' && replacement.mode !== 'sync') || !replacement.targetGroupId) return null; // NEW
+            if (replacement.mode === 'sync') return applyDifferentialTaskSync({ targetGroupId: replacement.targetGroupId, tasks: replacement.tasks, insideUpdate: !!options.insideUpdate }); // NEW
+            return replaceTasks(replacement.targetGroupId, replacement.tasks, { insideUpdate: !!options.insideUpdate }); // NEW
         } // CHANGE
 
         function ensureBoardTemplateInUpdate(containerVertex) { // CHANGE
@@ -5365,6 +5379,7 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
             createTasks, // CHANGE
             removeTasksLinkedOnlyTo, // CHANGE
             replaceTasks, // CHANGE
+            applySchedulerTaskReplacement, // NEW
             applyDifferentialTaskSync, // CHANGE
             commitCardPatch, // CHANGE
             applyCardDateOverride, // CHANGE
@@ -5401,6 +5416,11 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
         schedulePolicy, // CHANGE
         transactions: taskTransactions // CHANGE
     }); // CHANGE
+
+    window.USL = window.USL || {}; // NEW
+    window.USL.tasks = Object.assign({}, window.USL.tasks, { // NEW
+        applySchedulerTaskReplacement: taskCommands.applySchedulerTaskReplacement // NEW
+    }); // NEW
 
     // -------------------- DOM overlay host and installers -------------------- // NEW
     function ensureTaskControlOverlayHost() { // NEW
@@ -5722,16 +5742,14 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
         const previous = document.createElement('button'); // NEW
         previous.type = 'button'; // NEW
         previous.className = 'trellis-task-lane-pager__button trellis-task-lane-pager__previous'; // NEW
-        previous.title = 'Previous page'; // NEW
-        previous.setAttribute('aria-label', 'Previous page'); // NEW
+        previous.setAttribute('aria-label', 'Previous page'); // CHANGE: accessible name remains without a browser title tooltip
         previous.appendChild(createLanePagerChevron(-1)); // NEW
         const selector = document.createElement('select'); // NEW
         selector.className = 'trellis-task-lane-pager__select'; // NEW
         const next = document.createElement('button'); // NEW
         next.type = 'button'; // NEW
         next.className = 'trellis-task-lane-pager__button trellis-task-lane-pager__next'; // NEW
-        next.title = 'Next page'; // NEW
-        next.setAttribute('aria-label', 'Next page'); // NEW
+        next.setAttribute('aria-label', 'Next page'); // CHANGE: accessible name remains without a browser title tooltip
         next.appendChild(createLanePagerChevron(1)); // NEW
         [previous, selector, next].forEach(control => { // NEW
             control.addEventListener('mousedown', stopDomPropagation); // NEW
@@ -6825,11 +6843,7 @@ function createGardenTaskManagerRuntime({ ui, taskPolicy, schedulePolicy }) { //
 
         setTimeout(function () {
             runTrellisHistoryTransaction({ category: replacement.mode === 'sync' ? "Garden scheduling" : "Tasks", action: replacement.mode, origin: "Garden_Task_Manager", title: replacement.mode === 'sync' ? "Synchronize generated tasks" : "Replace generated tasks", affectedCellIds: [targetGroupId] }, function () { // NEW
-                if (replacement.mode === 'sync') { // ADDED
-                    taskCommands.applyDifferentialTaskSync({ targetGroupId, tasks }); // CHANGE
-                    return; // ADDED
-                } // ADDED
-                taskCommands.replaceTasks(targetGroupId, tasks); // CHANGE
+                taskCommands.applySchedulerTaskReplacement(replacement); // CHANGE
             }); // NEW
         }, 0);
     }

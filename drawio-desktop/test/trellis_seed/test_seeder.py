@@ -35,6 +35,7 @@ from trellis_seed.climate_benchmarks import (  # noqa: E402
     select_benchmark_crop,
 )
 from trellis_seed.db import apply_run, apply_run_to_databases, create_diff_report, load_methods, print_diff_report  # noqa: E402
+from trellis_seed import db as seed_db  # noqa: E402  # ADDED
 from trellis_seed.config import Settings, read_openai_api_key  # noqa: E402
 from trellis_seed.generator import (
     GenerationOptions,
@@ -144,10 +145,107 @@ class TrellisSeederTests(unittest.TestCase):
             self.assertIn("killtemp_c", plant_cols)
             variety_cols = [row[1] for row in conn.execute("PRAGMA table_info(PlantVarieties);")]  # ADDED
             self.assertIn("maturity_class", variety_cols)  # ADDED
+            companion_cols = [row[1] for row in conn.execute("PRAGMA table_info(Companions);")]  # ADDED
+            self.assertIn("source_plant_id", companion_cols)  # ADDED
+            self.assertIn("companion_plant_id", companion_cols)  # ADDED
+            self.assertIn("start_offset_days", companion_cols)  # ADDED
+
+    def test_companion_migration_adds_directional_timing_and_nullable_id_backfill(self) -> None:  # ADDED
+        with closing(sqlite3.connect(":memory:")) as conn:  # ADDED
+            conn.row_factory = sqlite3.Row  # ADDED
+            conn.executescript(""" 
+                CREATE TABLE Plants (plant_id INTEGER PRIMARY KEY, plant_name TEXT NOT NULL);
+                CREATE TABLE Companions (
+                    relation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    p1 TEXT NOT NULL,
+                    p2 TEXT NOT NULL,
+                    rating INTEGER,
+                    companion_type TEXT,
+                    companion_type_id INTEGER
+                );
+                INSERT INTO Plants (plant_id, plant_name) VALUES (1, 'Tomato'), (2, 'Basil');
+                INSERT INTO Companions (p1, p2, rating, companion_type) VALUES
+                    ('Tomato', 'Basil', 1, 'interplant'),
+                    ('Unknown', 'Basil', 0, 'neutral');
+            """)  # ADDED
+            with conn:  # ADDED
+                apply_migrations(conn)  # ADDED
+            cols = [row[1] for row in conn.execute("PRAGMA table_info(Companions);")]  # ADDED
+            self.assertIn("source_plant_id", cols)  # ADDED
+            self.assertIn("companion_plant_id", cols)  # ADDED
+            self.assertIn("start_offset_days", cols)  # ADDED
+            rows = list(conn.execute("SELECT p1, p2, source_plant_id, companion_plant_id, start_offset_days FROM Companions ORDER BY relation_id"))  # ADDED
+            self.assertEqual((rows[0]["source_plant_id"], rows[0]["companion_plant_id"], rows[0]["start_offset_days"]), (1, 2, None))  # ADDED
+            self.assertEqual((rows[1]["source_plant_id"], rows[1]["companion_plant_id"]), (None, 2))  # ADDED
 
     def test_input_validation_requires_crop_sources(self) -> None:
         errors = validate_input({"crops": [{"name": "Lettuce"}]})
         self.assertTrue(any("needs at least one source" in error for error in errors))
+
+    def test_companion_validation_accepts_directional_ids_and_timing(self) -> None:  # ADDED
+        valid = validate_row("Companions", {  # ADDED
+            "p1": "Tomato",  # ADDED
+            "p2": "Basil",  # ADDED
+            "source_plant_id": 1,  # ADDED
+            "companion_plant_id": 2,  # ADDED
+            "start_offset_days": -7,  # ADDED
+        })  # ADDED
+        self.assertEqual(valid["errors"], [])  # ADDED
+        invalid = validate_row("Companions", {  # ADDED
+            "p1": "Tomato",  # ADDED
+            "p2": "Basil",  # ADDED
+            "start_offset_days": "soon",  # ADDED
+        })  # ADDED
+        self.assertTrue(any("start_offset_days" in error for error in invalid["errors"]))  # ADDED
+
+    def test_companion_upsert_preserves_directional_ids_timing_and_evidence(self) -> None:  # ADDED
+        with closing(sqlite3.connect(":memory:")) as conn:  # ADDED
+            conn.row_factory = sqlite3.Row  # ADDED
+            conn.executescript(""" 
+                CREATE TABLE Plants (plant_id INTEGER PRIMARY KEY, plant_name TEXT NOT NULL);
+                CREATE TABLE Companions (
+                    relation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    p1 TEXT NOT NULL,
+                    p2 TEXT NOT NULL,
+                    rating INTEGER,
+                    companion_type TEXT,
+                    companion_type_id INTEGER,
+                    source_plant_id INTEGER,
+                    companion_plant_id INTEGER,
+                    start_offset_days INTEGER
+                );
+                CREATE TABLE CompanionEvidence (
+                    evidence_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    relation_id INTEGER NOT NULL,
+                    evidence_level TEXT,
+                    review_status TEXT,
+                    source_url TEXT,
+                    source_note TEXT,
+                    summary TEXT,
+                    provenance_json TEXT,
+                    created_at TEXT,
+                    updated_at TEXT
+                );
+                INSERT INTO Plants (plant_id, plant_name) VALUES (1, 'Tomato'), (2, 'Basil');
+                INSERT INTO Companions (relation_id, p1, p2, rating, companion_type, source_plant_id, companion_plant_id, start_offset_days)
+                    VALUES (10, 'Tomato', 'Basil', 1, 'interplant', 1, 2, 3);
+                INSERT INTO CompanionEvidence (relation_id, evidence_level, source_url, summary)
+                    VALUES (10, 'extension', 'https://example.test/source', 'Keep this evidence.');
+            """)  # ADDED
+            seed_db._upsert_companions(conn, [{  # ADDED
+                "relation_id": 10,  # ADDED
+                "p1": "Tomato",  # ADDED
+                "p2": "Basil",  # ADDED
+                "rating": 1,  # ADDED
+                "companion_type": "interplant",  # ADDED
+                "source_plant_id": 1,  # ADDED
+                "companion_plant_id": 2,  # ADDED
+                "start_offset_days": -5,  # ADDED
+            }])  # ADDED
+            row = conn.execute("SELECT source_plant_id, companion_plant_id, start_offset_days FROM Companions WHERE relation_id=10").fetchone()  # ADDED
+            self.assertEqual((row["source_plant_id"], row["companion_plant_id"], row["start_offset_days"]), (1, 2, -5))  # ADDED
+            evidence = conn.execute("SELECT summary FROM CompanionEvidence WHERE relation_id=10").fetchone()  # ADDED
+            self.assertEqual(evidence["summary"], "Keep this evidence.")  # ADDED
 
     def test_plant_variety_validation_accepts_only_known_maturity_classes(self) -> None:  # ADDED
         valid = validate_row("PlantVarieties", {  # ADDED

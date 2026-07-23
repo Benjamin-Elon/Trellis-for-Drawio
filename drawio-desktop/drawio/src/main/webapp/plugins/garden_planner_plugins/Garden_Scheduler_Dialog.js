@@ -607,9 +607,16 @@ Draw.loadPlugin(function (ui) {
         region_name: 'TEXT', // ADDED
         region_code: 'TEXT' // ADDED
     }); // CHANGED
+    const COMPANION_TIMING_COLUMNS = Object.freeze({ // ADDED
+        source_plant_id: 'INTEGER', // ADDED
+        companion_plant_id: 'INTEGER', // ADDED
+        start_offset_days: 'INTEGER' // ADDED
+    }); // ADDED
     let schedulerPhysiologySchemaEnsured = false; // ADDED
 
     async function ensureTableColumns(dbId, tableName, columns) { // ADDED
+        const tableRows = await queryAllOnDb(dbId, `SELECT name FROM sqlite_master WHERE type='table' AND name=?;`, [tableName]); // ADDED
+        if (!tableRows.length) return; // ADDED
         const existing = new Set((await queryAllOnDb(dbId, `PRAGMA table_info(${tableName});`, [])).map(row => String(row.name || '').toLowerCase())); // ADDED
         for (const [column, type] of Object.entries(columns)) { // ADDED
             if (existing.has(column.toLowerCase())) continue; // ADDED
@@ -622,6 +629,7 @@ Draw.loadPlugin(function (ui) {
         await withDbWrite(async dbId => { // ADDED
             await ensureTableColumns(dbId, 'Plants', PHYSIOLOGY_PLANT_COLUMNS); // ADDED
             await ensureTableColumns(dbId, 'Cities', PHYSIOLOGY_CITY_COLUMNS); // ADDED
+            await ensureTableColumns(dbId, 'Companions', COMPANION_TIMING_COLUMNS); // ADDED
         }); // ADDED
         schedulerPhysiologySchemaEnsured = true; // ADDED
     }
@@ -944,6 +952,73 @@ Draw.loadPlugin(function (ui) {
             });
         }
     }
+
+
+    class CompanionRelationshipModel { // ADDED
+        static async listForSourcePlant(plantId) { // ADDED
+            const sourceId = Number(plantId); // ADDED
+            if (!Number.isFinite(sourceId)) return []; // ADDED
+            await ensureSchedulerPhysiologySchema(); // ADDED
+            const sql = `
+                SELECT c.relation_id,
+                       c.source_plant_id,
+                       c.companion_plant_id,
+                       c.start_offset_days,
+                       c.p1,
+                       c.p2,
+                       c.rating,
+                       c.companion_type,
+                       c.companion_type_id,
+                       ce.evidence_level,
+                       ce.review_status,
+                       ce.source_url,
+                       ce.source_note,
+                       ce.summary
+                FROM Companions c
+                LEFT JOIN CompanionEvidence ce ON ce.relation_id = c.relation_id
+                WHERE (c.source_plant_id = ? OR c.companion_plant_id = ?)
+                  AND c.source_plant_id IS NOT NULL
+                  AND c.companion_plant_id IS NOT NULL
+                ORDER BY c.rating DESC, LOWER(COALESCE(c.companion_type,'')), c.relation_id;`; // ADDED
+            const rows = await queryAll(sql, [sourceId, sourceId]); // ADDED
+            const byKey = new Map(); // ADDED
+            rows.forEach(row => { // ADDED
+                const forward = Number(row.source_plant_id) === sourceId; // ADDED
+                const companionPlantId = forward ? Number(row.companion_plant_id) : Number(row.source_plant_id); // ADDED
+                if (!Number.isFinite(companionPlantId)) return; // ADDED
+                const recommended = finiteNumberOrNull(row.start_offset_days) ?? 0; // ADDED
+                const key = `${row.relation_id || ''}:${companionPlantId}`; // ADDED
+                if (!byKey.has(key)) { // ADDED
+                    byKey.set(key, { // ADDED
+                        relationId: row.relation_id != null ? String(row.relation_id) : '', // ADDED
+                        sourcePlantId: String(sourceId), // ADDED
+                        companionPlantId: String(companionPlantId), // ADDED
+                        storedSourcePlantId: row.source_plant_id != null ? String(row.source_plant_id) : '', // ADDED
+                        storedCompanionPlantId: row.companion_plant_id != null ? String(row.companion_plant_id) : '', // ADDED
+                        direction: forward ? 'forward' : 'inverse', // ADDED
+                        recommendedStartOffsetDays: forward ? recommended : -recommended, // ADDED
+                        storedStartOffsetDays: recommended, // ADDED
+                        rating: row.rating, // ADDED
+                        companionType: row.companion_type || '', // ADDED
+                        companionTypeId: row.companion_type_id != null ? String(row.companion_type_id) : '', // ADDED
+                        p1: row.p1 || '', // ADDED
+                        p2: row.p2 || '', // ADDED
+                        evidence: [] // ADDED
+                    }); // ADDED
+                } // ADDED
+                if (row.evidence_level || row.summary || row.source_url || row.source_note) { // ADDED
+                    byKey.get(key).evidence.push({ // ADDED
+                        evidenceLevel: row.evidence_level || '', // ADDED
+                        reviewStatus: row.review_status || '', // ADDED
+                        sourceUrl: row.source_url || '', // ADDED
+                        sourceNote: row.source_note || '', // ADDED
+                        summary: row.summary || '' // ADDED
+                    }); // ADDED
+                } // ADDED
+            }); // ADDED
+            return Array.from(byKey.values()); // ADDED
+        } // ADDED
+    } // ADDED
 
 
 
@@ -2328,17 +2403,44 @@ Draw.loadPlugin(function (ui) {
         return String(left.label || '').localeCompare(String(right.label || '')); // ADDED
     } // ADDED
 
-    function makeCropPickerOptions(plants, scoreByPlantId = new Map()) { // ADDED
+    function companionRatingLabel(rating) { // ADDED
+        const value = Number(rating); // ADDED
+        if (value > 0) return 'beneficial'; // ADDED
+        if (value < 0) return 'antagonistic'; // ADDED
+        return 'mixed'; // ADDED
+    } // ADDED
+
+    function formatSignedDays(days) { // ADDED
+        const n = Number(days); // ADDED
+        if (!Number.isFinite(n) || n === 0) return 'same day'; // ADDED
+        return (n > 0 ? '+' : '') + Math.trunc(n) + 'd'; // ADDED
+    } // ADDED
+
+    function companionPickerHint(metadata) { // ADDED
+        if (!metadata) return ''; // CHANGED
+        if (!metadata.known) return 'no known companion relationship'; // CHANGED
+        const parts = [companionRatingLabel(metadata.rating)]; // ADDED
+        if (metadata.companionType) parts.push(metadata.companionType); // ADDED
+        parts.push(formatSignedDays(metadata.recommendedStartOffsetDays)); // ADDED
+        return parts.filter(Boolean).join(', '); // ADDED
+    } // ADDED
+
+    function makeCropPickerOptions(plants, scoreByPlantId = new Map(), metadataByPlantId = new Map()) { // ADDED
         return (plants || []).map(plant => { // ADDED
             const label = cropPickerBaseLabel(plant); // ADDED
             const score = scoreByPlantId.get(String(plant?.plant_id)) || null; // ADDED
+            const metadata = metadataByPlantId.get(String(plant?.plant_id)) || null; // ADDED
+            const metadataHint = companionPickerHint(metadata); // ADDED
+            const scoreHint = score?.hint || ''; // ADDED
+            const hint = [scoreHint, metadataHint].filter(Boolean).join(' - '); // ADDED
             return { // ADDED
                 value: String(plant?.plant_id), // ADDED
                 label, // ADDED
-                displayLabel: score?.hint ? `${label} - ${score.hint}` : label, // ADDED
+                displayLabel: hint ? `${label} - ${hint}` : label, // CHANGED
                 lifecycle: getCropLifecycle(plant), // ADDED
                 plant, // ADDED
-                score // ADDED
+                score, // ADDED
+                metadata // ADDED
             }; // ADDED
         }); // ADDED
     } // ADDED
@@ -2388,13 +2490,221 @@ Draw.loadPlugin(function (ui) {
         if (selected && Array.from(selectEl.options).some(option => option.value === selected)) selectEl.value = selected; // ADDED
     } // ADDED
 
+    function createSchedulerCropCombobox(selectEl) { // ADDED
+        const root = document.createElement('div'); // ADDED
+        root.className = 'usl-crop-combobox'; // ADDED
+        root.style.width = '100%'; // ADDED
+        selectEl.style.display = 'none'; // ADDED
+        const doc = selectEl.ownerDocument || document; // ADDED
+        const ownerWindow = doc.defaultView || window; // ADDED
+        const button = document.createElement('button'); // ADDED
+        button.type = 'button'; // ADDED
+        button.className = 'usl-crop-combobox-button'; // ADDED
+        button.style.width = '100%'; // ADDED
+        button.style.textAlign = 'left'; // ADDED
+        button.style.padding = '6px 8px'; // ADDED
+        button.style.border = '1px solid #bbb'; // ADDED
+        button.style.borderRadius = '6px'; // ADDED
+        button.style.background = '#fff'; // ADDED
+        const panel = document.createElement('div'); // ADDED
+        panel.className = 'usl-crop-combobox-panel'; // ADDED
+        panel.style.position = 'fixed'; // CHANGED
+        panel.style.zIndex = '2000000100'; // CHANGED
+        panel.style.maxHeight = '260px'; // ADDED
+        panel.style.overflow = 'auto'; // ADDED
+        panel.style.border = '1px solid #bbb'; // ADDED
+        panel.style.borderRadius = '6px'; // ADDED
+        panel.style.background = '#fff'; // ADDED
+        panel.style.boxShadow = '0 4px 14px rgba(0,0,0,.12)'; // ADDED
+        panel.style.display = 'none'; // ADDED
+        const input = document.createElement('input'); // ADDED
+        input.type = 'search'; // ADDED
+        input.placeholder = 'Search crops...'; // ADDED
+        input.style.width = 'calc(100% - 12px)'; // ADDED
+        input.style.margin = '6px'; // ADDED
+        input.style.boxSizing = 'border-box'; // ADDED
+        const list = document.createElement('div'); // ADDED
+        panel.appendChild(input); // ADDED
+        panel.appendChild(list); // ADDED
+        root.appendChild(selectEl); // ADDED
+        root.appendChild(button); // ADDED
+        let groupsCache = []; // ADDED
+        let selectedLabel = ''; // ADDED
+        let panelOpen = false; // ADDED
+        let teardownObserver = null; // ADDED
+        function getViewportRect() { // ADDED
+            const dialog = root.closest?.('.usl-scheduler-dialog'); // ADDED
+            const rect = dialog?.getBoundingClientRect?.(); // ADDED
+            if (rect && rect.width > 0 && rect.height > 0) return rect; // ADDED
+            return { // ADDED
+                left: 0, // ADDED
+                top: 0, // ADDED
+                right: Number(ownerWindow.innerWidth || doc.documentElement?.clientWidth || 1024), // ADDED
+                bottom: Number(ownerWindow.innerHeight || doc.documentElement?.clientHeight || 768), // ADDED
+                width: Number(ownerWindow.innerWidth || doc.documentElement?.clientWidth || 1024), // ADDED
+                height: Number(ownerWindow.innerHeight || doc.documentElement?.clientHeight || 768) // ADDED
+            }; // ADDED
+        } // ADDED
+        function positionPanel() { // ADDED
+            if (!panelOpen) return; // ADDED
+            const triggerRect = button.getBoundingClientRect(); // ADDED
+            const viewportRect = getViewportRect(); // ADDED
+            const margin = 8; // ADDED
+            const preferredWidth = Math.max(Number(triggerRect.width || 0), 280); // ADDED
+            const maxWidth = Math.max(180, viewportRect.right - viewportRect.left - (margin * 2)); // ADDED
+            const width = Math.min(preferredWidth, maxWidth); // ADDED
+            let left = Number(triggerRect.left || viewportRect.left + margin); // ADDED
+            left = Math.min(left, viewportRect.right - width - margin); // ADDED
+            left = Math.max(viewportRect.left + margin, left); // ADDED
+            const belowTop = Number(triggerRect.bottom || triggerRect.top || viewportRect.top) + 4; // ADDED
+            const availableBelow = viewportRect.bottom - belowTop - margin; // ADDED
+            const availableAbove = Number(triggerRect.top || viewportRect.top) - viewportRect.top - margin; // ADDED
+            const openAbove = availableBelow < 140 && availableAbove > availableBelow; // ADDED
+            const maxHeight = Math.max(120, Math.min(260, openAbove ? availableAbove : availableBelow)); // ADDED
+            const top = openAbove
+                ? Math.max(viewportRect.top + margin, Number(triggerRect.top || viewportRect.top) - maxHeight - 4)
+                : Math.max(viewportRect.top + margin, belowTop); // ADDED
+            panel.style.left = `${Math.round(left)}px`; // ADDED
+            panel.style.top = `${Math.round(top)}px`; // ADDED
+            panel.style.width = `${Math.round(width)}px`; // ADDED
+            panel.style.maxHeight = `${Math.round(maxHeight)}px`; // ADDED
+        } // ADDED
+        function detachPanelListeners() { // ADDED
+            doc.removeEventListener('mousedown', handleOutsideMouseDown, true); // ADDED
+            doc.removeEventListener('scroll', positionPanel, true); // ADDED
+            ownerWindow.removeEventListener('resize', positionPanel); // ADDED
+            if (teardownObserver) teardownObserver.disconnect(); // ADDED
+            teardownObserver = null; // ADDED
+        } // ADDED
+        function close() { // ADDED
+            if (!panelOpen) return; // ADDED
+            panelOpen = false; // ADDED
+            detachPanelListeners(); // ADDED
+            panel.style.display = 'none'; // ADDED
+            panel.remove(); // ADDED
+        } // ADDED
+        function handleOutsideMouseDown(evt) { // ADDED
+            const target = evt.target; // ADDED
+            if (root.contains(target) || panel.contains(target)) return; // ADDED
+            close(); // ADDED
+        } // ADDED
+        function watchDialogTeardown() { // ADDED
+            const Observer = ownerWindow.MutationObserver || (typeof MutationObserver === 'function' ? MutationObserver : null); // ADDED
+            if (!Observer) return; // ADDED
+            teardownObserver = new Observer(() => { // ADDED
+                if (panelOpen && !root.isConnected) close(); // ADDED
+            }); // ADDED
+            teardownObserver.observe(doc.body || doc.documentElement, { childList: true, subtree: true }); // ADDED
+        } // ADDED
+        function open() { // ADDED
+            if (panelOpen) return; // ADDED
+            panelOpen = true; // ADDED
+            renderList(input.value); // ADDED
+            (doc.body || doc.documentElement).appendChild(panel); // ADDED
+            panel.style.display = 'block'; // ADDED
+            positionPanel(); // ADDED
+            doc.addEventListener('mousedown', handleOutsideMouseDown, true); // ADDED
+            doc.addEventListener('scroll', positionPanel, true); // ADDED
+            ownerWindow.addEventListener('resize', positionPanel); // ADDED
+            watchDialogTeardown(); // ADDED
+            input.focus(); // ADDED
+        } // ADDED
+        function optionTitle(option) { // ADDED
+            const meta = option && option.metadata; // ADDED
+            if (!meta) return option?.displayLabel || option?.label || ''; // ADDED
+            const evidence = (meta.evidence || []).map(item => item.summary || item.sourceNote || item.sourceUrl).filter(Boolean).slice(0, 2).join('\n'); // ADDED
+            return [option.displayLabel || option.label, evidence].filter(Boolean).join('\n'); // ADDED
+        } // ADDED
+        function choose(option) { // ADDED
+            if (!option) return; // ADDED
+            selectEl.value = String(option.value); // ADDED
+            selectedLabel = option.displayLabel || option.label || ''; // ADDED
+            button.textContent = selectedLabel; // ADDED
+            close(); // ADDED
+            const EventCtor = selectEl.ownerDocument?.defaultView?.Event || (typeof Event === 'function' ? Event : null); // ADDED
+            if (EventCtor) selectEl.dispatchEvent(new EventCtor('change')); // CHANGED
+        } // ADDED
+        function makeBadge(text, color) { // ADDED
+            const badge = document.createElement('span'); // ADDED
+            badge.textContent = text; // ADDED
+            badge.style.fontSize = '10px'; // ADDED
+            badge.style.fontWeight = '700'; // ADDED
+            badge.style.color = color || '#374151'; // ADDED
+            badge.style.marginLeft = '6px'; // ADDED
+            return badge; // ADDED
+        } // ADDED
+        function renderOption(option) { // ADDED
+            const row = document.createElement('button'); // ADDED
+            row.type = 'button'; // ADDED
+            row.setAttribute('role', 'option'); // ADDED
+            row.style.display = 'block'; // ADDED
+            row.style.width = '100%'; // ADDED
+            row.style.textAlign = 'left'; // ADDED
+            row.style.border = '0'; // ADDED
+            row.style.borderRadius = '0'; // ADDED
+            row.style.padding = '6px 8px'; // ADDED
+            row.style.background = String(option.value) === String(selectEl.value) ? '#eff6ff' : '#fff'; // ADDED
+            row.style.color = '#111827'; // ADDED
+            row.title = optionTitle(option); // ADDED
+            const label = document.createElement('span'); // ADDED
+            label.textContent = option.displayLabel || option.label || ''; // CHANGED
+            row.appendChild(label); // ADDED
+            const meta = option.metadata; // ADDED
+            if (meta) { // ADDED
+                if (meta.known) row.appendChild(makeBadge(companionRatingLabel(meta.rating), Number(meta.rating) < 0 ? '#b91c1c' : '#166534')); // ADDED
+                else row.appendChild(makeBadge('unknown', '#6b7280')); // ADDED
+                if (meta.known) row.appendChild(makeBadge(formatSignedDays(meta.recommendedStartOffsetDays), '#1d4ed8')); // ADDED
+            } // ADDED
+            row.addEventListener('click', () => choose(option)); // ADDED
+            return row; // ADDED
+        } // ADDED
+        function renderList(filterText = '') { // ADDED
+            const q = String(filterText || '').trim().toLocaleLowerCase(); // ADDED
+            list.innerHTML = ''; // ADDED
+            (groupsCache || []).forEach(group => { // ADDED
+                const matching = (group.options || []).filter(option => !q || String(option.displayLabel || option.label || '').toLocaleLowerCase().includes(q)); // ADDED
+                if (!matching.length) return; // ADDED
+                const heading = document.createElement('div'); // ADDED
+                heading.textContent = group.label; // ADDED
+                heading.style.padding = '6px 8px 3px'; // ADDED
+                heading.style.fontSize = '10px'; // ADDED
+                heading.style.fontWeight = '700'; // ADDED
+                heading.style.color = '#6b7280'; // ADDED
+                list.appendChild(heading); // ADDED
+                matching.forEach(option => list.appendChild(renderOption(option))); // ADDED
+            }); // ADDED
+            if (!list.children.length) { // ADDED
+                const empty = document.createElement('div'); // ADDED
+                empty.textContent = 'No crops match'; // ADDED
+                empty.style.padding = '8px'; // ADDED
+                empty.style.color = '#6b7280'; // ADDED
+                list.appendChild(empty); // ADDED
+            } // ADDED
+        } // ADDED
+        button.addEventListener('click', () => { panelOpen ? close() : open(); }); // CHANGED
+        input.addEventListener('input', () => { renderList(input.value); positionPanel(); }); // CHANGED
+        input.addEventListener('keydown', evt => { if (evt.key === 'Escape') { close(); button.focus(); } }); // ADDED
+        return { // ADDED
+            root, // ADDED
+            refresh(groups, selectedValue = '') { // ADDED
+                groupsCache = groups || []; // ADDED
+                const selected = String(selectedValue || selectEl.value || ''); // ADDED
+                const option = groupsCache.flatMap(group => group.options || []).find(item => String(item.value) === selected); // ADDED
+                selectedLabel = option ? (option.displayLabel || option.label || '') : (selectEl.options[selectEl.selectedIndex]?.textContent || 'Select crop'); // ADDED
+                button.textContent = selectedLabel; // ADDED
+                renderList(input.value); // ADDED
+                positionPanel(); // ADDED
+            } // ADDED
+        }; // ADDED
+    } // ADDED
+
     async function scoreCropPickerOptions(plants, context = {}) { // ADDED
         const cache = context.cache || makeCropSuitabilityCache(); // ADDED
         const scoreByPlantId = new Map(); // ADDED
         for (const plant of (plants || [])) { // ADDED
             scoreByPlantId.set(String(plant?.plant_id), await scoreCropSuitability(plant, { ...context, cache })); // ADDED
         } // ADDED
-        return makeCropPickerOptions(plants, scoreByPlantId); // ADDED
+        return makeCropPickerOptions(plants, scoreByPlantId, context.metadataByPlantId || new Map()); // CHANGED
     } // ADDED
 
 
@@ -6173,8 +6483,10 @@ Draw.loadPlugin(function (ui) {
             bedProfileSource: scheduleBedProfileSource = 'generic garden bed',
             dailyClimate: initialDailyClimate = null, // CHANGED
             dailyClimateKey: initialDailyClimateKey = '', // CHANGED
-            initialTransplantDaysOverrideValue = null // ADDED
+            initialTransplantDaysOverrideValue = null, // ADDED
+            derivedContext = null // ADDED
         } = options || {};
+        const cropMetadataByPlantId = derivedContext?.metadataByPlantId || new Map(); // ADDED
         let hasPersistedSchedule = !!initialHasPersistedSchedule; // FIX: provenance changes after an automatic replacement
 
         // Helper to centralize plant mode (perennial vs annual/biennial)          
@@ -6185,8 +6497,8 @@ Draw.loadPlugin(function (ui) {
 
         async function reloadPlantsList() {
             const prev = plantSel.value;
-            plantsLocal = await PlantModel.listBasic();
-            renderSchedulerCropPicker(makeCropPickerOptions(plantsLocal), prev); // CHANGED
+            plantsLocal = derivedContext?.candidatePlants ? derivedContext.candidatePlants.slice() : await PlantModel.listBasic(); // CHANGED
+            renderSchedulerCropPicker(makeCropPickerOptions(plantsLocal, new Map(), cropMetadataByPlantId), prev); // CHANGED
             if (!findPlantById(Number(plantSel.value)) && plantsLocal[0]) { // CHANGED
                 plantSel.value = String(plantsLocal[0].plant_id); // CHANGED
             }
@@ -6348,13 +6660,14 @@ Draw.loadPlugin(function (ui) {
         } // CHANGED
 
         // Plant selector
-        let currentCropPickerOptions = makeCropPickerOptions(plantsLocal); // ADDED
+        let currentCropPickerOptions = makeCropPickerOptions(plantsLocal, new Map(), cropMetadataByPlantId); // ADDED
         let currentCropPickerSelectedValue = String(initialPlant?.plant_id ?? plantsLocal[0]?.plant_id ?? ''); // ADDED
         const lifecycleFilterSel = buildLifecycleFilterControl(); // ADDED
         const plantSel = document.createElement('select'); // CHANGED
         plantSel.style.width = '100%'; // ADDED
         plantSel.style.padding = '6px'; // ADDED
         plantSel.style.flex = '1'; // ADDED
+        const cropCombo = createSchedulerCropCombobox(plantSel); // ADDED
 
         function renderSchedulerCropPicker(pickerOptions = currentCropPickerOptions, selectedValue = currentCropPickerSelectedValue) { // CHANGED
             currentCropPickerOptions = pickerOptions || []; // ADDED
@@ -6365,16 +6678,17 @@ Draw.loadPlugin(function (ui) {
                 includeSelectedWhenFiltered: true // ADDED
             }); // ADDED
             renderGroupedCropOptions(plantSel, groups, currentCropPickerSelectedValue); // CHANGED
+            cropCombo.refresh(groups, plantSel.value || currentCropPickerSelectedValue); // ADDED
         } // ADDED
 
         renderSchedulerCropPicker(currentCropPickerOptions, currentCropPickerSelectedValue); // CHANGED
 
         const plantControlsWrap = document.createElement('div');
-        plantControlsWrap.style.display = 'flex';
-        plantControlsWrap.style.gap = '8px';
-        plantControlsWrap.style.alignItems = 'center';
+        plantControlsWrap.className = 'usl-scheduler-crop-picker-controls'; // CHANGED
+        lifecycleFilterSel.classList.add('usl-scheduler-crop-filter'); // ADDED
+        cropCombo.root.classList.add('usl-scheduler-crop-combobox-wrap'); // ADDED
         plantControlsWrap.appendChild(lifecycleFilterSel); // ADDED
-        plantControlsWrap.appendChild(plantSel);
+        plantControlsWrap.appendChild(cropCombo.root); // CHANGED
 
         const addPlantBtn = styleCompactActionButton(inlineButton('+', async () => { // CHANGED
             try {
@@ -6416,10 +6730,13 @@ Draw.loadPlugin(function (ui) {
             }
         })); // CHANGED
 
+        addPlantBtn.classList.add('usl-scheduler-crop-action'); // ADDED
+        editPlantBtn.classList.add('usl-scheduler-crop-action'); // ADDED
         plantControlsWrap.appendChild(addPlantBtn);
         plantControlsWrap.appendChild(editPlantBtn);
 
         const plantSelectRow = row('Plant:', plantControlsWrap); // CHANGED
+        plantSelectRow.row.classList.add('usl-scheduler-row--crop-picker'); // ADDED
         plantSection.body.appendChild(plantSelectRow.row); // CHANGED
 
         const findPlantById = (id) => (plantsLocal || []).find(p => Number(p.plant_id) === Number(id)) || null;
@@ -6557,6 +6874,7 @@ Draw.loadPlugin(function (ui) {
         varietyControlsWrap.appendChild(editVarietyBtn);
 
         const varietyRow = row('Variety:', varietyControlsWrap); // CHANGED
+        varietyRow.row.classList.add('usl-scheduler-row--crop-variety'); // ADDED
         plantSection.body.appendChild(varietyRow.row); // CHANGED
 
         const varietyStatus = document.createElement('div');
@@ -6818,7 +7136,11 @@ Draw.loadPlugin(function (ui) {
         const sowingSeasonBoundsInput = makeDisplayField(''); // ADDED
 
         // User-controlled first sow date (used for schedule startISO)                   
-        const initialPrimaryDateISO = primaryDateFromSowDate(initialStartISO, methodSel.value, transplantDaysOverrideInitial ?? plantDefaultTransplantDays(effectivePlant)); // ADDED
+        const derivedPrimaryStartISO = String(derivedContext?.defaultPrimaryStartISO || '').trim(); // ADDED
+        const initialPrimaryDateISO = derivedPrimaryStartISO || primaryDateFromSowDate(initialStartISO, methodSel.value, transplantDaysOverrideInitial ?? plantDefaultTransplantDays(effectivePlant)); // CHANGED
+        const initialInternalStartISO = derivedPrimaryStartISO // ADDED
+            ? sowDateFromPrimaryDate(derivedPrimaryStartISO, methodSel.value, transplantDaysOverrideInitial ?? plantDefaultTransplantDays(effectivePlant)) // ADDED
+            : initialStartISO; // ADDED
         const startInput = makeDate(initialPrimaryDateISO, false); // CHANGED
 
         // Auto-computed season end constraint (read-only for annuals, editable for perennials)
@@ -6828,10 +7150,38 @@ Draw.loadPlugin(function (ui) {
         const harvestEndInput = makeDisplayField(initialSelectedHarvestEndISO); // CHANGED
         const daysToFirstHarvestInput = makeDisplayField(''); // CHANGED
         let userEditedStartThisSession = false; // FIX: distinguish session intent from persisted state
+        let latestScheduleResult = null; // ADDED
 
         const startNoteSpan = document.createElement('span');
         startNoteSpan.style.marginLeft = '8px'; startNoteSpan.style.fontSize = '12px'; startNoteSpan.style.color = '#92400e';
         startNoteSpan.textContent = startNote || '';
+        const scheduleGapHint = document.createElement('span'); // ADDED
+        scheduleGapHint.style.marginLeft = '8px'; // ADDED
+        scheduleGapHint.style.fontSize = '12px'; // ADDED
+        scheduleGapHint.style.color = '#6b7280'; // ADDED
+        scheduleGapHint.style.display = 'none'; // ADDED
+        let scheduleGapTooltipText = ''; // ADDED
+        let companionTimingTooltipText = ''; // ADDED
+        function updatePrimaryDateTooltip() { // ADDED
+            setTooltip(startInput, [scheduleGapTooltipText, companionTimingTooltipText].filter(Boolean).join('\n\n')); // ADDED
+        } // ADDED
+        const companionTimingHelp = document.createElement('span'); // ADDED
+        companionTimingHelp.style.marginLeft = '8px'; // ADDED
+        companionTimingHelp.style.fontSize = '12px'; // ADDED
+        companionTimingHelp.style.color = '#374151'; // ADDED
+        function updateCompanionTimingHelp() { // ADDED
+            if (derivedContext?.mode !== 'companion') { companionTimingTooltipText = ''; updatePrimaryDateTooltip(); return; } // CHANGED
+            const plantId = String(plantSel?.value || selPlant?.plant_id || ''); // ADDED
+            const rel = derivedContext.relationshipByPlantId?.get?.(plantId); // ADDED
+            const recommended = Number(rel?.recommendedStartOffsetDays ?? 0); // ADDED
+            const actual = daysDeltaISO(derivedContext.sourceOccupancy?.startISO, startInput.value); // ADDED
+            const text = 'Recommended offset: ' + formatSignedDays(recommended) + '; current actual offset: ' + (actual == null ? 'n/a' : formatSignedDays(actual)) + '. Saved actual offset is computed when the schedule is saved.'; // ADDED
+            companionTimingHelp.textContent = text; // ADDED
+            companionTimingTooltipText = text; // ADDED
+            updatePrimaryDateTooltip(); // CHANGED
+            setTooltip(companionTimingHelp, text); // ADDED
+        } // ADDED
+        updateCompanionTimingHelp(); // ADDED
 
         // --- Harvest window
         const hwDefault = effectivePlant.defaultHW();
@@ -6898,7 +7248,7 @@ Draw.loadPlugin(function (ui) {
             methodCategoryId: methodCategorySel.value,
             methodId: methodSel.value,
 
-            startISO: initialStartISO, // CHANGED
+            startISO: initialInternalStartISO, // CHANGED
             seasonEndISO: mode.perennial ? seasonEndInput.value : '', // CHANGED: reserve seasonEndISO for perennial lifespan end.
             latestHarvestEndISO: mode.perennial ? '' : initialLatestHarvestEndISO, // ADDED: annual display output is not a scheduling constraint.
             seasonStartYear: Number(seasonYearInput.value || (new Date()).getUTCFullYear()),
@@ -6964,16 +7314,17 @@ Draw.loadPlugin(function (ui) {
                     bedProfile: formState.bedProfile, // ADDED
                     bedProfileSource: formState.bedProfileSource, // ADDED
                     cache: schedulerCropSuitabilityCache, // CHANGED
+                    metadataByPlantId: cropMetadataByPlantId, // ADDED
                     deferMissingWindows: true // ADDED
                 } : null; // ADDED
                 const nextOptions = context // ADDED
                     ? await scoreCropPickerOptions(plantsLocal, context) // ADDED
-                    : makeCropPickerOptions(plantsLocal); // ADDED
+                    : makeCropPickerOptions(plantsLocal, new Map(), cropMetadataByPlantId); // CHANGED
                 if (refreshVersion !== schedulerCropPickerRefreshVersion) return; // ADDED
                 renderSchedulerCropPicker(nextOptions, currentCropPickerSelectedValue); // CHANGED
             } catch (e) { // ADDED
                 console.warn('[Scheduler] Crop suitability ranking failed; falling back to grouped crop order.', e); // ADDED
-                if (refreshVersion === schedulerCropPickerRefreshVersion) renderSchedulerCropPicker(makeCropPickerOptions(plantsLocal), currentCropPickerSelectedValue); // CHANGED
+                if (refreshVersion === schedulerCropPickerRefreshVersion) renderSchedulerCropPicker(makeCropPickerOptions(plantsLocal, new Map(), cropMetadataByPlantId), currentCropPickerSelectedValue); // CHANGED
             } // ADDED
         } // ADDED
 
@@ -7031,6 +7382,81 @@ Draw.loadPlugin(function (ui) {
             return row ? String(row.variety_name || '').trim() : ''; // ADDED
         } // ADDED
 
+        function schedulerCellLabelForGap(cellArg) { // ADDED
+            const plant = String(cellArg?.getAttribute?.('plant_name') || cellArg?.getAttribute?.('crop_name') || '').trim(); // ADDED
+            const variety = String(cellArg?.getAttribute?.('variety_name') || cellArg?.getAttribute?.('variety') || '').trim(); // ADDED
+            return [plant, variety].filter(Boolean).join(' - ') || String(cellArg?.getAttribute?.('label') || cellArg?.id || 'Planting'); // ADDED
+        } // ADDED
+
+        function schedulerClusterOccupancyItemsForGap() { // ADDED
+            const graph = ui?.editor?.graph; // ADDED
+            const api = graph?.__trellisBedSuccessionNavigator; // ADDED
+            const anchorCell = derivedContext?.sourceCell || cell; // ADDED
+            if (api && typeof api.getSelectedClusterOccupancy === 'function') { // ADDED
+                try { // ADDED
+                    const result = api.getSelectedClusterOccupancy(anchorCell); // ADDED
+                    if (result && Array.isArray(result.items)) return result.items; // ADDED
+                } catch (_) { } // ADDED
+            } // ADDED
+            if (derivedContext?.sourceOccupancy) { // ADDED
+                return [{ // ADDED
+                    cellId: String(derivedContext.sourceCell?.id || ''), // ADDED
+                    label: schedulerCellLabelForGap(derivedContext.sourceCell || cell), // ADDED
+                    startISO: derivedContext.sourceOccupancy.startISO, // ADDED
+                    endISO: derivedContext.sourceOccupancy.endISO // ADDED
+                }]; // ADDED
+            } // ADDED
+            return []; // ADDED
+        } // ADDED
+
+        function currentSchedulerTargetGapWindow() { // ADDED
+            const resultStartISO = derivedOccupancyStartISO(latestScheduleResult); // ADDED
+            const resultEndISO = derivedOccupancyEndISO(latestScheduleResult); // ADDED
+            const startISO = resultStartISO || startInput.value || displayPrimaryDateISO(formState.startISO); // ADDED
+            const endISO = resultEndISO || (mode.perennial ? formState.seasonEndISO : (formState.lastScheduleEndISO || formState.lastHarvestISO || harvestEndInput.textContent || '')); // ADDED
+            return startISO && endISO ? { startISO, endISO } : null; // ADDED
+        } // ADDED
+
+        function currentSchedulerGapWindowAndExclusions() { // ADDED
+            const targetWindow = currentSchedulerTargetGapWindow(); // ADDED
+            if (!targetWindow) return null; // ADDED
+            const excludeCellIds = []; // ADDED
+            let basisLabel = 'current planting'; // ADDED
+            if (cell?.id) excludeCellIds.push(String(cell.id)); // ADDED
+            if (derivedContext?.mode === 'companion') { // ADDED
+                const sourceWindow = derivedContext.sourceOccupancy; // ADDED
+                if (!sourceWindow?.startISO || !sourceWindow?.endISO) return null; // ADDED
+                if (derivedContext.sourceCell?.id) excludeCellIds.push(String(derivedContext.sourceCell.id)); // ADDED
+                return { // ADDED
+                    window: { // ADDED
+                        startISO: minISODate(sourceWindow.startISO, targetWindow.startISO), // ADDED
+                        endISO: maxISODate(sourceWindow.endISO, targetWindow.endISO) // ADDED
+                    }, // ADDED
+                    excludeCellIds, // ADDED
+                    basisLabel: 'source and companion planting pair' // ADDED
+                }; // ADDED
+            } // ADDED
+            if (derivedContext?.mode === 'turnover') { // ADDED
+                basisLabel = 'turnover planting'; // ADDED
+                excludeCellIds.splice(0, excludeCellIds.length); // ADDED
+            } // ADDED
+            return { window: targetWindow, excludeCellIds, basisLabel }; // ADDED
+        } // ADDED
+
+        function updateScheduleGapHint() { // ADDED
+            const context = currentSchedulerGapWindowAndExclusions(); // ADDED
+            const hints = context ? computeSchedulerAdjacentGapHints(schedulerClusterOccupancyItemsForGap(), context.window, { // ADDED
+                excludeCellIds: context.excludeCellIds, // ADDED
+                basisLabel: context.basisLabel // ADDED
+            }) : null; // ADDED
+            const text = hints?.text || ''; // ADDED
+            scheduleGapHint.textContent = text; // ADDED
+            scheduleGapHint.style.display = text ? '' : 'none'; // ADDED
+            scheduleGapTooltipText = hints?.tooltip || ''; // ADDED
+            setTooltip(scheduleGapHint, scheduleGapTooltipText); // ADDED
+            updatePrimaryDateTooltip(); // ADDED
+        } // ADDED
+
 
         function syncControlsFromState({ start = false, end = false, harvest = false } = {}) { // CHANGED
             if (start) {
@@ -7049,6 +7475,7 @@ Draw.loadPlugin(function (ui) {
             }
             updateDaysToFirstHarvest(); // CHANGED
             updateScheduleSummaryFromState(); // ADDED
+            updateScheduleGapHint(); // ADDED
         }
 
         function refreshSowingSeasonSelector() { // ADDED
@@ -7131,6 +7558,8 @@ Draw.loadPlugin(function (ui) {
 
         const firstSowRowObj = row('Sow date:', startInput); // CHANGED
         if (startNote) firstSowRowObj.row.appendChild(startNoteSpan); // CHANGED
+        firstSowRowObj.row.appendChild(scheduleGapHint); // ADDED
+        if (derivedContext?.mode === 'companion') firstSowRowObj.row.appendChild(companionTimingHelp); // ADDED
         const transplantDaysRowObj = row('Transplant lead days:', transplantDaysWrap); // ADDED
         setTooltip(transplantDaysRowObj.label, 'Days from sowing to transplant for this planting group.'); // ADDED
         setTooltip(transplantDaysInput, 'Unchecked: inherit the plant or variety default. Checked: save a group-specific days_transplant override.'); // ADDED
@@ -7737,6 +8166,7 @@ Draw.loadPlugin(function (ui) {
                 syncStartDateBounds(); // CHANGED
                 applyModeToUI(); // ADDED
                 updateTimeline(); // CHANGED
+                updateScheduleGapHint(); // ADDED
                 refreshContextSummary(); // ADDED
                 void refreshClimateModelTips(); // ADDED
                 return true; // FIX
@@ -7807,7 +8237,6 @@ Draw.loadPlugin(function (ui) {
             return true; // FIX
         }
 
-        let latestScheduleResult = null; // ADDED
         let generatedPreviewTasks = []; // CHANGED: lifecycle task dots share the task preview display order.
 
         const timelineWrap = document.createElement('div'); // CHANGED
@@ -8066,7 +8495,8 @@ Draw.loadPlugin(function (ui) {
 
         async function handleSchedulePlantChange({ preferVarietyId = null } = {}) { // FIX: provide an awaitable schedule plant workflow
             const preservedPrimaryDateISO = String(startInput.value || '').trim(); // ADDED
-            const preservePrimaryDate = !!parseISODateUTCValue(preservedPrimaryDateISO); // ADDED
+            const applyDerivedCompanionDefault = derivedContext?.mode === 'companion' && !userEditedStartThisSession; // ADDED
+            const preservePrimaryDate = !!parseISODateUTCValue(preservedPrimaryDateISO) && !applyDerivedCompanionDefault; // CHANGED
             const newPlant = findPlantById(Number(plantSel.value)); if (!newPlant) return;
             selPlant = newPlant; plantNameSpan.textContent = newPlant.plant_name;
 
@@ -8108,7 +8538,13 @@ Draw.loadPlugin(function (ui) {
             if (preservePrimaryDate) { // ADDED
                 startInput.value = preservedPrimaryDateISO; // ADDED
                 userEditedStartThisSession = true; // ADDED
+            } else if (applyDerivedCompanionDefault) { // ADDED
+                const rel = derivedContext.relationshipByPlantId?.get?.(String(formState.plantId)); // ADDED
+                const recommended = Number(rel?.recommendedStartOffsetDays ?? 0); // ADDED
+                startInput.value = shiftISODate(derivedContext.sourceOccupancy.startISO, recommended); // ADDED
+                updateCompanionTimingHelp(); // CHANGED
             } // ADDED
+            updateCompanionTimingHelp(); // ADDED
             syncStateFromControls();
             refreshClimateModelControls({ preserveDraft: false }); // ADDED
 
@@ -8169,6 +8605,7 @@ Draw.loadPlugin(function (ui) {
             void runUiAsync('Date change error', async () => { // FIX
                 userEditedStartThisSession = true; // FIX
                 syncStateFromControls();
+                updateCompanionTimingHelp(); // ADDED
                 if (mode.perennial) {
                     seasonEndInput.value = computePerennialEndISO(
                         startInput.value,
@@ -8342,6 +8779,7 @@ Draw.loadPlugin(function (ui) {
             if (harvestStartInput) setDisplayFieldValue(harvestStartInput, '');
             if (harvestEndInput) setDisplayFieldValue(harvestEndInput, '');
             if (daysToFirstHarvestInput) setDisplayFieldValue(daysToFirstHarvestInput, '');
+            updateScheduleGapHint(); // ADDED
         }
 
         function showHarvestRecomputeFailure(message) { // FIX: keep failure cleanup and reporting atomic
@@ -8411,6 +8849,7 @@ Draw.loadPlugin(function (ui) {
                     setDisplayFieldValue(harvestEndInput, formState.lastHarvestISO || ''); // CHANGED
                 }
                 updateDaysToFirstHarvest(); // CHANGED
+                updateScheduleGapHint(); // ADDED
                 clearHarvestRecomputeFailure(); // FIX: remove a prior recompute error after success
 
                 console.log('[recomputeLastHarvestFromSchedule] scheduleEnd', {
@@ -8600,7 +9039,27 @@ Draw.loadPlugin(function (ui) {
                     ? JSON.stringify(taskTemplate)
                     : (taskTemplateResetRequested ? "" : undefined);
 
-                await applyScheduleToGraph(ui, cell, inputs, {
+                let targetCell = cell; // ADDED
+                let createdDerivedCell = null; // ADDED
+                let derivedRelationshipPatch = {}; // ADDED
+                if (derivedContext) { // ADDED
+                    const graph = ui?.editor?.graph; // ADDED
+                    const relationshipSourceCell = derivedContext.sourceCell || cell; // ADDED
+                    derivedRelationshipPatch = buildDerivedRelationshipPatch(relationshipSourceCell, inputs.plant, scheduleResult, derivedContext); // CHANGED
+                    if (derivedContext.operation === 'create') { // ADDED
+                        const createSibling = getTilerSiblingCreator(graph); // ADDED
+                        if (!createSibling) throw new Error('Plant tiler sibling creation API is unavailable.'); // ADDED
+                        createdDerivedCell = createSibling(graph, relationshipSourceCell, { // CHANGED
+                            source: 'scheduler-' + derivedContext.mode, // ADDED
+                            attributes: derivedRelationshipPatch // ADDED
+                        }); // ADDED
+                        if (!createdDerivedCell) throw new Error('Could not create derived plant group.'); // ADDED
+                        targetCell = createdDerivedCell; // ADDED
+                    } // ADDED
+                } // ADDED
+
+                try { // ADDED
+                    await applyScheduleToGraph(ui, targetCell, inputs, { // CHANGED
                     result: scheduleResult,
                     taskTemplateJson,
                     taskTemplate, // FIX: generate tasks from the in-memory template saved by this action
@@ -8608,9 +9067,15 @@ Draw.loadPlugin(function (ui) {
                     sowingSeasonLabel: activeWindow?.label || '', // ADDED
                     transplantDaysOverrideEnabled: formState.transplantDaysOverrideEnabled, // ADDED
                     effectiveTransplantDays: inputs?.plant?.days_transplant, // ADDED
+                    targetAttributePatch: derivedRelationshipPatch, // ADDED
+                    preserveTargetGeometry: !!derivedContext, // ADDED
                     extraAttributePatches: climateModelAttributePatch ? [climateModelAttributePatch] : [], // ADDED
                     afterGraphUpdate: persistPlantTaskDefault // FIX: undo graph edits if the database write fails
-                });
+                    });
+                } catch (saveError) { // ADDED
+                    if (createdDerivedCell) removeDerivedSiblingIfPresent(ui?.editor?.graph, createdDerivedCell); // ADDED
+                    throw saveError; // ADDED
+                } // ADDED
                 ui.hideDialog();
             } catch (e) {
                 clearScheduleWarningState(); // ADDED
@@ -9391,6 +9856,17 @@ Draw.loadPlugin(function (ui) {
             .usl-scheduler-row{display:flex!important;gap:8px!important;align-items:center!important;flex-wrap:wrap;margin:6px 0!important}
             .usl-scheduler-row-label{flex:0 0 180px;min-width:0!important;font-weight:700;color:var(--usl-neutral-700)}
             .usl-scheduler-row > :not(label){flex:1 1 220px;min-width:0}
+            .usl-scheduler-row--crop-picker{display:grid!important;grid-template-columns:50px minmax(120px,140px) minmax(0,1fr) auto auto!important;align-items:center!important;gap:8px!important}
+            .usl-scheduler-row--crop-picker > .usl-scheduler-row-label{grid-column:1;flex:none!important}
+            .usl-scheduler-row--crop-picker > .usl-scheduler-crop-picker-controls{display:contents!important;flex:none!important;min-width:0!important}
+            .usl-scheduler-crop-filter{grid-column:2;width:100%!important;min-width:120px!important}
+            .usl-scheduler-crop-combobox-wrap{grid-column:3;min-width:0!important;width:100%!important}
+            .usl-scheduler-crop-action{width:auto!important;min-width:36px!important;flex:0 0 auto!important;white-space:nowrap!important;justify-self:end!important}
+            .usl-scheduler-row--crop-variety > .usl-scheduler-row-label{flex:0 0 50px!important}
+            .usl-scheduler-row--crop-variety > :not(label){min-width:0!important}
+            .usl-scheduler-row--crop-variety select{min-width:0!important}
+            .usl-crop-combobox-button{min-height:32px;min-width:0!important;overflow:hidden;white-space:normal;overflow-wrap:anywhere}
+            .usl-crop-combobox-panel{box-sizing:border-box}
             .usl-scheduler-section{border:1px solid var(--usl-neutral-300);border-radius:8px;background:#fff;overflow:hidden;margin-top:12px!important}
             .usl-scheduler-section--allow-popover{overflow:visible}
             .usl-scheduler-section-heading{padding:9px 10px!important;border-bottom:1px solid var(--usl-neutral-300)!important;margin-bottom:0!important;background:var(--usl-neutral-100);font-weight:700!important;font-size:13px!important}
@@ -9406,7 +9882,9 @@ Draw.loadPlugin(function (ui) {
             .usl-scheduler-summary-warning-list li{margin:0 0 2px 0!important;padding:0!important} /* ADDED */
             .usl-scheduler-dialog details{border:1px solid var(--usl-neutral-300)!important;border-radius:8px;background:#fff;margin-top:12px!important;overflow:hidden}
             .usl-scheduler-dialog summary{padding:9px 10px!important;background:var(--usl-neutral-100);border-bottom:1px solid var(--usl-neutral-300);font-weight:700!important}
+            @media (max-width:900px){.usl-scheduler-row--crop-picker{grid-template-columns:50px minmax(120px,1fr) auto auto!important}.usl-scheduler-crop-combobox-wrap{grid-column:2 / -1;min-width:0!important}.usl-scheduler-crop-action{grid-row:3}.usl-scheduler-crop-action:first-of-type{grid-column:3}.usl-scheduler-crop-action:last-of-type{grid-column:4}}
             @media (max-width:760px){.usl-scheduler-summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important}.usl-scheduler-row-label{flex-basis:100%}.usl-scheduler-body{padding:10px}.usl-scheduler-title{white-space:normal}}
+            @media (max-width:640px){.usl-scheduler-row--crop-picker{grid-template-columns:1fr auto auto!important}.usl-scheduler-row--crop-picker > .usl-scheduler-row-label{grid-column:1 / -1}.usl-scheduler-row--crop-variety > .usl-scheduler-row-label{flex-basis:100%!important}.usl-scheduler-crop-filter{grid-column:1 / -1}.usl-scheduler-crop-combobox-wrap{grid-column:1 / -1;min-width:0!important}}
         `; // NEW
         tabsContainer.appendChild(schedulerDialogStyle); // NEW
 
@@ -10741,6 +11219,9 @@ Draw.loadPlugin(function (ui) {
             plant_id: String(plant.plant_id),
             plant_name: String(plant.plant_name || ''),
             plant_abbr: String(plant.abbr || ''),
+            annual: plant.isAnnual && plant.isAnnual() ? '1' : '0', // ADDED
+            biennial: plant.isBiennial && plant.isBiennial() ? '1' : '0', // ADDED
+            perennial: plant.isPerennial && plant.isPerennial() ? '1' : '0', // ADDED
             city_id: city.city_id != null ? String(city.city_id) : '', // ADDED
             city_name: String(city.city_name || ''),
             method_category_id: normId(inputs.methodCategoryId),
@@ -10821,21 +11302,22 @@ Draw.loadPlugin(function (ui) {
     async function runCompensatedSaveSteps({
         applyGraphPatch,
         persist,
-        emitTasks,
         finalizeGraph,
         restoreGraphPatch
     }) { // FIX: centralize graph compensation for every required save step
+        let graphPatchStarted = false; // CHANGE
         try {
-            await applyGraphPatch();
             if (typeof persist === 'function') await persist();
-            if (typeof emitTasks === 'function') await emitTasks();
+            if (typeof applyGraphPatch === 'function') { graphPatchStarted = true; await applyGraphPatch(); } // CHANGE
             if (typeof finalizeGraph === 'function') await finalizeGraph();
         } catch (error) {
-            try {
-                await restoreGraphPatch();
-            } catch (rollbackError) {
-                console.error('[Scheduler] Graph attribute rollback failed', rollbackError);
-            }
+            if (graphPatchStarted) { // CHANGE
+                try {
+                    await restoreGraphPatch();
+                } catch (rollbackError) {
+                    console.error('[Scheduler] Graph attribute rollback failed', rollbackError);
+                }
+            } // NEW
             throw error;
         }
     }
@@ -10858,7 +11340,12 @@ Draw.loadPlugin(function (ui) {
             return operation(); // NEW
         } // NEW
 
-        async function emitTasksForPlan({
+        function getSchedulerTaskReplacementCommand() { // NEW
+            const tasksApi = typeof window !== "undefined" && window.USL && window.USL.tasks; // NEW
+            return tasksApi && typeof tasksApi.applySchedulerTaskReplacement === "function" ? tasksApi.applySchedulerTaskReplacement : null; // NEW
+        } // NEW
+
+        async function buildTaskReplacementForPlan({
             method,
             plant,
             cell,
@@ -10871,62 +11358,74 @@ Draw.loadPlugin(function (ui) {
             methodId = null,
             taskTemplate = null // FIX
         }) {
-            return runTrellisHistoryTransaction({ category: "Garden scheduling", action: "emitTasks", origin: "Garden_Scheduler_Dialog", title: "Generate schedule tasks", affectedCellIds: [cell && cell.id].filter(Boolean), tags: ["Tasks"] }, async function () { // NEW
-                const tasks = await buildTasksForPlan({
-                    method,
-                    plant,
-                    cell,
-                    schedule,
-                    timelines,
-                    taskTemplate,
-                    plantId,
-                    varietyId,
-                    varietyName, // ADDED
-                    methodCategoryId,
-                    methodId
-                });
+            const tasks = await buildTasksForPlan({ // CHANGE
+                method,
+                plant,
+                cell,
+                schedule,
+                timelines,
+                taskTemplate,
+                plantId,
+                varietyId,
+                varietyName, // ADDED
+                methodCategoryId,
+                methodId
+            });
 
-                const detail = {
-                    mode: options.taskDispatchMode || "replace", // CHANGED
-                    tasks,
-                    plantName: plant.plant_name,
-                    varietyName: String(varietyName || ''), // ADDED
-                    targetGroupId: cell.id
-                };
-
-                if (typeof CustomEvent !== "function") {
-                    throw new Error("Cannot emit scheduled tasks: CustomEvent is unavailable."); // FIX: task emission is required for save success
-                }
-                if (typeof window === "undefined" || typeof window.dispatchEvent !== "function") {
-                    throw new Error("Cannot emit scheduled tasks: window.dispatchEvent is unavailable."); // FIX: task emission is required for save success
-                }
-
-                window.dispatchEvent(new CustomEvent("tasksCreated", { detail })); // FIX: propagate dispatch failures to the save flow
-
-                return tasks;
-            }); // NEW
+            return { // NEW
+                mode: options.taskDispatchMode || "replace", // CHANGED
+                tasks,
+                plantName: plant.plant_name,
+                varietyName: String(varietyName || ''), // ADDED
+                targetGroupId: cell.id
+            }; // NEW
         }
 
         const graph = ui.editor.graph;
         const model = graph.getModel();
         const attributePatch = buildScheduleAttributePatch(inputs, result, options); // FIX
+        Object.assign(attributePatch, options.targetAttributePatch || {}); // ADDED
         const attributeSnapshot = snapshotCellAttributes(cell, Object.keys(attributePatch)); // FIX
         const extraAttributePatches = (options.extraAttributePatches || []).filter(spec => spec && spec.cell && spec.patch); // ADDED
         const extraAttributeSnapshots = extraAttributePatches.map(spec => ({ // ADDED
             cell: spec.cell, // ADDED
             snapshot: snapshotCellAttributes(spec.cell, Object.keys(spec.patch)) // ADDED
         })); // ADDED
+        const taskReplacement = await buildTaskReplacementForPlan({ // NEW
+            method,
+            plant,
+            cell,
+            schedule,
+            timelines,
+            plantId: Number(inputs?.plant?.plant_id ?? null),
+            varietyId: inputs?.varietyId ?? null,
+            varietyName: inputs?.varietyName ?? '', // NEW
+            methodCategoryId: normId(inputs?.methodCategoryId), // NEW
+            methodId: normId(inputs?.methodId), // NEW
+            taskTemplate: options.taskTemplate ?? null // NEW
+        }); // NEW
+        const applySchedulerTaskReplacement = getSchedulerTaskReplacementCommand(); // NEW
+        if (!applySchedulerTaskReplacement) throw new Error("Cannot save schedule tasks: Task manager command is unavailable."); // NEW
 
         const applyGraphPatch = async () => {
-            model.beginUpdate();
-            try {
-                applyCellAttributePatch(cell, attributePatch, model);
-                extraAttributePatches.forEach(spec => applyCellAttributePatch(spec.cell, spec.patch, model)); // ADDED
-            } finally {
-                model.endUpdate();
-            }
-            graph.refresh(cell);
-            extraAttributePatches.forEach(spec => graph.refresh(spec.cell)); // ADDED
+            return runTrellisHistoryTransaction({ category: "Garden scheduling", action: "saveSchedule", origin: "Garden_Scheduler_Dialog", title: "Save schedule and generated tasks", affectedCellIds: [cell && cell.id].filter(Boolean), tags: ["Tasks"] }, function () { // CHANGE
+                model.beginUpdate();
+                try {
+                    applyCellAttributePatch(cell, attributePatch, model);
+                    extraAttributePatches.forEach(spec => applyCellAttributePatch(spec.cell, spec.patch, model)); // ADDED
+                    applySchedulerTaskReplacement(taskReplacement, { insideUpdate: true }); // NEW
+                    if (options.preserveTargetGeometry) { // ADDED
+                        const tiler = window.USL && window.USL.tiler ? window.USL.tiler : null; // ADDED
+                        if (tiler && typeof tiler.retileGroup === 'function') tiler.retileGroup(graph, cell, { inTransaction: true }); // ADDED
+                    } else { // ADDED
+                        retileAndFitGroupIfAvailable(graph, cell, { source: 'schedule-save' }); // CHANGE
+                    } // ADDED
+                } finally {
+                    model.endUpdate();
+                }
+                graph.refresh(cell);
+                extraAttributePatches.forEach(spec => graph.refresh(spec.cell)); // ADDED
+            }); // CHANGE
         };
 
         const restoreGraphPatch = async () => {
@@ -10944,21 +11443,7 @@ Draw.loadPlugin(function (ui) {
         await runCompensatedSaveSteps({
             applyGraphPatch,
             persist: options.afterGraphUpdate,
-            emitTasks: async () => emitTasksForPlan({ // FIX: task emission participates in rollback-protected save success
-                method,
-                plant,
-                cell,
-                schedule,
-                timelines,
-                plantId: Number(inputs?.plant?.plant_id ?? null),
-                varietyId: inputs?.varietyId ?? null,
-                varietyName: inputs?.varietyName ?? '', // ADDED
-                methodCategoryId: normId(inputs?.methodCategoryId), // FIX
-                methodId: normId(inputs?.methodId), // FIX
-                taskTemplate: options.taskTemplate ?? null // FIX: do not reread task_template_json after mutation
-            }),
             finalizeGraph: async () => {
-                retileAndFitGroupIfAvailable(graph, cell, { source: 'schedule-save' }); // CHANGE
                 graph.refresh(cell);
             },
             restoreGraphPatch
@@ -10977,11 +11462,356 @@ Draw.loadPlugin(function (ui) {
             .filter(Boolean))); // ADDED
     } // ADDED
 
+    function lifecycleRankForPlant(plant) { // ADDED
+        const lifecycle = getCropLifecycle(plant); // ADDED
+        if (lifecycle === 'annual') return 1; // ADDED
+        if (lifecycle === 'biennial') return 2; // ADDED
+        if (lifecycle === 'perennial') return 3; // ADDED
+        return 1; // ADDED
+    } // ADDED
+
+    function lifecycleEligibleForDerivedCompanion(sourcePlant, candidatePlant) { // ADDED
+        return lifecycleRankForPlant(candidatePlant) <= lifecycleRankForPlant(sourcePlant); // ADDED
+    } // ADDED
+
+    function sourceOccupancyWindowForDerived(cell, plant = null) { // ADDED
+        const perennial = plant ? isPerennialPlant(plant) : String(cell?.getAttribute?.('lifespan_start') || '').trim(); // ADDED
+        const startISO = perennial // ADDED
+            ? String(cell?.getAttribute?.('lifespan_start') || '').trim() // ADDED
+            : (String(cell?.getAttribute?.('transplant_date') || '').trim() || String(cell?.getAttribute?.('sow_date') || '').trim()); // ADDED
+        const endISO = perennial // ADDED
+            ? String(cell?.getAttribute?.('lifespan_end') || '').trim() // ADDED
+            : String(cell?.getAttribute?.('harvest_end') || '').trim(); // ADDED
+        const start = parseISODateUTCValue(startISO); // ADDED
+        const end = parseISODateUTCValue(endISO); // ADDED
+        if (!start || !end || end < start) return null; // ADDED
+        return { startISO, endISO, start, end }; // ADDED
+    } // ADDED
+
+    function shiftISODate(iso, days) { // ADDED
+        const date = parseISODateUTCValue(iso); // ADDED
+        if (!date) return ''; // ADDED
+        date.setUTCDate(date.getUTCDate() + Math.trunc(Number(days) || 0)); // ADDED
+        return fmtISO(date); // ADDED
+    } // ADDED
+
+    function derivedOccupancyStartISO(result) { // ADDED
+        if (result?.kind === 'perennial') return String(result.lifespanStartISO || ''); // ADDED
+        const first = Array.isArray(result?.timelines) ? result.timelines[0] : null; // ADDED
+        return fmtISO(first?.transplant) || fmtISO(first?.sow); // ADDED
+    } // ADDED
+
+    function derivedOccupancyEndISO(result) { // ADDED
+        if (result?.kind === 'perennial') return String(result.lifespanEndISO || ''); // ADDED
+        const first = Array.isArray(result?.timelines) ? result.timelines[0] : null; // ADDED
+        return fmtISO(first?.harvestEnd); // ADDED
+    } // ADDED
+
+    function daysDeltaISO(fromISO, toISO) { // ADDED
+        const from = parseISODateUTCValue(fromISO); // ADDED
+        const to = parseISODateUTCValue(toISO); // ADDED
+        if (!from || !to) return null; // ADDED
+        return Math.round((to.getTime() - from.getTime()) / (24 * 60 * 60 * 1000)); // ADDED
+    } // ADDED
+
+    function isoRangesOverlap(leftStartISO, leftEndISO, rightStartISO, rightEndISO) { // ADDED
+        const leftStart = parseISODateUTCValue(leftStartISO); // ADDED
+        const leftEnd = parseISODateUTCValue(leftEndISO); // ADDED
+        const rightStart = parseISODateUTCValue(rightStartISO); // ADDED
+        const rightEnd = parseISODateUTCValue(rightEndISO); // ADDED
+        return !!(leftStart && leftEnd && rightStart && rightEnd && leftStart <= rightEnd && rightStart <= leftEnd); // ADDED
+    } // ADDED
+
+    function minISODate(leftISO, rightISO) { // ADDED
+        const left = parseISODateUTCValue(leftISO); // ADDED
+        const right = parseISODateUTCValue(rightISO); // ADDED
+        if (!left) return rightISO || ''; // ADDED
+        if (!right) return leftISO || ''; // ADDED
+        return left <= right ? leftISO : rightISO; // ADDED
+    } // ADDED
+
+    function maxISODate(leftISO, rightISO) { // ADDED
+        const left = parseISODateUTCValue(leftISO); // ADDED
+        const right = parseISODateUTCValue(rightISO); // ADDED
+        if (!left) return rightISO || ''; // ADDED
+        if (!right) return leftISO || ''; // ADDED
+        return left >= right ? leftISO : rightISO; // ADDED
+    } // ADDED
+
+    function normalizeSchedulerGapItem(item) { // ADDED
+        const startISO = String(item?.startISO || '').trim(); // ADDED
+        const endISO = String(item?.endISO || '').trim(); // ADDED
+        const start = parseISODateUTCValue(startISO); // ADDED
+        const end = parseISODateUTCValue(endISO); // ADDED
+        if (!start || !end) return null; // ADDED
+        return { // ADDED
+            cellId: String(item?.cellId || '').trim(), // ADDED
+            label: String(item?.label || item?.cellId || 'Planting').trim(), // ADDED
+            startISO, // ADDED
+            endISO, // ADDED
+            start, // ADDED
+            end // ADDED
+        }; // ADDED
+    } // ADDED
+
+    function schedulerGapSideLabel(side, deltaDays) { // ADDED
+        const prefix = side === 'after' ? 'After' : 'Before'; // ADDED
+        const delta = Number(deltaDays); // ADDED
+        if (!Number.isFinite(delta)) return ''; // ADDED
+        if (delta < 0) return `${prefix}: overlaps ${Math.abs(delta)}d`; // ADDED
+        if (delta === 0) return `${prefix}: same-day`; // ADDED
+        return `${prefix}: ${delta}d gap`; // ADDED
+    } // ADDED
+
+    function schedulerGapSideTooltip(side, deltaDays, adjacent, currentWindow) { // ADDED
+        const prefix = side === 'after' ? 'After' : 'Before'; // ADDED
+        const label = adjacent?.label || 'adjacent planting'; // ADDED
+        const delta = Number(deltaDays); // ADDED
+        if (!Number.isFinite(delta)) return ''; // ADDED
+        const relation = delta < 0 ? `overlaps ${Math.abs(delta)}d with` : (delta === 0 ? 'starts same-day with' : `${delta}d gap from`); // ADDED
+        if (side === 'after') return `${prefix}: ${relation} ${label} (${currentWindow.endISO} to ${adjacent.startISO}).`; // ADDED
+        return `${prefix}: ${relation} ${label} (${adjacent.endISO} to ${currentWindow.startISO}).`; // ADDED
+    } // ADDED
+
+    function computeSchedulerAdjacentGapHints(items, currentWindow, options = {}) { // ADDED
+        const currentStart = parseISODateUTCValue(currentWindow?.startISO); // ADDED
+        const currentEnd = parseISODateUTCValue(currentWindow?.endISO); // ADDED
+        if (!currentStart || !currentEnd || currentEnd < currentStart) return { before: null, after: null, text: '', tooltip: '' }; // ADDED
+        const excludeIds = new Set((options.excludeCellIds || []).map(id => String(id || '').trim()).filter(Boolean)); // ADDED
+        const normalized = (items || []) // ADDED
+            .map(normalizeSchedulerGapItem) // ADDED
+            .filter(item => item && !excludeIds.has(item.cellId)); // ADDED
+        const before = normalized // ADDED
+            .filter(item => item.start <= currentStart) // ADDED
+            .sort((a, b) => b.end - a.end)[0] || null; // ADDED
+        const after = normalized // ADDED
+            .filter(item => item.start >= currentStart) // ADDED
+            .sort((a, b) => a.start - b.start)[0] || null; // ADDED
+        const beforeDelta = before ? daysDeltaISO(before.endISO, currentWindow.startISO) : null; // ADDED
+        const afterDelta = after ? daysDeltaISO(currentWindow.endISO, after.startISO) : null; // ADDED
+        const beforeHint = before ? { item: before, deltaDays: beforeDelta, text: schedulerGapSideLabel('before', beforeDelta), tooltip: schedulerGapSideTooltip('before', beforeDelta, before, currentWindow) } : null; // ADDED
+        const afterHint = after ? { item: after, deltaDays: afterDelta, text: schedulerGapSideLabel('after', afterDelta), tooltip: schedulerGapSideTooltip('after', afterDelta, after, currentWindow) } : null; // ADDED
+        const text = [beforeHint?.text, afterHint?.text].filter(Boolean).join('; '); // ADDED
+        const basis = options.basisLabel ? `Basis: ${options.basisLabel} (${currentWindow.startISO} to ${currentWindow.endISO}).` : ''; // ADDED
+        const tooltip = [basis, beforeHint?.tooltip, afterHint?.tooltip].filter(Boolean).join('\n'); // ADDED
+        return { before: beforeHint, after: afterHint, text, tooltip }; // ADDED
+    } // ADDED
+
+    function getClusterOccupancyItemsForDerived(sourceCell, graph) { // ADDED
+        const api = graph?.__trellisBedSuccessionNavigator; // ADDED
+        if (api && typeof api.getSelectedClusterOccupancy === 'function') { // ADDED
+            const result = api.getSelectedClusterOccupancy(sourceCell); // ADDED
+            if (result && Array.isArray(result.items)) return result.items; // ADDED
+        } // ADDED
+        const sourceWindow = sourceOccupancyWindowForDerived(sourceCell, null); // ADDED
+        return sourceWindow ? [{ cellId: sourceCell?.id || '', startISO: sourceWindow.startISO, endISO: sourceWindow.endISO }] : []; // ADDED
+    } // ADDED
+
+    function turnoverComputedWindowFitsSourceCluster(sourceCell, computedWindow, graph) { // ADDED
+        if (!computedWindow?.startISO || !computedWindow?.endISO) return false; // ADDED
+        const sourceId = String(sourceCell?.id || ''); // ADDED
+        return !getClusterOccupancyItemsForDerived(sourceCell, graph).some(item => { // ADDED
+            if (String(item?.cellId || '') === sourceId) return false; // ADDED
+            return isoRangesOverlap(computedWindow.startISO, computedWindow.endISO, item?.startISO, item?.endISO); // CHANGED
+        }); // ADDED
+    } // ADDED
+
+    async function computeAnnualTurnoverWindowForCandidate(sourceCell, candidatePlant, defaultPrimaryStartISO, context = {}) { // ADDED
+        if (!candidatePlant?.isAnnual?.() || !defaultPrimaryStartISO || !context.city) return null; // ADDED
+        try { // ADDED
+            const city = context.city; // ADDED
+            const cityName = String(city.city_name || context.cityName || ''); // ADDED
+            const year = Math.trunc(Number(context.year || parseISODateUTCValue(defaultPrimaryStartISO)?.getUTCFullYear())); // ADDED
+            if (!Number.isFinite(year)) return null; // ADDED
+            const methodSelection = await resolveInitialMethodSelection(sourceCell, candidatePlant); // ADDED
+            const transplantOverride = normalizeTransplantDays(readCellTransplantDaysOverride(sourceCell)); // ADDED
+            const transplantConfig = resolveTransplantDaysConfig(candidatePlant, { // ADDED
+                methodId: methodSelection.methodId, // ADDED
+                overrideEnabled: transplantOverride != null, // ADDED
+                overrideValue: transplantOverride // ADDED
+            }); // ADDED
+            requireEffectiveTransplantDays(methodSelection.methodId, transplantConfig.effectiveDays); // ADDED
+            const effectivePlant = applyEffectiveTransplantDaysToPlant(candidatePlant, transplantConfig.effectiveDays); // ADDED
+            const scanStart = asUTCDate(year, 1, 1); // ADDED
+            const scanEndHard = asUTCDate(annualSchedulerScanEndYear(effectivePlant, year), 12, 31); // ADDED
+            const climateResolution = resolveClimateModelPolicy(context.moduleCell, cityName, effectivePlant.plant_id, null); // ADDED
+            const dailyClimate = await city.loadDailyClimateModel({ scanStart, scanEndHard, climatePolicy: climateResolution.effective }); // ADDED
+            const startISO = sowDateFromPrimaryDate(defaultPrimaryStartISO, methodSelection.methodId, transplantConfig.effectiveDays); // ADDED
+            const inputs = new sharedCore.ScheduleInputs({ // ADDED
+                plant: effectivePlant, // ADDED
+                city, // ADDED
+                planningMode: methodSelection.resolvedBehavior.planningMode, // ADDED
+                methodCategoryId: methodSelection.methodCategoryId, // ADDED
+                methodId: methodSelection.methodId, // ADDED
+                startISO, // ADDED
+                seasonEndISO: fmtISO(scanEndHard), // ADDED
+                policy: PolicyFlags.fromResolvedBehavior(effectivePlant, methodSelection.resolvedBehavior, climateResolution.effective), // ADDED
+                seasonStartYear: year, // ADDED
+                harvestWindowDays: resolveHarvestWindowDays(null, effectivePlant), // ADDED
+                bedProfile: context.bedProfile || normalizeBedProfile(null), // ADDED
+                bedProfileSource: context.bedProfileSource || 'generic garden bed', // ADDED
+                dailyClimate // ADDED
+            }); // ADDED
+            const result = computeScheduleResult(inputs); // ADDED
+            const occupancyStartISO = derivedOccupancyStartISO(result); // ADDED
+            const occupancyEndISO = derivedOccupancyEndISO(result); // ADDED
+            return occupancyStartISO && occupancyEndISO ? { startISO: occupancyStartISO, endISO: occupancyEndISO, result } : null; // ADDED
+        } catch (_) { // ADDED
+            return null; // ADDED
+        } // ADDED
+    } // ADDED
+
+    async function turnoverCandidateFitsSourceCluster(sourceCell, candidatePlant, defaultPrimaryStartISO, context = {}) { // CHANGED
+        const graph = context?.graph || context; // ADDED
+        const computedWindow = await computeAnnualTurnoverWindowForCandidate(sourceCell, candidatePlant, defaultPrimaryStartISO, context); // ADDED
+        return turnoverComputedWindowFitsSourceCluster(sourceCell, computedWindow, graph); // CHANGED
+    } // ADDED
+
+    function getTilerSiblingCreator(graph) { // ADDED
+        const tiler = window.USL && window.USL.tiler ? window.USL.tiler : null; // ADDED
+        return tiler && typeof tiler.createSiblingTilerGroupFromSource === 'function' ? tiler.createSiblingTilerGroupFromSource : null; // ADDED
+    } // ADDED
+
+    function removeDerivedSiblingIfPresent(graph, cell) { // ADDED
+        if (!graph || !cell) return; // ADDED
+        try { graph.removeCells([cell]); } catch (_) { } // ADDED
+    } // ADDED
+
+    function buildDerivedRelationshipPatch(sourceCell, targetPlant, result, derivedContext) { // ADDED
+        if (!sourceCell || !derivedContext) return {}; // ADDED
+        const mode = String(derivedContext.mode || '').trim(); // ADDED
+        const patch = { // ADDED
+            derived_mode: mode, // ADDED
+            derived_source_group_id: String(sourceCell.id || ''), // ADDED
+            derived_source_plant_id: String(sourceCell.getAttribute?.('plant_id') || ''), // ADDED
+            derived_target_plant_id: String(targetPlant?.plant_id || '') // ADDED
+        }; // ADDED
+        const sourceWindow = derivedContext.sourceOccupancy || sourceOccupancyWindowForDerived(sourceCell, derivedContext.sourcePlant); // ADDED
+        const targetStartISO = derivedOccupancyStartISO(result); // ADDED
+        if (mode === 'companion') { // ADDED
+            const actualOffset = sourceWindow ? daysDeltaISO(sourceWindow.startISO, targetStartISO) : null; // ADDED
+            const relationship = derivedContext.relationshipByPlantId?.get?.(String(targetPlant?.plant_id)) || null; // ADDED
+            patch.companion_relation_id = relationship?.relationId || ''; // ADDED
+            patch.companion_start_offset_days = actualOffset == null ? '' : String(actualOffset); // ADDED
+            patch.companion_recommended_start_offset_days = String(relationship?.recommendedStartOffsetDays ?? 0); // ADDED
+            patch.companion_rating = relationship?.rating == null ? '' : String(relationship.rating); // ADDED
+            patch.companion_type = relationship?.companionType || ''; // ADDED
+        } else if (mode === 'turnover') { // ADDED
+            const gap = sourceWindow ? daysDeltaISO(sourceWindow.endISO, targetStartISO) : null; // ADDED
+            patch.turnover_gap_days = gap == null ? '' : String(gap); // ADDED
+        } // ADDED
+        return patch; // ADDED
+    } // ADDED
+
+    async function prepareDerivedScheduleContext(mode, sourceCell, sourcePlant, allPlants, context = {}) { // CHANGED
+        const normalizedMode = String(mode || '').trim().toLowerCase(); // ADDED
+        const graph = context?.graph || context; // ADDED
+        if (normalizedMode !== 'companion' && normalizedMode !== 'turnover') throw new Error('Unknown derived schedule mode.'); // ADDED
+        const sourceOccupancy = sourceOccupancyWindowForDerived(sourceCell, sourcePlant); // ADDED
+        if (!sourceOccupancy) throw new Error('Derived scheduling requires complete source occupancy dates.'); // ADDED
+        const sourcePlantId = Number(sourcePlant?.plant_id ?? sourceCell?.getAttribute?.('plant_id')); // ADDED
+        const sourceRank = lifecycleRankForPlant(sourcePlant); // ADDED
+        const all = (allPlants || []).filter(plant => Number(plant?.plant_id) !== sourcePlantId); // ADDED
+        const metadataByPlantId = new Map(); // ADDED
+        const relationshipByPlantId = new Map(); // ADDED
+        let candidatePlants = []; // ADDED
+        let defaultPrimaryStartISO = sourceOccupancy.startISO; // ADDED
+        let initialRecommendedStartOffsetDays = 0; // ADDED
+        if (normalizedMode === 'companion') { // ADDED
+            const relationships = await CompanionRelationshipModel.listForSourcePlant(sourcePlantId); // ADDED
+            relationships.forEach(rel => relationshipByPlantId.set(String(rel.companionPlantId), rel)); // ADDED
+            const known = all.filter(plant => relationshipByPlantId.has(String(plant?.plant_id)) && lifecycleEligibleForDerivedCompanion(sourcePlant, plant)); // ADDED
+            candidatePlants = known.length ? known : all.filter(plant => lifecycleEligibleForDerivedCompanion(sourcePlant, plant)); // ADDED
+            candidatePlants.forEach(plant => { // ADDED
+                const key = String(plant?.plant_id); // ADDED
+                const rel = relationshipByPlantId.get(key); // ADDED
+                metadataByPlantId.set(key, rel ? Object.assign({ known: true }, rel) : { known: false, recommendedStartOffsetDays: 0, rating: null, evidence: [] }); // ADDED
+            }); // ADDED
+            const firstRel = candidatePlants.length ? relationshipByPlantId.get(String(candidatePlants[0]?.plant_id)) : null; // ADDED
+            initialRecommendedStartOffsetDays = Number(firstRel?.recommendedStartOffsetDays ?? 0); // ADDED
+            defaultPrimaryStartISO = shiftISODate(sourceOccupancy.startISO, initialRecommendedStartOffsetDays); // ADDED
+        } else { // ADDED
+            if (!sourcePlant?.isAnnual?.()) throw new Error('Turnover scheduling is available only for annual source groups.'); // ADDED
+            defaultPrimaryStartISO = shiftISODate(sourceOccupancy.endISO, 1); // ADDED
+            const annualCandidates = all.filter(plant => plant?.isAnnual?.()); // ADDED
+            for (const plant of annualCandidates) { // ADDED
+                if (await turnoverCandidateFitsSourceCluster(sourceCell, plant, defaultPrimaryStartISO, Object.assign({}, context, { graph }))) candidatePlants.push(plant); // CHANGED
+            } // ADDED
+        } // ADDED
+        return { // ADDED
+            operation: 'create', // ADDED
+            mode: normalizedMode, // ADDED
+            sourceCell, // ADDED
+            sourcePlant, // ADDED
+            sourceOccupancy, // ADDED
+            sourceRank, // ADDED
+            candidatePlants, // ADDED
+            metadataByPlantId, // ADDED
+            relationshipByPlantId, // ADDED
+            defaultPrimaryStartISO, // ADDED
+            initialRecommendedStartOffsetDays // ADDED
+        }; // ADDED
+    } // ADDED
+
+    async function resolveExistingDerivedScheduleContext(cell, selectedPlant, allPlants, context = {}) { // ADDED
+        const graph = context?.graph || context; // ADDED
+        const model = graph && typeof graph.getModel === 'function' ? graph.getModel() : null; // ADDED
+        const mode = String(cell?.getAttribute?.('derived_mode') || '').trim().toLowerCase(); // ADDED
+        if (mode !== 'companion') return null; // ADDED
+        const sourceId = String(cell?.getAttribute?.('derived_source_group_id') || '').trim(); // ADDED
+        if (!sourceId || !model || typeof model.getCell !== 'function') return null; // ADDED
+        const sourceCell = model.getCell(sourceId); // ADDED
+        if (!sourceCell || !isTilerGroup(sourceCell)) return null; // ADDED
+        const sourcePlantId = finiteNumberOrNull(sourceCell.getAttribute?.('plant_id')); // ADDED
+        const sourcePlantName = String(sourceCell.getAttribute?.('plant_name') || '').trim(); // ADDED
+        let sourcePlant = sourcePlantId != null ? await PlantModel.loadById(sourcePlantId) : null; // ADDED
+        if (!sourcePlant && sourcePlantName) sourcePlant = await PlantModel.loadByName(sourcePlantName); // ADDED
+        if (!sourcePlant) return null; // ADDED
+        const derived = await prepareDerivedScheduleContext('companion', sourceCell, sourcePlant, allPlants, context); // ADDED
+        const targetPlantId = String(selectedPlant?.plant_id || cell?.getAttribute?.('plant_id') || '').trim(); // ADDED
+        if (selectedPlant && targetPlantId && !derived.candidatePlants.some(plant => String(plant?.plant_id) === targetPlantId)) { // ADDED
+            derived.candidatePlants.unshift(selectedPlant); // ADDED
+            if (!derived.metadataByPlantId.has(targetPlantId)) { // ADDED
+                const rel = derived.relationshipByPlantId.get(targetPlantId); // ADDED
+                derived.metadataByPlantId.set(targetPlantId, rel ? Object.assign({ known: true }, rel) : { known: false, recommendedStartOffsetDays: 0, rating: null, evidence: [] }); // ADDED
+            } // ADDED
+        } // ADDED
+        derived.operation = 'edit'; // ADDED
+        derived.targetCell = cell; // ADDED
+        derived.defaultPrimaryStartISO = ''; // ADDED
+        return derived; // ADDED
+    } // ADDED
+
+    function showDerivedScheduleEmptyState(ui, mode, message) { // ADDED
+        const root = document.createElement('div'); // ADDED
+        root.style.padding = '18px'; // ADDED
+        root.style.maxWidth = '420px'; // ADDED
+        const title = document.createElement('div'); // ADDED
+        title.textContent = mode === 'turnover' ? 'No turnover crops fit' : 'No companion crops available'; // ADDED
+        title.style.fontSize = '16px'; // ADDED
+        title.style.fontWeight = '700'; // ADDED
+        title.style.marginBottom = '8px'; // ADDED
+        const body = document.createElement('div'); // ADDED
+        body.textContent = message; // ADDED
+        body.style.fontSize = '13px'; // ADDED
+        body.style.lineHeight = '1.4'; // ADDED
+        body.style.color = '#374151'; // ADDED
+        const actions = document.createElement('div'); // ADDED
+        actions.style.textAlign = 'right'; // ADDED
+        actions.style.marginTop = '16px'; // ADDED
+        const closeBtn = mxUtils.button('Close', () => ui.hideDialog()); // ADDED
+        actions.appendChild(closeBtn); // ADDED
+        root.appendChild(title); // ADDED
+        root.appendChild(body); // ADDED
+        root.appendChild(actions); // ADDED
+        ui.showDialog(root, 430, 160, true, true); // ADDED
+    } // ADDED
+
 
 
 
     // -------------------- Orchestrator: open schedule dialog --------------------------------
-    async function openScheduleDialog(ui, cell) {
+    async function openScheduleDialog(ui, cell, openOptions = {}) { // CHANGED
         requireCanSchedulePlantingGroup(cell); // NEW
         // 1) Load reference data
         const plants = await PlantModel.listBasic();
@@ -11008,6 +11838,9 @@ Draw.loadPlugin(function (ui) {
             if (!plants.length) throw new Error('No plants available');
             selectedPlant = plants[0];
         }
+        let dialogPlants = plants; // ADDED
+        let derivedContext = null; // ADDED
+        const sourcePlantForDerived = selectedPlant; // ADDED
 
         // 3) Initial city & method
         const now = new Date();
@@ -11033,20 +11866,9 @@ Draw.loadPlugin(function (ui) {
         const initialCityId = finiteNumberOrNull(initialCityRow?.city_id); // ADDED
         const initialCityName = initialCityRow?.city_name || groupCityName || (cities[0].city_name || cities[0]); // CHANGED
 
-        const initialMethodSelection = await resolveInitialMethodSelection(cell, selectedPlant);
-        const initialMethodCategoryId = initialMethodSelection.methodCategoryId;
-        const initialMethodId = initialMethodSelection.methodId;
-        const initialResolvedBehavior = initialMethodSelection.resolvedBehavior;
-        const initialTransplantDaysConfig = resolveTransplantDaysConfig(selectedPlant, { // ADDED
-            methodId: initialMethodId, // ADDED
-            overrideEnabled: initialTransplantDaysOverrideValue != null, // ADDED
-            overrideValue: initialTransplantDaysOverrideValue // ADDED
-        }); // ADDED
-        const selectedPlantForSchedule = applyEffectiveTransplantDaysToPlant(selectedPlant, initialTransplantDaysConfig.effectiveDays); // ADDED
-
         const cityInit = await CityClimate.resolveUniqueNameFallback({ cityId: initialCityId, cityName: initialCityName }); // CHANGED
         if (!cityInit) throw new Error(`City not found: ${initialCityName}`);
-        if (model && cell && cityInit.city_id != null) { // ADDED
+        if (!openOptions?.derivedMode && model && cell && cityInit.city_id != null) { // CHANGED
             model.beginUpdate(); // ADDED
             try { // ADDED
                 setAttr(cell, 'city_id', String(cityInit.city_id)); // ADDED
@@ -11055,6 +11877,47 @@ Draw.loadPlugin(function (ui) {
                 model.endUpdate(); // ADDED
             } // ADDED
         } // ADDED
+
+        if (openOptions?.derivedMode) { // ADDED
+            derivedContext = await prepareDerivedScheduleContext(openOptions.derivedMode, cell, sourcePlantForDerived, plants, { // CHANGED
+                graph, // ADDED
+                city: cityInit, // ADDED
+                cityName: initialCityName, // ADDED
+                year, // ADDED
+                moduleCell: climateModelModuleCell, // ADDED
+                bedProfile: scheduleBedContext.profile, // ADDED
+                bedProfileSource: scheduleBedContext.source // ADDED
+            }); // ADDED
+            dialogPlants = derivedContext.candidatePlants; // ADDED
+            if (!dialogPlants.length) { // ADDED
+                showDerivedScheduleEmptyState(ui, openOptions.derivedMode, openOptions.derivedMode === 'turnover' ? 'No annual crops have enough same-footprint capacity from the source harvest through their projected harvest end.' : 'No lifecycle-eligible companion crops are available for this source.'); // ADDED
+                return; // ADDED
+            } // ADDED
+            selectedPlant = dialogPlants[0]; // ADDED
+        } // ADDED
+        else { // ADDED
+            derivedContext = await resolveExistingDerivedScheduleContext(cell, selectedPlant, plants, { // ADDED
+                graph, // ADDED
+                city: cityInit, // ADDED
+                cityName: initialCityName, // ADDED
+                year, // ADDED
+                moduleCell: climateModelModuleCell, // ADDED
+                bedProfile: scheduleBedContext.profile, // ADDED
+                bedProfileSource: scheduleBedContext.source // ADDED
+            }); // ADDED
+            if (derivedContext) dialogPlants = derivedContext.candidatePlants; // ADDED
+        } // ADDED
+
+        const initialMethodSelection = await resolveInitialMethodSelection(cell, selectedPlant); // MOVED
+        const initialMethodCategoryId = initialMethodSelection.methodCategoryId; // MOVED
+        const initialMethodId = initialMethodSelection.methodId; // MOVED
+        const initialResolvedBehavior = initialMethodSelection.resolvedBehavior; // MOVED
+        const initialTransplantDaysConfig = resolveTransplantDaysConfig(selectedPlant, { // MOVED
+            methodId: initialMethodId, // MOVED
+            overrideEnabled: initialTransplantDaysOverrideValue != null, // MOVED
+            overrideValue: initialTransplantDaysOverrideValue // MOVED
+        }); // MOVED
+        const selectedPlantForSchedule = applyEffectiveTransplantDaysToPlant(selectedPlant, initialTransplantDaysConfig.effectiveDays); // MOVED
         const initialClimateResolution = resolveClimateModelPolicy(climateModelModuleCell, initialCityName, selectedPlantForSchedule.plant_id, null); // CHANGED
         const initialClimatePolicy = initialClimateResolution.effective; // ADDED
 
@@ -11183,7 +12046,7 @@ Draw.loadPlugin(function (ui) {
         }
 
         // Always open the dialog (even when HW_DAYS is null/perennial)
-        await buildScheduleDialog(ui, cell, plants, cities, async (_form) => { /* handled inside builder */ }, {
+        await buildScheduleDialog(ui, cell, dialogPlants, cities, async (_form) => { /* handled inside builder */ }, { // CHANGED
             selectedPlant,
             earliestFeasibleSowDate: previewStart,
             lastHarvestDate: selectedHarvestEndDate, // CHANGED: retained for older builder call sites.
@@ -11198,9 +12061,16 @@ Draw.loadPlugin(function (ui) {
             bedProfileSource: scheduleBedContext.source, // ADDED
             dailyClimate: initialDailyClimate, // CHANGED
             dailyClimateKey: initialDailyClimate ? `${cityInit.city_name || initialCityName}|${fmtISO(scanStart)}|${fmtISO(scanEndHard)}|${JSON.stringify(initialClimatePolicy)}` : '', // CHANGED
-            initialTransplantDaysOverrideValue // ADDED
+            initialTransplantDaysOverrideValue, // ADDED
+            derivedContext // ADDED
         });
     }
+
+    async function openDerivedScheduleDialog(ui, sourceCell, options = {}) { // ADDED
+        const mode = String(options?.mode || '').trim().toLowerCase(); // ADDED
+        if (mode !== 'companion' && mode !== 'turnover') throw new Error('Derived scheduler mode must be companion or turnover.'); // ADDED
+        return openScheduleDialog(ui, sourceCell, { derivedMode: mode }); // ADDED
+    } // ADDED
 
 
 
@@ -11272,6 +12142,7 @@ Draw.loadPlugin(function (ui) {
     window.USL = window.USL || {};
     window.USL.scheduler = Object.assign({}, window.USL.scheduler, {
         openScheduleDialog: (ui, cell) => openScheduleDialog(ui, cell),
+        openDerivedScheduleDialog: (ui, sourceCell, options) => openDerivedScheduleDialog(ui, sourceCell, options), // ADDED
         openSetPlantDialog: (ui, cell) => openSetPlantDialog(ui, cell), // CHANGE
         listPlantOptions: listPlantOptions // NEW
     });
@@ -11736,6 +12607,7 @@ Draw.loadPlugin(function (ui) {
         window.USL.scheduler = Object.assign({}, window.USL.scheduler, { // ADDED
             loadError: message, // ADDED
             openScheduleDialog: function (uiArg) { showDisabledMessage(uiArg); }, // ADDED
+            openDerivedScheduleDialog: function (uiArg) { showDisabledMessage(uiArg); }, // ADDED
             openSetPlantDialog: function (uiArg) { showDisabledMessage(uiArg); }, // ADDED
             listPlantOptions: async function () { throw new Error(message); } // ADDED
         }); // ADDED
@@ -11787,6 +12659,7 @@ Draw.loadPlugin(function (ui) {
             manualVarietyMaturityMismatch, // ADDED
             normalizeVarietyMaturityClass, // ADDED
             makeCropPickerOptions, // ADDED
+            createSchedulerCropCombobox, // ADDED
             scoreSowingWindowsForDate, // ADDED
             scoreCropSuitability, // ADDED
             scoreCropPickerOptions, // ADDED
@@ -11886,6 +12759,19 @@ Draw.loadPlugin(function (ui) {
             runCompensatedSaveSteps,
             readGraphCellAttribute, // ADDED
             normalizeLinkedCellIds, // ADDED
+            lifecycleRankForPlant, // ADDED
+            lifecycleEligibleForDerivedCompanion, // ADDED
+            sourceOccupancyWindowForDerived, // ADDED
+            shiftISODate, // ADDED
+            daysDeltaISO, // ADDED
+            isoRangesOverlap, // ADDED
+            computeSchedulerAdjacentGapHints, // ADDED
+            computeAnnualTurnoverWindowForCandidate, // CHANGED
+            turnoverComputedWindowFitsSourceCluster, // ADDED
+            turnoverCandidateFitsSourceCluster, // ADDED
+            buildDerivedRelationshipPatch, // ADDED
+            companionRatingLabel, // ADDED
+            formatSignedDays, // ADDED
             sharedCore, // CHANGED
             annualCore, // CHANGED
             perennialCore // CHANGED

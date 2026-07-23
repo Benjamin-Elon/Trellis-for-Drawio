@@ -113,6 +113,18 @@ test('Plant group creation finalizes tiling and bed fit inside the creation tran
     assert.doesNotMatch(createEmpty, /retileGroup\(graph, group\);/); // NEW
 }); // NEW
 
+test('scheduler sibling plant groups clone footprint and attrs without reusing source id', () => { // ADDED
+    const source = readPlantTilerSource(); // ADDED
+    const helperSource = sourceSlice(source, 'function createSiblingTilerGroupFromSource', 'function computeGridStatsXY'); // ADDED
+    assert.match(helperSource, /const geometry = sourceGeo\.clone \? sourceGeo\.clone\(\) : new mxGeometry\(sourceGeo\.x, sourceGeo\.y, sourceGeo\.width, sourceGeo\.height\);/); // CHANGED
+    assert.match(helperSource, /const group = new mxCell\(value, geometry, style \|\| groupFrameStyle\(\)\);/); // CHANGED
+    assert.match(helperSource, /group\.setVertex\(true\);/); // ADDED
+    assert.match(helperSource, /activeGraphArg\.addCell\(group, parent\);/); // CHANGED
+    assert.match(helperSource, /reorderModuleChildrenForLayering\(model, parent\);/); // CHANGED
+    assert.doesNotMatch(helperSource, /group\.id\s*=\s*sourceCell\.id/); // ADDED
+    assert.match(source, /createSiblingTilerGroupFromSource \/\/ ADDED/); // ADDED
+}); // ADDED
+
 test('Bed fit diagnostics expose a self-verifying debug surface', () => { // NEW
     const source = readPlantTilerSource(); // NEW
     assert.match(source, /function bedFitStatus\(\)/); // NEW
@@ -123,6 +135,24 @@ test('Bed fit diagnostics expose a self-verifying debug surface', () => { // NEW
     assert.match(source, /debug\.disable = function \(\) \{[\s\S]*removeItem\("trellis_users_debug"\)[\s\S]*removeItem\("trellis_bed_fit_debug"\)/); // NEW
     assert.match(source, /debug\.probe = debugProbe;/); // NEW
     assert.match(source, /installTrellisDebugSurface\(\);[\s\S]*bedFitLog\("loaded", bedFitStatus\(\)\);/); // NEW
+}); // NEW
+
+test('Bed fit centers only fitted axes after plant group resize', () => { // NEW
+    const source = readPlantTilerSource(); // NEW
+    const helperSource = sourceSlice(source, 'function positionGeometryForLocalPointAxisAware', 'function plantingFrameLocalCenter'); // NEW
+    const fitSource = sourceSlice(source, 'function applyBedFitGeometry', 'function retileAfterBedFit'); // NEW
+    const trimSource = sourceSlice(source, 'function buildAxisAwareTrimGeometry', 'function trimGroupToPlantFootprint'); // NEW
+
+    assert.match(helperSource, /const preserved = preservePoint \|\| modelPointForLocalPoint\(next, localPoint, angleDeg\);/); // NEW
+    assert.match(helperSource, /const preserveLocal = rotateModelPoint\(preserved, targetPoint, -angleRad\);/); // NEW
+    assert.match(helperSource, /x: fitWidth \? centerLocal\.x : preserveLocal\.x/); // NEW
+    assert.match(helperSource, /y: fitHeight \? centerLocal\.y : preserveLocal\.y/); // NEW
+    assert.match(helperSource, /const axisTargetPoint = rotateModelPoint\(axisTargetLocal, targetPoint, angleRad\);/); // NEW
+    assert.match(fitSource, /positionGeometryForLocalPointAxisAware\(next, frameCenter, bedCenter, bedRotation, fitWidth, fitHeight\);/); // NEW
+    assert.match(trimSource, /positionGeometryForLocalPointAxisAware\(next, localPlantCenter, bedCenter, getTilerRotationDeg\(bed\), fitWidth, fitHeight\);/); // NEW
+    assert.doesNotMatch(fitSource, /positionGeometryForLocalPoint\(next, frameCenter, bedCenter, bedRotation\);/); // NEW
+    assert.doesNotMatch(trimSource, /positionGeometryForLocalPoint\(next, localPlantCenter, bedCenter, getTilerRotationDeg\(bed\)\);/); // NEW
+    assert.match(fitSource, /if \(!fitWidth && !fitHeight\) \{[\s\S]*reason: "not-close-enough"[\s\S]*return null;/); // NEW
 }); // NEW
 
 test('Garden module overlay plant group add no longer runs a second post-creation bed fit', () => { // NEW

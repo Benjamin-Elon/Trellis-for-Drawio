@@ -98,6 +98,273 @@ test('crop option sorting prefers suitability then name within lifecycle groups'
     assert.equal(groups[0].options[0].displayLabel, 'Best Crop - 80% window left'); // ADDED
 }); // ADDED
 
+test('companion metadata annotates crop options without changing suitability order', () => { // ADDED
+    const crops = [ // ADDED
+        makeCrop({ plant_id: 1, plant_name: 'Late Crop', annual: 1, biennial: 0, perennial: 0 }), // ADDED
+        makeCrop({ plant_id: 2, plant_name: 'Best Crop', annual: 1, biennial: 0, perennial: 0 }) // ADDED
+    ]; // ADDED
+    const scores = new Map([ // ADDED
+        ['1', { rankClass: 0, percentRemaining: 25, distanceDays: 0, hint: '25% window left' }], // ADDED
+        ['2', { rankClass: 0, percentRemaining: 80, distanceDays: 0, hint: '80% window left' }] // ADDED
+    ]); // ADDED
+    const metadata = new Map([ // ADDED
+        ['1', { known: true, rating: 1, companionType: 'interplant', recommendedStartOffsetDays: 7 }], // ADDED
+        ['2', { known: false, recommendedStartOffsetDays: 0 }] // ADDED
+    ]); // ADDED
+    const groups = hooks.buildGroupedCropOptions(hooks.makeCropPickerOptions(crops, scores, metadata), { filter: 'annual' }); // ADDED
+    assert.deepEqual(Array.from(groups[0].options, option => option.label), ['Best Crop', 'Late Crop']); // ADDED
+    assert.equal(groups[0].options[1].displayLabel, 'Late Crop - 25% window left - beneficial, interplant, +7d'); // ADDED
+}); // ADDED
+
+test('scheduler crop combobox syncs selection and renders companion badges', () => { // ADDED
+    const document = hooks.__testWindow.document; // ADDED
+    document.querySelectorAll('.usl-crop-combobox-panel').forEach(panel => panel.remove()); // ADDED
+    const select = document.createElement('select'); // ADDED
+    document.body.appendChild(select); // ADDED
+    const combo = hooks.createSchedulerCropCombobox(select); // ADDED
+    const groups = [{ // ADDED
+        label: 'Annual crops', // ADDED
+        options: [{ // ADDED
+            value: '7', // ADDED
+            label: 'Basil', // ADDED
+            displayLabel: 'Basil - 85% window left - beneficial, interplant, +7d', // CHANGED
+            metadata: { known: true, rating: 1, companionType: 'interplant', recommendedStartOffsetDays: 7 } // ADDED
+        }] // ADDED
+    }]; // ADDED
+    hooks.renderGroupedCropOptions(select, groups, ''); // ADDED
+    combo.refresh(groups, ''); // ADDED
+    combo.root.querySelector('button').click(); // ADDED
+    const panel = document.body.querySelector('.usl-crop-combobox-panel'); // ADDED
+    assert.ok(panel); // ADDED
+    assert.notEqual(panel.parentNode, combo.root); // ADDED
+    const option = panel.querySelector('[role="option"]'); // CHANGED
+    assert.match(option.textContent, /Basil/); // ADDED
+    assert.match(option.textContent, /85% window left/); // ADDED
+    assert.match(option.textContent, /beneficial/); // ADDED
+    option.click(); // ADDED
+    assert.equal(select.value, '7'); // ADDED
+}); // ADDED
+
+test('scheduler crop combobox floats outside clipped containers and clamps to viewport', () => { // ADDED
+    const document = hooks.__testWindow.document; // ADDED
+    document.querySelectorAll('.usl-crop-combobox-panel').forEach(panel => panel.remove()); // ADDED
+    const section = document.createElement('div'); // ADDED
+    section.className = 'usl-scheduler-section'; // ADDED
+    section.style.overflow = 'hidden'; // ADDED
+    const select = document.createElement('select'); // ADDED
+    section.appendChild(select); // ADDED
+    document.body.appendChild(section); // ADDED
+    const combo = hooks.createSchedulerCropCombobox(select); // ADDED
+    section.appendChild(combo.root); // ADDED
+    hooks.renderGroupedCropOptions(select, [{ label: 'Annual crops', options: [{ value: '1', label: 'Beet' }] }], ''); // ADDED
+    combo.refresh([{ label: 'Annual crops', options: [{ value: '1', label: 'Beet' }] }], ''); // ADDED
+    const button = combo.root.querySelector('button'); // ADDED
+    button.getBoundingClientRect = () => ({ left: 100, top: 100, right: 420, bottom: 132, width: 320, height: 32 }); // ADDED
+    button.click(); // ADDED
+    const panel = document.body.querySelector('.usl-crop-combobox-panel'); // ADDED
+    assert.ok(panel); // ADDED
+    assert.equal(panel.parentNode, document.body); // ADDED
+    assert.equal(panel.style.position, 'fixed'); // ADDED
+    assert.equal(panel.style.left, '100px'); // ADDED
+    assert.equal(panel.style.top, '136px'); // ADDED
+    assert.equal(panel.style.width, '320px'); // ADDED
+    assert.ok(Number.parseInt(panel.style.maxHeight, 10) <= 260); // ADDED
+}); // ADDED
+
+test('scheduler crop combobox closes on outside click and Escape', () => { // ADDED
+    const document = hooks.__testWindow.document; // ADDED
+    const EventWindow = document.defaultView; // CHANGED
+    document.querySelectorAll('.usl-crop-combobox-panel').forEach(panel => panel.remove()); // ADDED
+    const select = document.createElement('select'); // ADDED
+    const combo = hooks.createSchedulerCropCombobox(select); // ADDED
+    hooks.renderGroupedCropOptions(select, [{ label: 'Annual crops', options: [{ value: '1', label: 'Beet' }] }], ''); // ADDED
+    combo.refresh([{ label: 'Annual crops', options: [{ value: '1', label: 'Beet' }] }], ''); // ADDED
+    combo.root.querySelector('button').click(); // ADDED
+    assert.ok(document.body.querySelector('.usl-crop-combobox-panel')); // ADDED
+    document.dispatchEvent(new EventWindow.Event('mousedown', { bubbles: true })); // CHANGED
+    assert.equal(document.body.querySelector('.usl-crop-combobox-panel'), null); // ADDED
+    combo.root.querySelector('button').click(); // ADDED
+    const input = document.body.querySelector('.usl-crop-combobox-panel input'); // ADDED
+    const escapeEvent = new EventWindow.Event('keydown', { bubbles: true }); // ADDED
+    Object.defineProperty(escapeEvent, 'key', { value: 'Escape' }); // ADDED
+    input.dispatchEvent(escapeEvent); // CHANGED
+    assert.equal(document.body.querySelector('.usl-crop-combobox-panel'), null); // ADDED
+}); // ADDED
+
+test('scheduler crop combobox closes when the owning dialog is removed', async () => { // ADDED
+    const document = hooks.__testWindow.document; // ADDED
+    document.querySelectorAll('.usl-crop-combobox-panel').forEach(panel => panel.remove()); // ADDED
+    const dialog = document.createElement('div'); // ADDED
+    dialog.className = 'usl-scheduler-dialog'; // ADDED
+    const select = document.createElement('select'); // ADDED
+    const combo = hooks.createSchedulerCropCombobox(select); // ADDED
+    dialog.appendChild(combo.root); // ADDED
+    document.body.appendChild(dialog); // ADDED
+    const groups = [{ label: 'Annual crops', options: [{ value: '1', label: 'Beet' }] }]; // ADDED
+    hooks.renderGroupedCropOptions(select, groups, ''); // ADDED
+    combo.refresh(groups, ''); // ADDED
+    combo.root.querySelector('button').click(); // ADDED
+    assert.ok(document.body.querySelector('.usl-crop-combobox-panel')); // ADDED
+    dialog.remove(); // ADDED
+    await new Promise(resolve => setTimeout(resolve, 0)); // ADDED
+    assert.equal(document.body.querySelector('.usl-crop-combobox-panel'), null); // ADDED
+}); // ADDED
+
+test('crop picker row uses custom layout without section overflow workaround', () => { // ADDED
+    assert.match(schedulerSource, /plantControlsWrap\.className = 'usl-scheduler-crop-picker-controls'/); // ADDED
+    assert.match(schedulerSource, /plantSelectRow\.row\.classList\.add\('usl-scheduler-row--crop-picker'\)/); // ADDED
+    assert.match(schedulerSource, /varietyRow\.row\.classList\.add\('usl-scheduler-row--crop-variety'\)/); // ADDED
+    assert.match(schedulerSource, /\.usl-scheduler-row-label\{flex:0 0 180px;/); // ADDED
+    assert.match(schedulerSource, /\.usl-scheduler-row--crop-picker\{display:grid!important;grid-template-columns:50px minmax\(120px,140px\) minmax\(0,1fr\) auto auto!important/); // CHANGED
+    assert.match(schedulerSource, /\.usl-scheduler-row--crop-variety > \.usl-scheduler-row-label\{flex:0 0 50px!important\}/); // CHANGED
+    assert.match(schedulerSource, /\.usl-scheduler-crop-combobox-wrap\{grid-column:3;min-width:0!important;width:100%!important\}/); // CHANGED
+    assert.match(schedulerSource, /\.usl-crop-combobox-button\{min-height:32px;min-width:0!important;overflow:hidden;/); // ADDED
+    assert.match(schedulerSource, /\.usl-scheduler-crop-action\{width:auto!important;min-width:36px!important;flex:0 0 auto!important;white-space:nowrap!important;justify-self:end!important\}/); // CHANGED
+    assert.match(schedulerSource, /\.usl-scheduler-row--crop-variety > :not\(label\)\{min-width:0!important\}/); // ADDED
+    assert.match(schedulerSource, /@media \(max-width:900px\)\{\.usl-scheduler-row--crop-picker\{grid-template-columns:50px minmax\(120px,1fr\) auto auto!important\}[\s\S]*\.usl-scheduler-crop-action\{grid-row:3\}/); // ADDED
+    assert.doesNotMatch(schedulerSource, /\.usl-scheduler-crop-combobox-wrap\{grid-column:3;min-width:280px/); // ADDED
+    assert.match(schedulerSource, /\.usl-scheduler-section\{[^}]*overflow:hidden/); // ADDED
+    assert.doesNotMatch(schedulerSource, /plantSection\.wrap\.classList\.add\('usl-scheduler-section--allow-popover'\)/); // ADDED
+}); // ADDED
+
+test('derived dialogs do not persist resolved city onto the source while opening', () => { // ADDED
+    assert.match(schedulerSource, /if \(!openOptions\?\.derivedMode && model && cell && cityInit\.city_id != null\) \{/); // ADDED
+    assert.match(schedulerSource, /city_id: city\.city_id != null \? String\(city\.city_id\) : '',/); // CHANGED
+}); // ADDED
+
+test('derived save creates sibling after validation and rolls it back on save failure', () => { // ADDED
+    assert.match(schedulerSource, /const scheduleResult = computeScheduleResult\(inputs\);[\s\S]*if \(derivedContext\.operation === 'create'\) \{[\s\S]*createdDerivedCell = createSibling\(graph, relationshipSourceCell/); // CHANGED
+    assert.match(schedulerSource, /let targetCell = cell;[\s\S]*targetCell = createdDerivedCell;/); // ADDED
+    assert.match(schedulerSource, /await applyScheduleToGraph\(ui, targetCell, inputs,[\s\S]*targetAttributePatch: derivedRelationshipPatch[\s\S]*preserveTargetGeometry: !!derivedContext/); // ADDED
+    assert.match(schedulerSource, /catch \(saveError\) \{[\s\S]*if \(createdDerivedCell\) removeDerivedSiblingIfPresent\(ui\?\.editor\?\.graph, createdDerivedCell\);[\s\S]*throw saveError/); // ADDED
+    assert.match(schedulerSource, /targetGroupId: cell\.id/); // ADDED
+}); // ADDED
+
+test('existing derived companion opens companion edit context without forcing sibling creation', () => { // ADDED
+    assert.match(schedulerSource, /async function resolveExistingDerivedScheduleContext\(cell, selectedPlant, allPlants, context = \{\}\)/); // ADDED
+    assert.match(schedulerSource, /if \(mode !== 'companion'\) return null;/); // ADDED
+    assert.match(schedulerSource, /const sourceCell = model\.getCell\(sourceId\);[\s\S]*if \(!sourceCell \|\| !isTilerGroup\(sourceCell\)\) return null;/); // ADDED
+    assert.match(schedulerSource, /derived\.operation = 'edit';/); // ADDED
+    assert.match(schedulerSource, /derived\.defaultPrimaryStartISO = '';/); // ADDED
+    assert.match(schedulerSource, /else \{[\s\S]*derivedContext = await resolveExistingDerivedScheduleContext\(cell, selectedPlant, plants/); // ADDED
+    assert.match(schedulerSource, /if \(derivedContext\) dialogPlants = derivedContext\.candidatePlants;/); // ADDED
+}); // ADDED
+
+test('companion timing help shows recommended and current actual offsets', () => { // ADDED
+    assert.match(schedulerSource, /Recommended offset: [\s\S]*current actual offset:/); // ADDED
+    assert.match(schedulerSource, /updateCompanionTimingHelp\(\);[\s\S]*syncStateFromControls\(\);/); // ADDED
+    assert.match(schedulerSource, /const scheduleGapHint = document\.createElement\('span'\)/); // ADDED
+    assert.match(schedulerSource, /firstSowRowObj\.row\.appendChild\(scheduleGapHint\)/); // ADDED
+    assert.match(schedulerSource, /updateScheduleGapHint\(\);/); // ADDED
+    assert.match(schedulerSource, /setTooltip\(startInput, \[scheduleGapTooltipText, companionTimingTooltipText\]/); // ADDED
+}); // ADDED
+
+test('derived schedule helpers snapshot actual and recommended companion timing separately', () => { // ADDED
+    const sourceCell = { // ADDED
+        id: 'source-1', // ADDED
+        getAttribute: key => ({ plant_id: '11', sow_date: '2026-04-01', harvest_end: '2026-08-01' }[key] || '') // ADDED
+    }; // ADDED
+    const sourcePlant = makeCrop({ plant_id: 11, annual: 1, biennial: 0, perennial: 0 }); // ADDED
+    const targetPlant = makeCrop({ plant_id: 22, annual: 1, biennial: 0, perennial: 0 }); // ADDED
+    const result = { timelines: [{ sow: new Date('2026-04-15T00:00:00Z'), harvestEnd: new Date('2026-07-01T00:00:00Z') }] }; // ADDED
+    const context = { // ADDED
+        mode: 'companion', // ADDED
+        sourcePlant, // ADDED
+        sourceOccupancy: hooks.sourceOccupancyWindowForDerived(sourceCell, sourcePlant), // ADDED
+        relationshipByPlantId: new Map([['22', { relationId: 9, rating: 1, companionType: 'interplant', recommendedStartOffsetDays: 7 }]]) // ADDED
+    }; // ADDED
+    const patch = hooks.buildDerivedRelationshipPatch(sourceCell, targetPlant, result, context); // ADDED
+    assert.equal(patch.derived_mode, 'companion'); // ADDED
+    assert.equal(patch.derived_source_group_id, 'source-1'); // ADDED
+    assert.equal(patch.derived_source_plant_id, '11'); // ADDED
+    assert.equal(patch.derived_target_plant_id, '22'); // ADDED
+    assert.equal(patch.companion_start_offset_days, '14'); // ADDED
+    assert.equal(patch.companion_recommended_start_offset_days, '7'); // ADDED
+}); // ADDED
+
+test('derived schedule helpers gate companion lifecycle and compute turnover gaps', () => { // ADDED
+    const annual = makeCrop({ plant_id: 1, annual: 1, biennial: 0, perennial: 0 }); // ADDED
+    const perennial = makeCrop({ plant_id: 2, annual: 0, biennial: 0, perennial: 1, lifespan_years: 3 }); // ADDED
+    assert.equal(hooks.lifecycleEligibleForDerivedCompanion(annual, perennial), false); // ADDED
+    assert.equal(hooks.lifecycleEligibleForDerivedCompanion(perennial, annual), true); // ADDED
+    const sourceCell = { id: 'source-2', getAttribute: key => ({ plant_id: '1', sow_date: '2026-04-01', harvest_end: '2026-09-15' }[key] || '') }; // ADDED
+    const result = { timelines: [{ sow: new Date('2026-09-16T00:00:00Z'), harvestEnd: new Date('2026-10-30T00:00:00Z') }] }; // ADDED
+    const patch = hooks.buildDerivedRelationshipPatch(sourceCell, annual, result, { mode: 'turnover', sourcePlant: annual, sourceOccupancy: hooks.sourceOccupancyWindowForDerived(sourceCell, annual) }); // ADDED
+    assert.equal(patch.turnover_gap_days, '1'); // ADDED
+}); // ADDED
+
+test('scheduler adjacent gap hints render before and after gaps', () => { // ADDED
+    const hints = hooks.computeSchedulerAdjacentGapHints([ // ADDED
+        { cellId: 'prev', label: 'Lettuce', startISO: '2026-04-01', endISO: '2026-05-01' }, // ADDED
+        { cellId: 'current', label: 'Beet', startISO: '2026-05-05', endISO: '2026-06-01' }, // ADDED
+        { cellId: 'next', label: 'Carrot', startISO: '2026-06-13', endISO: '2026-07-01' } // ADDED
+    ], { startISO: '2026-05-05', endISO: '2026-06-01' }, { excludeCellIds: ['current'], basisLabel: 'current planting' }); // ADDED
+    assert.equal(hints.text, 'Before: 4d gap; After: 12d gap'); // ADDED
+    assert.match(hints.tooltip, /Before: 4d gap from Lettuce/); // ADDED
+    assert.match(hints.tooltip, /After: 12d gap from Carrot/); // ADDED
+}); // ADDED
+
+test('scheduler adjacent gap hints label overlaps instead of gaps', () => { // ADDED
+    const hints = hooks.computeSchedulerAdjacentGapHints([ // ADDED
+        { cellId: 'prev', label: 'Lettuce', startISO: '2026-04-01', endISO: '2026-05-08' }, // ADDED
+        { cellId: 'next', label: 'Carrot', startISO: '2026-05-28', endISO: '2026-07-01' } // ADDED
+    ], { startISO: '2026-05-05', endISO: '2026-06-01' }, {}); // ADDED
+    assert.equal(hints.text, 'Before: overlaps 3d; After: overlaps 4d'); // ADDED
+}); // ADDED
+
+test('scheduler adjacent gap hints support companion pair and turnover bases', () => { // ADDED
+    const source = { startISO: '2026-05-10', endISO: '2026-07-01' }; // ADDED
+    const companion = { startISO: '2026-05-01', endISO: '2026-06-15' }; // ADDED
+    const pairWindow = { // ADDED
+        startISO: hooks.shiftISODate(source.startISO, -9), // ADDED
+        endISO: source.endISO // ADDED
+    }; // ADDED
+    const companionHints = hooks.computeSchedulerAdjacentGapHints([ // ADDED
+        { cellId: 'source', label: 'Source lettuce', startISO: source.startISO, endISO: source.endISO }, // ADDED
+        { cellId: 'prev', label: 'Potato', startISO: '2026-03-01', endISO: '2026-04-20' }, // ADDED
+        { cellId: 'next', label: 'Carrot', startISO: '2026-07-10', endISO: '2026-08-01' } // ADDED
+    ], pairWindow, { excludeCellIds: ['source'], basisLabel: 'source and companion planting pair' }); // ADDED
+    assert.equal(companionHints.text, 'Before: 11d gap; After: 9d gap'); // ADDED
+    assert.match(companionHints.tooltip, /source and companion planting pair/); // ADDED
+    const turnoverHints = hooks.computeSchedulerAdjacentGapHints([ // ADDED
+        { cellId: 'source', label: 'Lettuce', startISO: '2026-04-01', endISO: '2026-07-01' }, // ADDED
+        { cellId: 'next', label: 'Carrot', startISO: '2026-08-20', endISO: '2026-09-10' } // ADDED
+    ], { startISO: '2026-07-02', endISO: '2026-08-01' }, { basisLabel: 'turnover planting' }); // ADDED
+    assert.equal(turnoverHints.text, 'Before: 1d gap; After: 19d gap'); // ADDED
+}); // ADDED
+
+test('turnover computed-window filtering rejects same-cluster occupancy overlap', () => { // CHANGED
+    const sourceCell = { id: 'source-3', getAttribute: key => ({ sow_date: '2026-04-01', harvest_end: '2026-09-15' }[key] || '') }; // ADDED
+    const blockedGraph = { __trellisBedSuccessionNavigator: { getSelectedClusterOccupancy: () => ({ items: [ // ADDED
+        { cellId: 'source-3', startISO: '2026-04-01', endISO: '2026-09-15' }, // ADDED
+        { cellId: 'other', startISO: '2026-10-01', endISO: '2026-11-01' } // ADDED
+    ] }) } }; // ADDED
+    const clearGraph = { __trellisBedSuccessionNavigator: { getSelectedClusterOccupancy: () => ({ items: [ // ADDED
+        { cellId: 'source-3', startISO: '2026-04-01', endISO: '2026-09-15' }, // ADDED
+        { cellId: 'other', startISO: '2026-11-15', endISO: '2026-12-01' } // ADDED
+    ] }) } }; // ADDED
+    const computedWindow = { startISO: '2026-09-16', endISO: '2026-10-23' }; // ADDED
+    assert.equal(hooks.turnoverComputedWindowFitsSourceCluster(sourceCell, computedWindow, blockedGraph), false); // CHANGED
+    assert.equal(hooks.turnoverComputedWindowFitsSourceCluster(sourceCell, computedWindow, clearGraph), true); // CHANGED
+}); // CHANGED
+
+test('turnover candidate filtering uses the computed schedule window', async () => { // ADDED
+    const sourceCell = { // ADDED
+        id: 'source-4', // ADDED
+        getAttribute: key => ({ method_category_id: 'direct_sow', method_id: 'direct_sow.field', sow_date: '2026-04-01', harvest_end: '2026-09-15' }[key] || '') // ADDED
+    }; // ADDED
+    const candidate = makeCrop({ plant_id: 14, plant_name: 'Computed Turnover', days_maturity: 30, harvest_window_days: 7, annual: 1, biennial: 0, perennial: 0 }); // ADDED
+    const city = makeCity(hooks, 22); // ADDED
+    const window = await hooks.computeAnnualTurnoverWindowForCandidate(sourceCell, candidate, '2026-09-16', { city, cityName: city.city_name, year: 2026, bedProfile: hooks.normalizeBedProfile(null) }); // ADDED
+    assert.ok(window?.startISO, 'expected computed turnover start'); // ADDED
+    assert.ok(window?.endISO, 'expected computed turnover harvest end'); // ADDED
+    const blockedGraph = { __trellisBedSuccessionNavigator: { getSelectedClusterOccupancy: () => ({ items: [ // ADDED
+        { cellId: 'source-4', startISO: '2026-04-01', endISO: '2026-09-15' }, // ADDED
+        { cellId: 'other', startISO: window.endISO, endISO: hooks.shiftISODate(window.endISO, 2) } // ADDED
+    ] }) } }; // ADDED
+    assert.equal(await hooks.turnoverCandidateFitsSourceCluster(sourceCell, candidate, '2026-09-16', { graph: blockedGraph, city, cityName: city.city_name, year: 2026, bedProfile: hooks.normalizeBedProfile(null) }), false); // ADDED
+}); // ADDED
+
 test('perennial crop suitability is alphabetic and date-flexible', async () => { // ADDED
     const perennial = makeCrop({ plant_id: 1, plant_name: 'Rhubarb', annual: 0, biennial: 0, perennial: 1, lifespan_years: 3 }); // ADDED
     const score = await hooks.scoreCropSuitability(perennial, {}); // ADDED

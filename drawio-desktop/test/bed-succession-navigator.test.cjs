@@ -252,6 +252,27 @@ test("selected cluster occupancy API returns schedule-ordered windows", () => { 
     ]); // NEW
 }); // NEW
 
+test("selected cluster occupancy uses perennial lifespan dates", () => { // ADDED
+    const { graph, tiler1 } = makeHarness({ // ADDED
+        tiler1Attrs: { plant_name: "Asparagus", perennial: "1", lifespan_start: "2026-02-01", lifespan_end: "2028-12-31", sow_date: "2026-04-01", harvest_end: "2026-08-01" } // ADDED
+    }); // ADDED
+    const result = graph.__trellisBedSuccessionNavigator.getSelectedClusterOccupancy(tiler1); // ADDED
+    assert.deepEqual(JSON.parse(JSON.stringify(result.items.map(item => [item.startISO, item.endISO]))), [["2026-02-01", "2028-12-31"]]); // ADDED
+}); // ADDED
+
+test("selected cluster occupancy exposes derived relationship snapshots from either side", () => { // ADDED
+    const { graph, tiler1, tiler2 } = makeHarness({ // ADDED
+        secondTiler: true, // ADDED
+        tiler2State: { x: 29, y: 10, width: 20, height: 20 }, // ADDED
+        tiler1Attrs: { plant_name: "Tomato", sow_date: "2026-04-01", harvest_end: "2026-08-01" }, // ADDED
+        tiler2Attrs: { plant_name: "Basil", sow_date: "2026-04-08", harvest_end: "2026-06-01", derived_mode: "companion", derived_source_group_id: "tiler1", companion_relation_id: "12", companion_rating: "1", companion_type: "interplant", companion_start_offset_days: "7", companion_recommended_start_offset_days: "3" } // ADDED
+    }); // ADDED
+    const fromSource = graph.__trellisBedSuccessionNavigator.getSelectedClusterOccupancy(tiler1); // ADDED
+    assert.equal(fromSource.items.find(item => item.cellId === "tiler2").relationship.startOffsetDays, "7"); // ADDED
+    const fromDerived = graph.__trellisBedSuccessionNavigator.getSelectedClusterOccupancy(tiler2); // ADDED
+    assert.equal(fromDerived.items.find(item => item.cellId === "tiler1").relationship.recommendedStartOffsetDays, "3"); // ADDED
+}); // ADDED
+
 test("bed-select returns beds behind tilers after selecting a tiler", () => { // NEW
     const { document, graph, layer, bed, tiler1 } = makeHarness(); // NEW
     const selectBeds = visibleImageByAlt(document, "Select bed"); // CHANGE

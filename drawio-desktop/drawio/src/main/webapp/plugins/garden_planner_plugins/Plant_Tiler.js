@@ -1404,6 +1404,16 @@ Draw.loadPlugin(function (ui) {
         model.setValue(cell, clone);
     }
 
+    function cloneXmlValueWithAttrs(cell, attrs) { // ADDED
+        const base = ensureXmlValue(cell); // ADDED
+        const clone = base.cloneNode(true); // ADDED
+        for (const [k, v] of Object.entries(attrs || {})) { // ADDED
+            if (v === null || v === undefined || v === "") clone.removeAttribute(k); // ADDED
+            else clone.setAttribute(k, String(v)); // ADDED
+        } // ADDED
+        return clone; // ADDED
+    } // ADDED
+
     function finiteNumberOrNull(value) { // ADDED
         const n = Number(value); // ADDED
         return Number.isFinite(n) ? n : null; // ADDED
@@ -2953,6 +2963,35 @@ Draw.loadPlugin(function (ui) {
         return true; // MOVED
     } // MOVED
 
+    function modelPointForLocalPoint(geo, localPoint, angleDeg) { // NEW
+        if (!geo || !localPoint) return null; // NEW
+        const center = { // NEW
+            x: (Number(geo.x) || 0) + (Number(geo.width) || 0) / 2, // NEW
+            y: (Number(geo.y) || 0) + (Number(geo.height) || 0) / 2 // NEW
+        }; // NEW
+        const offset = rotateVectorModel( // NEW
+            (Number(localPoint.x) || 0) - (Number(geo.width) || 0) / 2, // NEW
+            (Number(localPoint.y) || 0) - (Number(geo.height) || 0) / 2, // NEW
+            toRad(angleDeg) // NEW
+        ); // NEW
+        return { x: center.x + offset.x, y: center.y + offset.y }; // NEW
+    } // NEW
+
+    function positionGeometryForLocalPointAxisAware(next, localPoint, targetPoint, angleDeg, fitWidth, fitHeight, preservePoint) { // NEW
+        if (!next || !localPoint || !targetPoint) return false; // NEW
+        const preserved = preservePoint || modelPointForLocalPoint(next, localPoint, angleDeg); // NEW
+        if (!preserved) return false; // NEW
+        const angleRad = toRad(angleDeg); // NEW
+        const centerLocal = rotateModelPoint(targetPoint, targetPoint, -angleRad); // NEW
+        const preserveLocal = rotateModelPoint(preserved, targetPoint, -angleRad); // NEW
+        const axisTargetLocal = { // NEW
+            x: fitWidth ? centerLocal.x : preserveLocal.x, // NEW
+            y: fitHeight ? centerLocal.y : preserveLocal.y // NEW
+        }; // NEW
+        const axisTargetPoint = rotateModelPoint(axisTargetLocal, targetPoint, angleRad); // NEW
+        return positionGeometryForLocalPoint(next, localPoint, axisTargetPoint, angleDeg); // NEW
+    } // NEW
+
     function plantingFrameLocalCenter(width, height) { // MOVED
         const w = Math.max(1, Number(width) || 1); // MOVED
         const h = Math.max(1, Number(height) || 1); // MOVED
@@ -2973,7 +3012,7 @@ Draw.loadPlugin(function (ui) {
             x: fitWidth ? GROUP_PADDING_PX + bbox.w / 2 : bbox.x + bbox.w / 2, // MOVED
             y: fitHeight ? GROUP_PADDING_PX + bandPx + bbox.h / 2 : bbox.y + bbox.h / 2 // MOVED
         }; // MOVED
-        positionGeometryForLocalPoint(next, localPlantCenter, bedCenter, getTilerRotationDeg(bed)); // MOVED
+        positionGeometryForLocalPointAxisAware(next, localPlantCenter, bedCenter, getTilerRotationDeg(bed), fitWidth, fitHeight); // CHANGE
         return next; // MOVED
     } // MOVED
 
@@ -3106,7 +3145,7 @@ Draw.loadPlugin(function (ui) {
         const bedRotation = getTilerRotationDeg(bed); // MOVED
         const frameCenter = plantingFrameLocalCenter(next.width, next.height); // MOVED
         const bedCenter = rectCenterModel(bedRect); // MOVED
-        positionGeometryForLocalPoint(next, frameCenter, bedCenter, bedRotation); // MOVED
+        positionGeometryForLocalPointAxisAware(next, frameCenter, bedCenter, bedRotation, fitWidth, fitHeight); // CHANGE
         const geometryChanged = !(nearlySameNumber(g.x, next.x) && nearlySameNumber(g.y, next.y) && nearlySameNumber(g.width, next.width) && nearlySameNumber(g.height, next.height)); // MOVED
         const rotationChanged = setCellRotationDeg(tg, bedRotation); // MOVED
         if (geometryChanged) model.setGeometry(tg, next); // MOVED
@@ -4354,6 +4393,37 @@ Draw.loadPlugin(function (ui) {
         return group;
     }
 
+    function createSiblingTilerGroupFromSource(graphArg, sourceCell, opts = {}) { // ADDED
+        const activeGraphArg = graphArg || graph; // ADDED
+        if (!activeGraphArg || !sourceCell || !isTilerGroup(sourceCell)) return null; // ADDED
+        const model = activeGraphArg.getModel && activeGraphArg.getModel(); // ADDED
+        if (!model) return null; // ADDED
+        const parent = model.getParent(sourceCell); // ADDED
+        if (!parent) return null; // ADDED
+        const sourceGeo = sourceCell.getGeometry && sourceCell.getGeometry(); // ADDED
+        if (!sourceGeo) return null; // ADDED
+        const creationSource = String(opts.source || 'derived-sibling'); // ADDED
+        const attrs = Object.assign({}, opts.attributes || {}, { tiler_group: "1" }); // ADDED
+        const value = cloneXmlValueWithAttrs(sourceCell, attrs); // ADDED
+        const style = typeof sourceCell.getStyle === "function" ? sourceCell.getStyle() : sourceCell.style; // ADDED
+        const geometry = sourceGeo.clone ? sourceGeo.clone() : new mxGeometry(sourceGeo.x, sourceGeo.y, sourceGeo.width, sourceGeo.height); // ADDED
+        const group = new mxCell(value, geometry, style || groupFrameStyle()); // ADDED
+        group.setVertex(true); // ADDED
+        group.setConnectable(false); // ADDED
+        group.setCollapsed(false); // ADDED
+        const ownsUpdate = !opts.inTransaction; // ADDED
+        if (ownsUpdate) model.beginUpdate(); // ADDED
+        try { // ADDED
+            activeGraphArg.addCell(group, parent); // ADDED
+            if (parent && isGardenModule(parent)) reorderModuleChildrenForLayering(model, parent); // ADDED
+            if (opts.select !== false && typeof activeGraphArg.setSelectionCell === "function") activeGraphArg.setSelectionCell(group); // ADDED
+        } finally { // ADDED
+            if (ownsUpdate) model.endUpdate(); // ADDED
+        } // ADDED
+        notifyTilerGroupCreated(activeGraphArg, group, creationSource); // ADDED
+        return group; // ADDED
+    } // ADDED
+
     function computeGridStatsXY(groupCell, spacingXpx, spacingYpx) {
         const g = groupCell.getGeometry();
         const { bandPx } = groupLabelMetrics(groupCell);
@@ -5215,7 +5285,8 @@ Draw.loadPlugin(function (ui) {
     window.USL = window.USL || {};
     window.USL.tiler = Object.assign({}, window.USL.tiler, {
         retileGroup, // CHANGE
-        retileAndFitToContainingBed // CHANGE
+        retileAndFitToContainingBed, // CHANGE
+        createSiblingTilerGroupFromSource // ADDED
     });
     installTrellisDebugSurface(); // NEW
     bedFitLog("loaded", bedFitStatus()); // NEW

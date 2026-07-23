@@ -2555,36 +2555,36 @@ test('generated tasks include stable scheduler anchor and method metadata', asyn
     assert.equal(tasks[0].scheduler_occurrence_index, 0); // ADDED
 }); // ADDED
 
-test('database persistence failure restores snapshotted graph attributes', async () => {
+test('database persistence failure prevents graph mutation', async () => { // CHANGE
     const cell = makeAttributeCell({ sow_date: '2026-04-01', method_id: 'direct_sow.field' });
     const patch = { sow_date: '2026-05-01', method_id: 'transplant.indoor', lifespan_end: '2029-12-31' };
     const snapshot = hooks.snapshotCellAttributes(cell, Object.keys(patch));
+    let graphPatchCount = 0; // NEW
     await assert.rejects(
         hooks.runCompensatedSaveSteps({
-            applyGraphPatch: () => hooks.applyCellAttributePatch(cell, patch),
+            applyGraphPatch: () => { graphPatchCount += 1; hooks.applyCellAttributePatch(cell, patch); }, // CHANGE
             persist: async () => { throw new Error('db failed'); },
-            emitTasks: async () => {},
             restoreGraphPatch: () => hooks.restoreCellAttributeSnapshot(cell, snapshot)
         }),
         /db failed/
     );
+    assert.equal(graphPatchCount, 0); // NEW
     assert.equal(cell.getAttribute('sow_date'), '2026-04-01');
     assert.equal(cell.getAttribute('method_id'), 'direct_sow.field');
     assert.equal(cell.value.hasAttribute('lifespan_end'), false);
 });
 
-test('task dispatch failure restores snapshotted graph attributes', async () => {
+test('graph patch failure restores snapshotted graph attributes', async () => { // CHANGE
     const cell = makeAttributeCell({ harvest_end: '2026-06-01' });
     const patch = { harvest_end: '2026-07-01', lifespan_start: '' };
     const snapshot = hooks.snapshotCellAttributes(cell, Object.keys(patch));
     await assert.rejects(
         hooks.runCompensatedSaveSteps({
-            applyGraphPatch: () => hooks.applyCellAttributePatch(cell, patch),
+            applyGraphPatch: () => { hooks.applyCellAttributePatch(cell, patch); throw new Error('graph patch failed'); }, // CHANGE
             persist: async () => {},
-            emitTasks: async () => { throw new Error('task dispatch failed'); },
             restoreGraphPatch: () => hooks.restoreCellAttributeSnapshot(cell, snapshot)
         }),
-        /task dispatch failed/
+        /graph patch failed/ // CHANGE
     );
     assert.equal(cell.getAttribute('harvest_end'), '2026-06-01');
     assert.equal(cell.value.hasAttribute('lifespan_start'), false);
@@ -3081,13 +3081,14 @@ test('new task cards copy scheduler task type metadata', () => { // NEW
     assert.deepEqual({ ...taskHooks.buildSchedulerTaskMetadataAttributes({}) }, {}); // CHANGE
 }); // NEW
 
-test('task replacement event bridge retains differential sync without scheduler task-edit callback', () => { // CHANGED
+test('task replacement bridge retains differential sync without scheduler task-edit callback', () => { // CHANGE
     const schedulerSource = fs.readFileSync(schedulerPath, 'utf8'); // ADDED
     const taskManagerSource = fs.readFileSync(taskManagerPath, 'utf8'); // ADDED
     assert.match(schedulerSource, /mode:\s*options\.taskDispatchMode \|\| "replace"/); // ADDED
     assert.match(taskManagerSource, /replacement\.mode !== 'replace' && replacement\.mode !== 'sync'/); // ADDED
-    assert.match(taskManagerSource, /if \(replacement\.mode === 'sync'\)/); // ADDED
-    assert.match(taskManagerSource, /applyDifferentialTaskSync\(\{\s*targetGroupId,\s*tasks\s*\}\)/); // ADDED
+    assert.match(taskManagerSource, /applySchedulerTaskReplacement\(detail,\s*opts\)/); // CHANGE
+    assert.match(taskManagerSource, /replacement\.mode === 'sync'[\s\S]*applyDifferentialTaskSync/); // CHANGE
+    assert.match(taskManagerSource, /taskCommands\.applySchedulerTaskReplacement\(replacement\)/); // CHANGE
     assert.doesNotMatch(schedulerSource, /applyTaskAnchorDateEdit/); // CHANGED
     assert.doesNotMatch(taskManagerSource, /tryApplySchedulerAnchorDateEdit/); // CHANGED
 }); // CHANGED

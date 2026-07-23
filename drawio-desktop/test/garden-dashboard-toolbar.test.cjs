@@ -90,7 +90,7 @@ test("garden dashboard toolbar controls use module scoped plugin contracts", () 
 test("garden dashboard toolbar exposes share only for eligible selected scopes", () => { // NEW
     const text = viewportToolbarSource(); // NEW
     assert.match(text, /const shareBtn = createToolbarButton\("Share", "Share selected module\(s\), task board\(s\), or garden bed\(s\)"\);/); // NEW
-    assert.match(text, /controls\.appendChild\(shareBtn\);/); // NEW
+    assert.match(text, /rightActions\.appendChild\(shareBtn\);/); // CHANGE
     assert.match(text, /shareBtn\.addEventListener\("click", function \(\) \{ openShareGardenCanvasDialog\(\); \}\);/); // NEW
     assert.match(text, /function shareSelectionState\(\)/); // NEW
     assert.match(text, /users\.getEligibleShareScopes\(selectedCellsForShare\(\)\)/); // NEW
@@ -99,6 +99,28 @@ test("garden dashboard toolbar exposes share only for eligible selected scopes",
     assert.match(text, /Create the first admin before sharing selected garden scopes\./); // NEW
     assert.match(text, /setTimeout\(openShareGardenCanvasDialog, 0\);/); // NEW
     assert.match(text, /Syncthing sharing is unavailable in this Trellis build\./); // NEW
+}); // NEW
+
+test("garden dashboard toolbar groups tools left and messages export share table right", () => { // NEW
+    const text = viewportToolbarSource(); // NEW
+    assert.match(text, /leftControls\.className = "trellis-garden-dashboard-toolbar-left"/); // NEW
+    assert.match(text, /rightActions\.className = "trellis-garden-dashboard-toolbar-right"/); // NEW
+    assert.match(text, /leftControls\.appendChild\(prev\);[\s\S]*leftControls\.appendChild\(yearLabel\);[\s\S]*leftControls\.appendChild\(next\);[\s\S]*leftControls\.appendChild\(planBtn\);[\s\S]*leftControls\.appendChild\(equipmentBtn\);[\s\S]*leftControls\.appendChild\(irrigationBtn\);[\s\S]*leftControls\.appendChild\(allocateBtn\);/); // NEW
+    assert.match(text, /rightActions\.appendChild\(messagesBtn\);[\s\S]*rightActions\.appendChild\(exportBtn\);[\s\S]*rightActions\.appendChild\(shareBtn\);[\s\S]*rightActions\.appendChild\(tableBtn\);/); // NEW
+    assert.match(text, /controls\.appendChild\(leftControls\);[\s\S]*controls\.appendChild\(rightActions\);/); // NEW
+}); // NEW
+
+test("garden dashboard messages button calls users API for active module and prompts auth", () => { // NEW
+    const text = viewportToolbarSource(); // NEW
+    assert.match(text, /const messagesBtn = createToolbarButton\("Messages", "Review access requests"\);/); // NEW
+    assert.match(text, /users\.incomingAccessRequestCount\(\{ scopeCell: moduleCell \}\)/); // NEW
+    assert.match(text, /users\.unreadAccessMessageCount\(\{ scopeCell: moduleCell \}\)/); // NEW
+    assert.match(text, /return incoming \+ unread;/); // NEW
+    assert.match(text, /messagesBtn\.addEventListener\("click", function \(\) \{ openToolbarMessagesDialog\(activeToolbarModule\); \}\);/); // NEW
+    assert.match(text, /users\.openMessagesDialog\(\{ scopeCell: moduleCell \}\);/); // NEW
+    assert.match(source(), /window\.addEventListener\("trellisUsersStoreChanged", scheduleViewportToolbarRefresh\);/); // CHANGE
+    assert.match(text, /users\.showAuthDialog\(\{ blocking: false, message: users\.isEnabled && users\.isEnabled\(\) \? "Log in to review access messages\." : "Enable users before reviewing access messages\." \}\);/); // NEW
+    assert.match(text, /entry\.messagesBtn\.textContent = messagesButtonLabel\(moduleCell\);/); // NEW
 }); // NEW
 
 test("garden dashboard table is collapsed by default and session scoped", () => { // NEW

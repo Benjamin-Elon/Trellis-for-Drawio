@@ -2,6 +2,10 @@ Draw.loadPlugin(function (ui) {
     const graph = ui.editor.graph;
     const model = graph.getModel();
     const GRAPH_OVERLAY_Z = Object.freeze({ ANNOTATION: 10000, CONNECTION: 10010, CONTROL: 10020, CONTROL_TOP: 10030 }); // CHANGE
+    const ATTR_GARDEN_TEAM_MODULE = "trellis_team_module_id"; // NEW
+    const ATTR_TEAM_GARDEN_MODULE = "trellis_garden_module_id"; // NEW
+    const LINK_ATTR = "linkedTo"; // NEW
+    const COMPANION_TEAM_GAP = 40; // NEW
 
     // Override resizeChildCells so modules do not resize children
     const originalResizeChildCells = graph.resizeChildCells;
@@ -253,6 +257,60 @@ Draw.loadPlugin(function (ui) {
         model.setValue(cell, elt);
     }
 
+    function cellId(cell) { // NEW
+        return cell && (cell.id || (cell.getId && cell.getId())) || ""; // NEW
+    } // NEW
+
+    function getValueAttr(cell, key) { // NEW
+        const v = cell && cell.value; // NEW
+        return v && v.nodeType === 1 ? (v.getAttribute(key) || "") : ""; // NEW
+    } // NEW
+
+    function setStringValueAttr(cell, key, value) { // NEW
+        const elt = ensureXmlValue(cell); // NEW
+        if (!elt) return; // NEW
+        const next = value == null || value === "" ? "" : String(value); // NEW
+        if (next) elt.setAttribute(key, next); // NEW
+        else elt.removeAttribute(key); // NEW
+        model.setValue(cell, elt); // NEW
+    } // NEW
+
+    function linkSet(cell) { // NEW
+        return new Set(String(getValueAttr(cell, LINK_ATTR) || "").split(",").map(function (part) { return part.trim(); }).filter(Boolean)); // NEW
+    } // NEW
+
+    function setLinkSet(cell, ids) { // NEW
+        setStringValueAttr(cell, LINK_ATTR, Array.from(ids || []).filter(Boolean).join(",")); // NEW
+    } // NEW
+
+    function addReciprocalLink(a, b) { // NEW
+        const aId = cellId(a); // NEW
+        const bId = cellId(b); // NEW
+        if (!a || !b || !aId || !bId || a === b) return false; // NEW
+        const aLinks = linkSet(a); // NEW
+        const bLinks = linkSet(b); // NEW
+        let changed = false; // NEW
+        if (!aLinks.has(bId)) { aLinks.add(bId); setLinkSet(a, aLinks); changed = true; } // NEW
+        if (!bLinks.has(aId)) { bLinks.add(aId); setLinkSet(b, bLinks); changed = true; } // NEW
+        return changed; // NEW
+    } // NEW
+
+    function plainCellLabel(cell, fallback) { // NEW
+        const raw = getValueAttr(cell, "label") || (typeof (cell && cell.value) === "string" ? cell.value : ""); // NEW
+        if (document && document.createElement) { // NEW
+            const holder = document.createElement("div"); // NEW
+            holder.innerHTML = raw; // NEW
+            const text = String(holder.textContent || "").replace(/\s+/g, " ").trim(); // NEW
+            if (text) return text; // NEW
+        } // NEW
+        const stripped = String(raw || "").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim(); // NEW
+        return stripped || fallback || "Garden"; // NEW
+    } // NEW
+
+    function setCellLabel(cell, label) { // NEW
+        setStringValueAttr(cell, "label", label || ""); // NEW
+    } // NEW
+
 
     // Place a new child inside a module using abs click coords and a cell factory           
     function placeChildInModule(parentModule, absX, absY, makeChild /*(relX,relY)=>mxCell*/, opts) {
@@ -336,6 +394,7 @@ Draw.loadPlugin(function (ui) {
             try {                                                                            // CHANGE
                 enforceGardenModuleMinimum(cell);                                            // CHANGE
                 applyModuleMargins(cell, { allowShrink: false });                            // CHANGE
+                ensureGardenTeamModule(cell, { insideUpdate: true });                        // NEW
             } finally {                                                                      // CHANGE
                 model.endUpdate();                                                           // CHANGE
             }                                                                                // CHANGE
@@ -672,7 +731,7 @@ Draw.loadPlugin(function (ui) {
         const notes = createRoleValueCell("", 10, 158, 234, 34, "verticalAlign=top;spacingTop=4;"); // CHANGE
 
         const contactLabel = createReadOnlyRoleLabel("Contact info", 10, 194, 234); // CHANGE
-        const contact = createRoleValueCell("", 10, 208, 234, 32, "fontSize=10;verticalAlign=top;spacingTop=4;"); // CHANGE
+        const contact = createRoleValueCell("", 10, 208, 234, 32, "fontSize=10;verticalAlign=top;spacingTop=4;role_contact=1;"); // CHANGE
 
         if (manageUpdate) model.beginUpdate(); // CHANGE
         try { // CHANGE
@@ -864,6 +923,45 @@ Draw.loadPlugin(function (ui) {
             return false;
         }
 
+        function isAllowedModuleParent(parent) { // NEW
+            return !!parent && (parent === graph.getDefaultParent() || isModule(parent)); // NEW
+        } // NEW
+
+        function restoreModuleToDefaultParent(cell) { // NEW
+            if (!isModule(cell)) return false; // NEW
+            const parent = model.getParent(cell); // NEW
+            if (isAllowedModuleParent(parent)) return false; // NEW
+            const b = getAbsBounds(cell); // NEW
+            const root = graph.getDefaultParent(); // NEW
+            const rootGeo = model.getGeometry(root); // NEW
+            const rootX = (rootGeo && !rootGeo.relative) ? (rootGeo.x || 0) : 0; // NEW
+            const rootY = (rootGeo && !rootGeo.relative) ? (rootGeo.y || 0) : 0; // NEW
+            const g = cell.getGeometry && cell.getGeometry(); // NEW
+            if (b && g) { // NEW
+                const g2 = g.clone(); // NEW
+                g2.x = b.x - rootX; // NEW
+                g2.y = b.y - rootY; // NEW
+                model.setGeometry(cell, g2); // NEW
+            } // NEW
+            model.add(root, cell); // NEW
+            return true; // NEW
+        } // NEW
+
+        function sanitizeModuleParents(cells) { // NEW
+            const source = cells && cells.length ? cells : (model.cells ? Object.values(model.cells) : []); // NEW
+            if (!source.length) return false; // NEW
+            let changed = false; // NEW
+            model.beginUpdate(); // NEW
+            try { source.forEach(function (cell) { changed = restoreModuleToDefaultParent(cell) || changed; }); } finally { model.endUpdate(); } // NEW
+            return changed; // NEW
+        } // NEW
+
+        const originalIsValidDropTarget = graph.isValidDropTarget; // NEW
+        graph.isValidDropTarget = function (cell, cells, evt) { // NEW
+            if ((cells || []).some(isModule) && cell && !isAllowedModuleParent(cell)) return false; // NEW
+            return originalIsValidDropTarget ? originalIsValidDropTarget.apply(this, arguments) : true; // NEW
+        }; // NEW
+
         // Reparent only top-level cells that are not already under modules
         // and not children of tiler groups                                                
         function reparentCellsIntoModules(cells) {
@@ -945,6 +1043,7 @@ Draw.loadPlugin(function (ui) {
 
             // Defer to next tick so paste offset/move is already applied             
             setTimeout(function () {
+                sanitizeModuleParents(cells); // NEW
                 model.beginUpdate();
                 try {
                     reparentCellsIntoModules(cells);
@@ -976,6 +1075,7 @@ Draw.loadPlugin(function (ui) {
         graph.addListener(mxEvent.CELLS_MOVED, function (sender, evt) {
             const cells = evt.getProperty("cells") || [];
             if (!cells.length) return;
+            sanitizeModuleParents(cells); // NEW
 
             const seenModules = new Set();
             const toRoot = [];
@@ -1061,8 +1161,8 @@ Draw.loadPlugin(function (ui) {
     // MODULE CREATION
     // ------------------------
 
-    function createModuleCell(graph, x, y) {
-        const parent = graph.getDefaultParent();
+    function createModuleCell(graph, x, y, parentOverride) { // CHANGE
+        const parent = parentOverride || graph.getDefaultParent(); // CHANGE
         const w = 160, h = 100;
 
         const moduleCell = new mxCell("",
@@ -1073,6 +1173,62 @@ Draw.loadPlugin(function (ui) {
 
         return moduleCell;
     }
+
+    function createSiblingModuleCell(sourceCell, x, y) { // NEW
+        const parent = (sourceCell && model.getParent(sourceCell)) || graph.getDefaultParent(); // NEW
+        return createModuleCell(graph, x, y, parent); // NEW
+    } // NEW
+
+    function companionTeamLabel(gardenCell) { // NEW
+        return plainCellLabel(gardenCell, "Garden") + " Team"; // NEW
+    } // NEW
+
+    function validCompanionTeam(gardenCell, teamCell) { // NEW
+        return !!(gardenCell && teamCell && isTeamModule(teamCell) && getValueAttr(teamCell, ATTR_TEAM_GARDEN_MODULE) === cellId(gardenCell)); // NEW
+    } // NEW
+
+    function findExistingCompanionTeam(gardenCell) { // NEW
+        const expectedGardenId = cellId(gardenCell); // NEW
+        if (!expectedGardenId) return null; // NEW
+        const typedId = getValueAttr(gardenCell, ATTR_GARDEN_TEAM_MODULE); // NEW
+        const typed = typedId && model.getCell ? model.getCell(typedId) : null; // NEW
+        if (validCompanionTeam(gardenCell, typed)) return typed; // NEW
+        const root = model.getRoot && model.getRoot(); // NEW
+        const cells = model.cells ? Object.values(model.cells) : []; // NEW
+        const pool = cells.length ? cells : (model.getChildren(root) || []); // NEW
+        return pool.find(function (cell) { return validCompanionTeam(gardenCell, cell); }) || null; // NEW
+    } // NEW
+
+    function companionTeamPoint(gardenCell) { // NEW
+        const g = graph.getCellGeometry(gardenCell) || { x: 0, y: 0, width: 160 }; // NEW
+        return { x: (Number(g.x) || 0) + (Number(g.width) || 160) + COMPANION_TEAM_GAP, y: Number(g.y) || 0 }; // NEW
+    } // NEW
+
+    function ensureGardenTeamModule(gardenCell, opts) { // NEW
+        if (!isGardenModule(gardenCell)) return null; // NEW
+        const o = opts || {}; // NEW
+        let team = findExistingCompanionTeam(gardenCell); // NEW
+        const manageUpdate = !o.insideUpdate; // NEW
+        if (manageUpdate) model.beginUpdate(); // NEW
+        try { // NEW
+            if (!team) { // NEW
+                const pt = companionTeamPoint(gardenCell); // NEW
+                team = createSiblingModuleCell(gardenCell, pt.x, pt.y); // NEW
+                setModuleType(team, "team"); // NEW
+                setCellLabel(team, companionTeamLabel(gardenCell)); // NEW
+            } // NEW
+            const owner = getValueAttr(gardenCell, "trellis_owner_user_id"); // NEW
+            if (owner && !getValueAttr(team, "trellis_owner_user_id")) setStringValueAttr(team, "trellis_owner_user_id", owner); // NEW
+            setStringValueAttr(gardenCell, ATTR_GARDEN_TEAM_MODULE, cellId(team)); // NEW
+            setStringValueAttr(team, ATTR_TEAM_GARDEN_MODULE, cellId(gardenCell)); // NEW
+            addReciprocalLink(gardenCell, team); // NEW
+            applyModuleMargins(team, { allowShrink: false, manageUpdate: false }); // NEW
+        } finally { // NEW
+            if (manageUpdate) model.endUpdate(); // NEW
+        } // NEW
+        try { graph.fireEvent(new mxEventObject("linksChanged", "cells", [gardenCell, team])); } catch (_) { } // NEW
+        return team; // NEW
+    } // NEW
 
     function normalizeRootModuleType(type) { // NEW
         return type === "garden" || type === "team" ? type : "regular"; // NEW
@@ -1089,6 +1245,7 @@ Draw.loadPlugin(function (ui) {
             applyModuleMargins(mod); // NEW
             if (moduleType !== "regular") setModuleType(mod, moduleType); // NEW
             if (window.Trellis && window.Trellis.users && typeof window.Trellis.users.stampCreatedOwner === "function") window.Trellis.users.stampCreatedOwner(mod); // NEW: modules created by logged-in users become ownership boundaries
+            if (moduleType === "garden") ensureGardenTeamModule(mod, { insideUpdate: true }); // NEW
             if (mod && graph.setSelectionCell) graph.setSelectionCell(mod); // NEW
         } finally { // NEW
             model.endUpdate(); // NEW
@@ -1779,6 +1936,12 @@ Draw.loadPlugin(function (ui) {
         }, // CHANGE
         createRoleCard: function (moduleCell, x, y) { // NEW
             return createRoleCard(graph, moduleCell, x, y); // NEW
+        }, // NEW
+        ensureGardenTeamModule: function (gardenCell) { // NEW
+            return ensureGardenTeamModule(gardenCell); // NEW
+        }, // NEW
+        addReciprocalLink: function (left, right) { // NEW
+            return addReciprocalLink(left, right); // NEW
         }, // NEW
         selectRoleImage: function (roleCard) { // NEW
             return selectRoleImage(ui, graph, roleCard); // NEW

@@ -473,6 +473,7 @@ function makeHarness(options = {}) { // CHANGE
 
     return {
         document,
+        window: dom.window, // NEW
         graph,
         model, // NEW
         root, // NEW
@@ -806,6 +807,52 @@ test("task manager week scheduler lays out day heights and selected-lane control
     assert.ok(buttonByText(boardOverlay, "Edit Hours")); // NEW
     assert.ok(buttonByText(boardOverlay, "Add Break")); // NEW
     assert.equal(attr(h.board, "task_selected_day"), "2026-07-15"); // NEW
+}); // NEW
+
+test("scheduler task replacement API joins caller update when requested", () => { // NEW
+    const h = makeHarness(); // NEW
+    const group = new TestCell("schedule-group", makeValue(h.document, { tiler_group: "1" }), new TestGeometry(0, 0, 120, 80), "tiler_group=1;"); // NEW
+    h.addCell(h.root, group); // NEW
+    let historyRunCount = 0; // NEW
+    h.window.Trellis = { history: { run(_metadata, operation) { historyRunCount += 1; return operation(); }, isRestoring() { return false; } } }; // NEW
+    h.resetCounters(); // NEW
+
+    const result = h.window.USL.tasks.applySchedulerTaskReplacement({ // NEW
+        mode: "replace", // NEW
+        targetGroupId: group.id, // NEW
+        tasks: [{ title: "Water Crop", startISO: "2026-07-20", endISO: "2026-07-20", scheduler_task_key: "water::0" }] // NEW
+    }, { insideUpdate: true }); // NEW
+
+    const created = h.model.getCell(result && result[0] && result[0].cellId); // NEW
+    assert.ok(created); // NEW
+    assert.equal(attr(group, "linkedTo"), created.id); // NEW
+    assert.equal(attr(created, "linkedTo"), group.id); // NEW
+    assert.ok(h.modelBeginUpdateCount <= 1); // CHANGE: low-level reflow may touch mx, but the replacement wrapper stays joinable
+    assert.equal(historyRunCount, 0); // NEW
+}); // NEW
+
+test("legacy tasksCreated event still performs standalone replacement", async () => { // NEW
+    const h = makeHarness(); // NEW
+    const group = new TestCell("legacy-schedule-group", makeValue(h.document, { tiler_group: "1" }), new TestGeometry(0, 0, 120, 80), "tiler_group=1;"); // NEW
+    h.addCell(h.root, group); // NEW
+    let historyRunCount = 0; // NEW
+    h.window.Trellis = { history: { run(_metadata, operation) { historyRunCount += 1; return operation(); }, isRestoring() { return false; } } }; // NEW
+    h.resetCounters(); // NEW
+
+    h.window.dispatchEvent(new h.window.CustomEvent("tasksCreated", { // NEW
+        detail: { // NEW
+            mode: "replace", // NEW
+            targetGroupId: group.id, // NEW
+            tasks: [{ title: "Harvest Crop", startISO: "2026-07-21", endISO: "2026-07-21", scheduler_task_key: "harvest::0" }] // NEW
+        } // NEW
+    })); // NEW
+    await nextTick(); // NEW
+
+    const linkedIds = String(attr(group, "linkedTo") || "").split(",").filter(Boolean); // NEW
+    assert.equal(linkedIds.length, 1); // NEW
+    assert.equal(attr(h.model.getCell(linkedIds[0]), "title"), "Harvest Crop"); // NEW
+    assert.ok(h.modelBeginUpdateCount > 0); // NEW
+    assert.ok(historyRunCount > 0); // NEW
 }); // NEW
 
 test("task manager keeps week time scale visible for the last active board", async () => { // NEW
@@ -1681,6 +1728,10 @@ test("task manager renders retained Trellis pager controls and repairs hidden-ca
     assert.equal(selector.options[0].textContent, "1"); // CHANGE
     assert.equal(previous.disabled, true); // NEW
     assert.equal(next.disabled, false); // NEW
+    assert.equal(previous.hasAttribute("title"), false); // NEW
+    assert.equal(next.hasAttribute("title"), false); // NEW
+    assert.equal(previous.getAttribute("aria-label"), "Previous page"); // NEW
+    assert.equal(next.getAttribute("aria-label"), "Next page"); // NEW
     assert.match(h.document.getElementById("trellis-task-lane-pager-styles").textContent, /#2563EB/); // NEW
     assert.ok(previous.querySelector("svg")); // NEW
     assert.ok(next.querySelector("svg")); // NEW
