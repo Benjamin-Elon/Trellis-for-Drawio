@@ -54,7 +54,9 @@ function makeHarness() { // NEW
     const regularModule = appendChild(root, new TestCell("regular", {}, "swimlane;module=1")); // NEW
     const teamModule = appendChild(root, new TestCell("team", { team_module: "1" }, "swimlane;module=1")); // NEW
     const bed = appendChild(gardenModule, new TestCell("bed", { garden_bed: "1" })); // NEW
+    const emptyBed = appendChild(gardenModule, new TestCell("emptyBed", { garden_bed: "1" })); // NEW
     const tilerGroup = appendChild(gardenModule, new TestCell("tiler", { tiler_group: "1" })); // NEW
+    const occupiedTiler = appendChild(gardenModule, new TestCell("occupiedTiler", { tiler_group: "1" })); // NEW
     const lane = appendChild(gardenModule, new TestCell("lane", { lane_key: "TODO" }, "swimlane;")); // NEW
     const card = appendChild(lane, new TestCell("card", { kanban_card: "1" })); // NEW
     const kanbanBoard = appendChild(root, new TestCell("kanbanBoard", { board_key: "KANBAN_BOARD" }, "swimlane;")); // CHANGE
@@ -76,7 +78,9 @@ function makeHarness() { // NEW
     stateMap.set(kanbanLane, { cell: kanbanLane, x: 780, y: 50, width: 120, height: 160 }); // CHANGE
     stateMap.set(kanbanCard, { cell: kanbanCard, x: 790, y: 70, width: 80, height: 40 }); // CHANGE
     stateMap.set(bed, { cell: bed, x: 40, y: 130, width: 80, height: 40 }); // NEW
+    stateMap.set(emptyBed, { cell: emptyBed, x: 230, y: 130, width: 80, height: 40 }); // NEW
     stateMap.set(tilerGroup, { cell: tilerGroup, x: 150, y: 130, width: 80, height: 40 }); // NEW
+    stateMap.set(occupiedTiler, { cell: occupiedTiler, x: 60, y: 140, width: 20, height: 20 }); // NEW
     stateMap.set(regularChild, { cell: regularChild, x: 40, y: 360, width: 80, height: 40 }); // NEW
     stateMap.set(teamRole, { cell: teamRole, x: 430, y: 360, width: 80, height: 40 }); // NEW
     const graph = { // NEW
@@ -104,6 +108,17 @@ function makeHarness() { // NEW
         addMouseListener(listener) { graph.__mouseListener = listener; } // NEW
     }; // NEW
     graph.__stateMap = stateMap; // NEW
+    graph.__trellisBedSuccessionNavigator = { // NEW
+        resolveOccupiedBedMoveUnit(cell) { // NEW
+            const beds = [bed, emptyBed]; // NEW
+            const groups = [tilerGroup, occupiedTiler]; // NEW
+            if (!isHarnessBed(cell) && !isHarnessTilerGroup(cell)) return null; // NEW
+            const anchor = isHarnessBed(cell) ? cell : containingHarnessBedForCell(cell, beds, stateMap); // NEW
+            if (!anchor) return null; // NEW
+            const contained = groups.filter(group => containingHarnessBedForCell(group, beds, stateMap) === anchor); // NEW
+            return contained.length ? { bed: anchor, cells: [anchor].concat(contained) } : null; // NEW
+        } // NEW
+    }; // NEW
     const context = { // NEW
         window: dom.window, // NEW
         document, // NEW
@@ -135,11 +150,49 @@ function makeHarness() { // NEW
     }; // NEW
     context.mxGraphHandler.prototype = { // NEW
         mouseDown() { graph.__oldGraphHandlerMouseDownCalled = true; }, // NEW
+        mouseMove() { graph.__lastDragCells = this.getCells(this.cell); }, // NEW
+        mouseUp() { graph.__lastDragCells = this.getCells(this.cell); }, // NEW
         isDelayedSelection() { return false; }, // NEW
         getCells(initialCell) { return [initialCell]; } // NEW
     }; // NEW
     vm.runInNewContext(fs.readFileSync(PLUGIN_PATH, "utf8"), context, { filename: PLUGIN_PATH }); // NEW
-    return { graph, window: dom.window, Handler: context.mxGraphHandler, gardenModule, legacyGardenModule, regularModule, teamModule, regularChild, teamRole, bed, tilerGroup, lane, card, kanbanBoard, kanbanLane, kanbanCard, movableCells, getSelected: () => selectedCells.slice() }; // CHANGE
+    const graphHandler = new context.mxGraphHandler(); // NEW
+    graphHandler.graph = graph; // NEW
+    graph.graphHandler = graphHandler; // NEW
+    return { graph, window: dom.window, Handler: context.mxGraphHandler, gardenModule, legacyGardenModule, regularModule, teamModule, regularChild, teamRole, bed, emptyBed, tilerGroup, occupiedTiler, lane, card, kanbanBoard, kanbanLane, kanbanCard, movableCells, getSelected: () => selectedCells.slice() }; // CHANGE
+} // NEW
+
+function isHarnessBed(cell) { // NEW
+    return !!cell && cell.getAttribute && cell.getAttribute("garden_bed") === "1"; // NEW
+} // NEW
+
+function isHarnessTilerGroup(cell) { // NEW
+    return !!cell && cell.getAttribute && cell.getAttribute("tiler_group") === "1"; // NEW
+} // NEW
+
+function harnessCenter(cell, stateMap) { // NEW
+    const state = stateMap.get(cell); // NEW
+    return state ? { x: state.x + state.width / 2, y: state.y + state.height / 2 } : null; // NEW
+} // NEW
+
+function harnessContains(bed, point, stateMap) { // NEW
+    const state = stateMap.get(bed); // NEW
+    return !!state && !!point && point.x >= state.x && point.x <= state.x + state.width && point.y >= state.y && point.y <= state.y + state.height; // NEW
+} // NEW
+
+function containingHarnessBedForCell(cell, beds, stateMap) { // NEW
+    const center = harnessCenter(cell, stateMap); // NEW
+    let chosen = null; // NEW
+    let chosenArea = Infinity; // NEW
+    for (const bed of beds) { // NEW
+        const state = stateMap.get(bed); // NEW
+        const area = state ? state.width * state.height : 0; // NEW
+        if (area > 0 && area < chosenArea && harnessContains(bed, center, stateMap)) { // NEW
+            chosen = bed; // NEW
+            chosenArea = area; // NEW
+        } // NEW
+    } // NEW
+    return chosen; // NEW
 } // NEW
 
 function plainClick(graph, cell, detail = 1) { // NEW
@@ -336,6 +389,54 @@ test("workspace handles include selected containers and hovered container", () =
     graph.setSelectionCells([gardenModule, legacyGardenModule]); // NEW
     api.setHoveredCellForTests(null); // NEW
     assert.deepEqual(ids(api.getHandleCells()), ["garden", "legacyGarden"]); // NEW
+}); // NEW
+
+test("occupied garden bed selection shows a bed move handle at the move-unit bounding box", () => { // CHANGE
+    const { graph, bed, occupiedTiler } = makeHarness(); // CHANGE
+    const api = graph.__trellisWorkspaceDragPolicy; // NEW
+    graph.__stateMap.set(occupiedTiler, { cell: occupiedTiler, x: 30, y: 120, width: 20, height: 20 }); // NEW
+    graph.setSelectionCell(bed); // NEW
+    assert.deepEqual(ids(api.getHandleCells()), ["bed"]); // NEW
+    api.refreshHandles(); // NEW
+    const handle = graph.container.querySelector("[data-trellis-workspace-drag-handle='1']"); // NEW
+    assert.ok(handle, "expected occupied bed handle"); // NEW
+    assert.equal(handle.title, "Move garden bed and planting groups"); // NEW
+    assert.equal(handle.style.left, "8px"); // NEW
+    assert.equal(handle.style.top, "98px"); // NEW
+}); // NEW
+
+test("planting group selection shows its containing occupied bed handle", () => { // NEW
+    const { graph, occupiedTiler } = makeHarness(); // NEW
+    const api = graph.__trellisWorkspaceDragPolicy; // NEW
+    graph.setSelectionCell(occupiedTiler); // NEW
+    assert.deepEqual(ids(api.getHandleCells()), ["bed"]); // NEW
+    assert.deepEqual(ids(api.getHandleDragCellsForTests(api.getHandleCells()[0])), ["bed", "occupiedTiler"]); // NEW
+}); // NEW
+
+test("empty beds and outside-bed planting groups do not show occupied bed handles", () => { // NEW
+    const { graph, emptyBed, tilerGroup } = makeHarness(); // NEW
+    const api = graph.__trellisWorkspaceDragPolicy; // NEW
+    graph.setSelectionCell(emptyBed); // NEW
+    assert.deepEqual(ids(api.getHandleCells()), []); // NEW
+    graph.setSelectionCell(tilerGroup); // NEW
+    assert.deepEqual(ids(api.getHandleCells()), []); // NEW
+}); // NEW
+
+test("occupied bed handle drag moves every contained planting group", () => { // NEW
+    const { graph, bed, tilerGroup } = makeHarness(); // NEW
+    const api = graph.__trellisWorkspaceDragPolicy; // NEW
+    graph.__stateMap.set(tilerGroup, { cell: tilerGroup, x: 80, y: 145, width: 10, height: 10 }); // NEW
+    assert.deepEqual(ids(api.getHandleDragCellsForTests(bed)), ["bed", "tiler", "occupiedTiler"]); // NEW
+}); // NEW
+
+test("occupied bed handle drag selects the bed and contained planting groups", () => { // CHANGE
+    const { graph, bed, occupiedTiler, getSelected } = makeHarness(); // NEW
+    const api = graph.__trellisWorkspaceDragPolicy; // NEW
+    graph.setSelectionCell(occupiedTiler); // NEW
+    api.beginHandleDragForTests(bed, { button: 0, clientX: 40, clientY: 130, preventDefault() {} }); // NEW
+    assert.deepEqual(ids(getSelected()), ["bed", "occupiedTiler"]); // CHANGE
+    assert.deepEqual(ids(graph.graphHandler.__trellisWorkspaceHandleDragCells), ["bed", "occupiedTiler"]); // NEW
+    assert.deepEqual(ids(graph.graphHandler.getCells(bed)), ["bed", "occupiedTiler"]); // NEW
 }); // NEW
 
 test("workspace handles omit canonical kanban board lanes", () => { // NEW

@@ -223,7 +223,7 @@
 		return typeof IMAGE_PATH != 'undefined' && IMAGE_PATH ? IMAGE_PATH : 'images'; // NEW
 	} // NEW
 
-	function getSplashBackgroundLayer(backdrop) { // NEW
+	function getSplashBackgroundLayer(backdrop) { // CHANGE
 		if (backdrop == null || typeof document == 'undefined' || document.createElement == null) return null; // CHANGE
 		var layer = backdrop.querySelector != null ? backdrop.querySelector('.trellis-splash-bg-image') : null; // NEW
 
@@ -240,11 +240,27 @@
 		return layer; // NEW
 	} // NEW
 
+	function scheduleSplashBackgroundReveal(backdrop) { // CHANGE
+		var ownerWindow = backdrop != null && backdrop.ownerDocument != null ? backdrop.ownerDocument.defaultView : null; // NEW
+
+		if (ownerWindow != null && typeof ownerWindow.requestAnimationFrame == 'function') { // NEW
+			ownerWindow.requestAnimationFrame(function() { // NEW
+				addClass(backdrop, 'trellis-splash-has-image'); // NEW
+			}); // NEW
+		} else { // NEW
+			addClass(backdrop, 'trellis-splash-has-image'); // NEW
+		} // NEW
+	} // NEW
+
 	function applyBackgroundFilename(backdrop, filename) { // NEW
-		if (!isSafeBackgroundFilename(filename)) { // CHANGE
+		if (backdrop == null || !isSafeBackgroundFilename(filename)) { // CHANGE
 			return; // NEW
 		} // NEW
 		if (window.Image == null) { // NEW
+			return; // NEW
+		} // NEW
+		if (backdrop.trellisSplashBackgroundFilename == filename || // NEW
+			backdrop.trellisSplashPendingBackgroundFilename == filename) { // NEW
 			return; // NEW
 		} // NEW
 
@@ -253,12 +269,32 @@
 		var image = new window.Image(); // NEW
 		image.decoding = 'async'; // NEW
 		image.onload = function() { // NEW
+			if (backdrop.trellisSplashPendingBackgroundFilename != filename) return; // NEW
 			var layer = getSplashBackgroundLayer(backdrop); // NEW
-			if (layer != null) layer.src = backgroundUrl; // NEW
+			if (layer == null) return; // NEW
+			layer.onload = function() { // NEW
+				if (backdrop.trellisSplashPendingBackgroundFilename != filename && // NEW
+					backdrop.trellisSplashBackgroundFilename != filename) return; // NEW
+				backdrop.trellisSplashPendingBackgroundFilename = null; // NEW
+				backdrop.trellisSplashBackgroundFilename = filename; // NEW
+				scheduleSplashBackgroundReveal(backdrop); // CHANGE
+			}; // NEW
+			layer.onerror = function() { // NEW
+				if (backdrop.trellisSplashPendingBackgroundFilename == filename) { // NEW
+					backdrop.trellisSplashPendingBackgroundFilename = null; // NEW
+				} // NEW
+				if (!backdrop.style.getPropertyValue('--trellis-splash-image')) { // NEW
+					removeClass(backdrop, 'trellis-splash-has-image'); // NEW
+					layer.removeAttribute('src'); // NEW
+				} // NEW
+			}; // NEW
 			backdrop.style.setProperty('--trellis-splash-image', 'url("' + backgroundUrl + '")'); // NEW
-			addClass(backdrop, 'trellis-splash-has-image'); // NEW
+			layer.src = backgroundUrl; // CHANGE
 		}; // NEW
 		image.onerror = function(event) { // CHANGE
+			if (backdrop.trellisSplashPendingBackgroundFilename == filename) { // NEW
+				backdrop.trellisSplashPendingBackgroundFilename = null; // NEW
+			} // NEW
 			if (!backdrop.style.getPropertyValue('--trellis-splash-image')) { // CHANGE
 				backdrop.style.removeProperty('--trellis-splash-image'); // NEW
 				removeClass(backdrop, 'trellis-splash-has-image'); // NEW
@@ -266,6 +302,8 @@
 				if (layer != null) layer.removeAttribute('src'); // NEW
 			} // NEW
 		}; // NEW
+		getSplashBackgroundLayer(backdrop); // NEW
+		backdrop.trellisSplashPendingBackgroundFilename = filename; // NEW
 		image.src = backgroundUrl; // NEW
 	} // NEW
 

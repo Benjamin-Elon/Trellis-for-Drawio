@@ -46,8 +46,8 @@ def pending_migrations(conn: sqlite3.Connection) -> list[str]:
         pending.append("create CityWeatherForecastDaily")
     if "CompanionEvidence" not in tables:
         pending.append("create CompanionEvidence")
-    if "Companions" in tables and any(column not in table_columns(conn, "Companions") for column in ("source_plant_id", "companion_plant_id", "start_offset_days")):
-        pending.append("add directional companion timing columns")  # ADDED
+    if "Companions" in tables and any(column not in table_columns(conn, "Companions") for column in ("source_plant_id", "companion_plant_id", "start_offset_days", "layout_template", "layout_spacing_x_cm", "layout_spacing_y_cm", "layout_offset_x_cm", "layout_offset_y_cm")):
+        pending.append("add companion timing and layout columns")  # CHANGED
     if "PlantingWindowReferences" not in tables:
         pending.append("create PlantingWindowReferences")
     if "VarietyTaskTemplates" not in tables or "method_id" not in table_columns(conn, "VarietyTaskTemplates"):
@@ -96,7 +96,7 @@ def apply_migrations(conn: sqlite3.Connection) -> list[str]:
         applied.append("added PlantVarieties.maturity_class")  # ADDED
     if "Companions" in tables:
         companion_columns = set(table_columns(conn, "Companions"))  # ADDED
-        for column, column_type in (("source_plant_id", "INTEGER"), ("companion_plant_id", "INTEGER"), ("start_offset_days", "INTEGER")):  # ADDED
+        for column, column_type in (("source_plant_id", "INTEGER"), ("companion_plant_id", "INTEGER"), ("start_offset_days", "INTEGER"), ("layout_template", "TEXT"), ("layout_spacing_x_cm", "REAL"), ("layout_spacing_y_cm", "REAL"), ("layout_offset_x_cm", "REAL"), ("layout_offset_y_cm", "REAL")):  # CHANGED
             if column not in companion_columns:  # ADDED
                 conn.execute(f"ALTER TABLE Companions ADD COLUMN {column} {column_type};")  # ADDED
                 applied.append(f"added Companions.{column}")  # ADDED

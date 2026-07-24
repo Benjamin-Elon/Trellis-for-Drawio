@@ -184,6 +184,7 @@ test("selected singleton tiler on a garden bed shows only the bed-select control
     const selectBeds = visibleImageByAlt(document, "Select bed"); // CHANGE
 
     assert.ok(selectBeds, "expected visible bed-select button"); // NEW
+    assert.equal(selectBeds.style.left, "8px"); // CHANGE
     assert.equal(visibleImageByTitle(document, "Previous"), undefined); // NEW
     assert.equal(visibleImageByTitle(document, "Next"), undefined); // NEW
     assert.equal(visibleImageByAlt(document, "Select"), undefined); // NEW
@@ -191,6 +192,16 @@ test("selected singleton tiler on a garden bed shows only the bed-select control
     selectBeds.dispatchEvent(new document.defaultView.MouseEvent("click", { bubbles: true, cancelable: true })); // NEW
     assert.equal(getSelected().length, 1); // CHANGE
     assert.equal(getSelected()[0].id, "bed"); // CHANGE
+}); // NEW
+
+test("occupied bed move unit resolves bed plus contained planting groups", () => { // NEW
+    const { graph, bed, bed2, tiler1 } = makeHarness({ secondBed: true }); // NEW
+    const api = graph.__trellisBedSuccessionNavigator; // NEW
+    const unitFromGroup = api.resolveOccupiedBedMoveUnit(tiler1); // NEW
+    const unitFromBed = api.resolveOccupiedBedMoveUnit(bed); // NEW
+    assert.deepEqual(JSON.parse(JSON.stringify(unitFromGroup.cells.map(cell => cell.id))), ["bed", "tiler1"]); // CHANGE
+    assert.deepEqual(JSON.parse(JSON.stringify(unitFromBed.cells.map(cell => cell.id))), ["bed", "tiler1"]); // CHANGE
+    assert.equal(api.resolveOccupiedBedMoveUnit(bed2), null); // NEW
 }); // NEW
 
 test("selected singleton tiler outside garden beds does not show the bed-select control", () => { // NEW
@@ -210,8 +221,14 @@ test("two selected tilers in the same garden bed do not cluster unless they over
 test("two selected tilers with five-percent overlap show succession controls and bed-select", () => { // CHANGE
     const { document } = makeHarness({ secondTiler: true, tiler2State: { x: 29, y: 10, width: 20, height: 20 } }); // CHANGE
 
-    assert.ok(visibleImageByAlt(document, "Select bed"), "expected visible bed-select button"); // NEW
-    assert.ok(visibleImageByAlt(document, "Select"), "expected visible cluster-select button"); // NEW
+    const selectBeds = visibleImageByAlt(document, "Select bed"); // NEW
+    const selectCluster = visibleImageByAlt(document, "Select"); // NEW
+    assert.ok(selectBeds, "expected visible bed-select button"); // CHANGE
+    assert.ok(selectCluster, "expected visible cluster-select button"); // CHANGE
+    assert.equal(selectBeds.style.left, "8px"); // NEW
+    assert.equal(selectCluster.style.left, "34px"); // NEW
+    assert.equal(selectBeds.style.top, selectCluster.style.top); // NEW
+    assert.ok(parseInt(selectCluster.style.left, 10) >= parseInt(selectBeds.style.left, 10) + 26); // NEW
     assert.ok(visibleImageByTitle(document, "Previous"), "expected visible previous button"); // NEW
     assert.ok(visibleImageByTitle(document, "Next"), "expected visible next button"); // NEW
 }); // NEW

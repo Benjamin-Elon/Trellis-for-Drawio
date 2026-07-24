@@ -112,6 +112,24 @@ function loadUsersPlugin(options = {}) { // CHANGE
     const model = new TestModel(root); // NEW
     const graphListeners = new Map(); // NEW
     const editorListeners = new Map(); // NEW
+    const timers = []; // NEW
+    let nextTimerId = 1; // NEW
+    function setTestTimeout(fn, delay) { // NEW
+        const ms = Number(delay) || 0; // NEW
+        if (ms <= 0) { fn(); return 0; } // NEW
+        const timer = { id: nextTimerId++, fn, delay: ms, cleared: false }; // NEW
+        timers.push(timer); // NEW
+        return timer.id; // NEW
+    } // NEW
+    function clearTestTimeout(id) { // NEW
+        const timer = timers.find(entry => entry.id === id); // NEW
+        if (timer) timer.cleared = true; // NEW
+    } // NEW
+    function flushTimers() { // NEW
+        const pending = timers.splice(0, timers.length); // NEW
+        pending.forEach(timer => { if (!timer.cleared) timer.fn(); }); // NEW
+    } // NEW
+    function pendingTimers() { return timers.filter(timer => !timer.cleared); } // NEW
     const graph = { // NEW
         container: document.getElementById("graph"), // NEW
         getModel() { return model; }, // NEW
@@ -148,13 +166,34 @@ function loadUsersPlugin(options = {}) { // CHANGE
         actions: { addAction(id, fn) { actions[id] = { funct: fn }; } }, // NEW
         menus: { get() { return null; }, addMenuItems() {} }, // CHANGE
         toolbarContainer, // NEW
+        alerts: [], // NEW
+        lastDialog: null, // NEW
+        lastDialogArgs: null, // NEW
+        alert(message) { ui.alerts.push(String(message || "")); }, // NEW
+        hideDialog() { // NEW
+            if (ui.dialog && ui.dialog.bg && ui.dialog.bg.parentNode) ui.dialog.bg.parentNode.removeChild(ui.dialog.bg); // NEW
+            if (ui.dialog && ui.dialog.container && ui.dialog.container.parentNode) ui.dialog.container.parentNode.removeChild(ui.dialog.container); // NEW
+            ui.dialog = null; // NEW
+            ui.lastDialog = null; // NEW
+        }, // NEW
+        showDialog(node, width, height, modal, closable) { // NEW
+            const bg = document.createElement("div"); // NEW
+            const container = document.createElement("div"); // NEW
+            container.appendChild(node); // NEW
+            document.body.appendChild(bg); // NEW
+            document.body.appendChild(container); // NEW
+            ui.dialog = { bg, container }; // NEW
+            ui.lastDialog = node; // NEW
+            ui.lastDialogArgs = { node, width, height, modal, closable }; // NEW
+        }, // NEW
         fileLoaded(file) { ui.loadedFile = file; (editorListeners.get("fileLoaded") || []).forEach(fn => fn()); }, // NEW
         getCurrentFile() { return ui.currentFile || null; } // NEW
     }; // NEW
     const testConsole = Object.prototype.hasOwnProperty.call(options, "console") ? options.console : console; // NEW
     const context = { // NEW
         window: dom.window, document, console: testConsole, Promise, Error, String, Number, Math, Date, Set, Map, JSON, // CHANGE
-        setTimeout: fn => { fn(); return 1; }, // NEW
+        setTimeout: setTestTimeout, // CHANGE
+        clearTimeout: clearTestTimeout, // NEW
         Draw: { loadPlugin(callback) { callback(ui); } }, // NEW
         mxEvent: { CHANGE: "change" }, // NEW
         mxUtils: { createXmlDocument() { return document.implementation.createDocument("", "", null); } } // NEW
@@ -162,15 +201,42 @@ function loadUsersPlugin(options = {}) { // CHANGE
     vm.runInNewContext(fs.readFileSync(pluginPath, "utf8"), context, { filename: pluginPath }); // NEW
     const loginButton = document.querySelector(".trellis-users-login-button"); // NEW
     if (loginButton) loginButton.getBoundingClientRect = () => ({ left: 850, right: 910, top: 10, bottom: 34, width: 60, height: 24 }); // NEW
-    return { context, document, graph, model, layer, module, card, outside, actions, ui, toolbarContainer, editorListeners }; // CHANGE
+    return { context, document, graph, model, layer, module, card, outside, actions, ui, toolbarContainer, editorListeners, flushTimers, pendingTimers, get lastDialog() { return ui.lastDialog; } }; // CHANGE
 } // NEW
 
 function buttonByText(document, text) { // NEW
     return Array.from(document.querySelectorAll("button")).find(button => button.textContent === text); // NEW
 } // NEW
 
+function buttonByTextIn(root, text) { // NEW
+    return Array.from(root.querySelectorAll("button")).find(button => button.textContent === text); // NEW
+} // NEW
+
 function inputByPlaceholder(document, text) { // NEW
     return Array.from(document.querySelectorAll("input")).find(input => input.placeholder === text); // NEW
+} // NEW
+
+function authOverlays(document) { // NEW
+    return Array.from(document.querySelectorAll(".trellis-users-auth-overlay")); // NEW
+} // NEW
+
+function resetUiNotifications(harness) { // NEW
+    harness.ui.alerts = []; // NEW
+    if (harness.ui.dialog) harness.ui.hideDialog(); // NEW
+    harness.ui.dialog = null; // NEW
+    harness.ui.lastDialog = null; // NEW
+    harness.ui.lastDialogArgs = null; // NEW
+    const users = harness.context.window.Trellis && harness.context.window.Trellis.users; // NEW
+    if (users && users._test && users._test.closeRejectedEditPopover) users._test.closeRejectedEditPopover(); // NEW
+} // NEW
+
+function rejectedPopover(document) { // NEW
+    return document.querySelector(".trellis-users-rejected-edit-popover"); // NEW
+} // NEW
+
+function fireGraphPointer(harness, x, y, type = "mousemove") { // NEW
+    const evt = new harness.context.window.MouseEvent(type, { clientX: x, clientY: y, bubbles: true }); // NEW
+    harness.graph.container.dispatchEvent(evt); // NEW
 } // NEW
 
 function userGroupByTitle(document, title) { // NEW
@@ -315,9 +381,106 @@ test("logged-out enabled diagrams reject edits", () => { // NEW
     const users = harness.context.window.Trellis.users; // NEW
     users.enableUsers("Alice", "1234"); // NEW
     users.logout(); // NEW
+    fireGraphPointer(harness, 100, 120); // NEW
     let undone = false; // NEW
     harness.model.fireChange({ changes: [{ constructor: { name: "mxValueChange" }, cell: harness.card }], undo() { undone = true; } }); // NEW
     assert.equal(undone, true); // NEW
+    const popover = rejectedPopover(harness.document); // NEW
+    assert.ok(popover); // NEW
+    assert.match(popover.textContent, /Log in before editing this diagram\./); // CHANGE
+    assert.ok(buttonByTextIn(popover, "Log in")); // NEW
+    assert.equal(harness.lastDialog, null); // CHANGE
+    assert.equal(popover.style.zIndex, "2000000000"); // NEW
+}); // NEW
+
+test("permission rejected edits show a cursor popover with request access", () => { // CHANGE
+    const harness = loadUsersPlugin(); // NEW
+    const users = harness.context.window.Trellis.users; // NEW
+    users.enableUsers("Alice", "1234"); // NEW
+    harness.module.style = "module=1"; // NEW
+    users.stampCreatedOwner(harness.module); // NEW
+    users.createUser("Bob", "5678", false); // NEW
+    users.logout(); // NEW
+    users.login("Bob", "5678"); // NEW
+    fireGraphPointer(harness, 200, 210); // NEW
+    let undone = false; // NEW
+    harness.model.fireChange({ changes: [{ constructor: { name: "mxGeometryChange" }, cell: harness.card }], undo() { undone = true; } }); // NEW
+    assert.equal(undone, true); // NEW
+    const popover = rejectedPopover(harness.document); // NEW
+    assert.ok(popover); // NEW
+    assert.match(popover.textContent, /Change rejected by Trellis user permissions\./); // CHANGE
+    assert.ok(buttonByTextIn(popover, "Request Access")); // NEW
+    assert.equal(harness.lastDialog, null); // CHANGE
+    assert.equal(harness.ui.lastDialogArgs, null); // CHANGE
+    buttonByTextIn(popover, "Request Access").click(); // NEW
+    assert.equal(rejectedPopover(harness.document), null); // NEW
+    assert.ok(harness.document.querySelector(".trellis-users-access-dialog")); // NEW
+}); // NEW
+
+test("rejected edit popover clamps to the viewport and replaces prior notices", () => { // NEW
+    const harness = loadUsersPlugin(); // NEW
+    const users = harness.context.window.Trellis.users; // NEW
+    users.enableUsers("Alice", "1234"); // NEW
+    users.logout(); // NEW
+    fireGraphPointer(harness, 1015, 760); // NEW
+    harness.model.fireChange({ changes: [{ constructor: { name: "mxValueChange" }, cell: harness.card }], undo() {} }); // NEW
+    let popover = rejectedPopover(harness.document); // NEW
+    assert.ok(popover); // NEW
+    assert.ok(parseInt(popover.style.left, 10) <= 696); // NEW
+    assert.ok(parseInt(popover.style.top, 10) <= 634); // NEW
+    fireGraphPointer(harness, 20, 30); // NEW
+    harness.model.fireChange({ changes: [{ constructor: { name: "mxStyleChange" }, cell: harness.card }], undo() {} }); // NEW
+    const popovers = harness.document.querySelectorAll(".trellis-users-rejected-edit-popover"); // NEW
+    assert.equal(popovers.length, 1); // NEW
+    popover = popovers[0]; // NEW
+    assert.equal(parseInt(popover.style.left, 10), 32); // NEW
+    assert.equal(parseInt(popover.style.top, 10), 42); // NEW
+}); // NEW
+
+test("rejected edit popover auto-dismiss pauses while hovered or focused", () => { // NEW
+    const harness = loadUsersPlugin(); // NEW
+    const users = harness.context.window.Trellis.users; // NEW
+    users.enableUsers("Alice", "1234"); // NEW
+    users.logout(); // NEW
+    harness.model.fireChange({ changes: [{ constructor: { name: "mxValueChange" }, cell: harness.card }], undo() {} }); // NEW
+    let popover = rejectedPopover(harness.document); // NEW
+    assert.ok(popover); // NEW
+    assert.equal(harness.pendingTimers().length, 1); // NEW
+    popover.dispatchEvent(new harness.context.window.MouseEvent("mouseenter", { bubbles: false })); // NEW
+    harness.flushTimers(); // NEW
+    assert.ok(rejectedPopover(harness.document)); // NEW
+    popover.dispatchEvent(new harness.context.window.MouseEvent("mouseleave", { bubbles: false })); // NEW
+    assert.equal(harness.pendingTimers().length, 1); // NEW
+    popover.dispatchEvent(new harness.context.window.FocusEvent("focusin", { bubbles: true })); // NEW
+    harness.flushTimers(); // NEW
+    assert.ok(rejectedPopover(harness.document)); // NEW
+    popover.dispatchEvent(new harness.context.window.FocusEvent("focusout", { bubbles: true })); // NEW
+    assert.equal(harness.pendingTimers().length, 1); // NEW
+    harness.flushTimers(); // NEW
+    assert.equal(rejectedPopover(harness.document), null); // NEW
+}); // NEW
+
+test("rejected edit popover login action opens auth dialog", () => { // NEW
+    const harness = loadUsersPlugin(); // NEW
+    const users = harness.context.window.Trellis.users; // NEW
+    users.enableUsers("Alice", "1234"); // NEW
+    users.logout(); // NEW
+    harness.model.fireChange({ changes: [{ constructor: { name: "mxValueChange" }, cell: harness.card }], undo() {} }); // NEW
+    const popover = rejectedPopover(harness.document); // NEW
+    assert.ok(popover); // NEW
+    buttonByTextIn(popover, "Log in").click(); // NEW
+    assert.equal(rejectedPopover(harness.document), null); // NEW
+    assert.ok(harness.document.querySelector(".trellis-users-auth-overlay")); // NEW
+}); // NEW
+
+test("rejected edit popover falls back to status when no host is available", () => { // NEW
+    const harness = loadUsersPlugin(); // NEW
+    const users = harness.context.window.Trellis.users; // NEW
+    const body = harness.document.body; // NEW
+    if (body && body.parentNode) body.parentNode.removeChild(body); // NEW
+    harness.graph.container = null; // NEW
+    users._test.showRejectedEditPopover("Fallback rejection."); // NEW
+    assert.deepEqual(harness.ui.alerts, ["Fallback rejection."]); // NEW
 }); // NEW
 
 test("enabled diagram load changes are allowed while logged out but later edits are rejected", () => { // NEW
@@ -347,6 +510,56 @@ test("direct setGraphXml load changes are allowed and then show the auth gate", 
     assert.equal(harness.ui.setGraphXmlCalls, 1); // NEW
     assert.equal(harness.ui.setGraphXmlUndone, false); // NEW
     assert.ok(harness.document.querySelector(".trellis-users-auth-overlay")); // NEW
+}); // NEW
+
+test("auth gate failed login stays inline without a Draw.io alert", () => { // NEW
+    const harness = loadUsersPlugin(); // NEW
+    const users = harness.context.window.Trellis.users; // NEW
+    users.enableUsers("Alice", "1234"); // NEW
+    users.logout(); // NEW
+    resetUiNotifications(harness); // NEW
+    const overlay = harness.document.querySelector(".trellis-users-auth-overlay"); // NEW
+    inputByPlaceholder(overlay, "Name").value = "Alice"; // CHANGE
+    inputByPlaceholder(overlay, "PIN").value = "bad"; // CHANGE
+    buttonByTextIn(overlay, "Login").click(); // CHANGE
+    assert.equal(authOverlays(harness.document).length, 1); // NEW
+    assert.match(harness.document.querySelector(".trellis-users-auth-overlay").textContent, /Unknown user or incorrect PIN\./); // NEW
+    assert.deepEqual(harness.ui.alerts, []); // NEW
+    assert.equal(harness.ui.dialog, null); // NEW
+}); // NEW
+
+test("auth gate successful login closes silently and leaves no stale failed alert", () => { // NEW
+    const harness = loadUsersPlugin(); // NEW
+    const users = harness.context.window.Trellis.users; // NEW
+    users.enableUsers("Alice", "1234"); // NEW
+    users.logout(); // NEW
+    resetUiNotifications(harness); // NEW
+    const overlay = harness.document.querySelector(".trellis-users-auth-overlay"); // NEW
+    inputByPlaceholder(overlay, "Name").value = "Alice"; // CHANGE
+    inputByPlaceholder(overlay, "PIN").value = "bad"; // CHANGE
+    buttonByTextIn(overlay, "Login").click(); // CHANGE
+    inputByPlaceholder(overlay, "Name").value = "Alice"; // CHANGE
+    inputByPlaceholder(overlay, "PIN").value = "1234"; // CHANGE
+    buttonByTextIn(overlay, "Login").click(); // CHANGE
+    assert.equal(harness.document.querySelector(".trellis-users-auth-overlay"), null); // NEW
+    assert.equal(harness.graph.enabled, true); // NEW
+    assert.equal(harness.document.querySelector(".trellis-users-login-button").textContent, "Alice"); // NEW
+    assert.deepEqual(harness.ui.alerts, []); // NEW
+    assert.equal(harness.ui.dialog, null); // NEW
+}); // NEW
+
+test("repeated auth gate triggers reuse one overlay", () => { // NEW
+    const harness = loadUsersPlugin(); // NEW
+    const users = harness.context.window.Trellis.users; // NEW
+    users.enableUsers("Alice", "1234"); // NEW
+    users.logout(); // NEW
+    resetUiNotifications(harness); // NEW
+    assert.equal(authOverlays(harness.document).length, 1); // NEW
+    users._test.applyAuthGateIfNeeded("Log in again."); // NEW
+    harness.ui.fileLoaded({}); // NEW
+    harness.ui.editor.setGraphXml(harness.document.createElement("mxGraphModel")); // NEW
+    assert.equal(authOverlays(harness.document).length, 1); // NEW
+    assert.match(harness.document.querySelector(".trellis-users-auth-overlay").textContent, /Log in to open this diagram\./); // NEW
 }); // NEW
 
 test("logged-out enabled diagrams show an opaque auth gate until login succeeds", () => { // NEW
@@ -742,7 +955,7 @@ test("denial creates requester message while denied request remains reopenable",
     assert.equal(users.getAccessRequestForCurrentUser(harness.card).status, "denied"); // NEW
 }); // NEW
 
-test("already-granted access request cleanup does not create requester message", () => { // NEW
+test("already-granted access request cleanup still creates requester message", () => { // CHANGE
     const harness = loadUsersPlugin(); // NEW
     const users = harness.context.window.Trellis.users; // NEW
     users.enableUsers("Alice", "1234"); // NEW
@@ -760,7 +973,33 @@ test("already-granted access request cleanup does not create requester message",
     assert.equal(approved.alreadyGranted, true); // NEW
     const store = users._test.readStore(); // NEW
     assert.equal(store.accessRequests.length, 0); // NEW
-    assert.equal(store.accessMessages.length, 0); // NEW
+    assert.equal(store.accessMessages.length, 1); // CHANGE
+    assert.equal(store.accessMessages[0].decision, "approved"); // NEW
+    assert.equal(store.accessMessages[0].note, "Already done."); // NEW
+}); // NEW
+
+test("selected access panel shows requester approval response without no-access contradiction", () => { // NEW
+    const harness = loadUsersPlugin(); // NEW
+    const users = harness.context.window.Trellis.users; // NEW
+    users.enableUsers("Alice", "1234"); // NEW
+    harness.module.style = "module=1"; // NEW
+    users.stampCreatedOwner(harness.module); // NEW
+    users.createUser("Bob", "5678", false); // NEW
+    users.logout(); // NEW
+    users.login("Bob", "5678"); // NEW
+    const request = users.requestAccess(harness.card, { requestedPreset: "gardener" }).request; // NEW
+    users.logout(); // NEW
+    users.login("Alice", "1234"); // NEW
+    assert.equal(users.approveAccessRequest(request.id, { preset: "gardener", decisionNote: "Welcome to the bed." }).ok, true); // NEW
+    users.logout(); // NEW
+    assert.equal(users.login("Bob", "5678").ok, true); // NEW
+    harness.graph.setSelectionCell(harness.card); // NEW
+    harness.actions.trellisUsers.funct(); // NEW
+    assert.match(harness.document.body.textContent, /Your effective access: Gardener/); // NEW
+    assert.match(harness.document.body.textContent, /Access approved \(Gardener\)\. Welcome to the bed\./); // NEW
+    assert.match(harness.document.body.textContent, /You have Gardener access here, but this selected cell is not directly editable\./); // NEW
+    assert.match(harness.document.body.textContent, /Request More Access/); // NEW
+    assert.doesNotMatch(harness.document.body.textContent, /You do not have access to this cell/); // NEW
 }); // NEW
 
 test("deleted scope response remains visible as unavailable in requester messages", () => { // NEW
@@ -1371,6 +1610,7 @@ test("child access view shows inherited coordinator without writing grants", () 
     assert.match(harness.document.body.textContent, /Coordinator in Module/); // CHANGE
     assert.match(harness.document.body.textContent, /Your effective access: Coordinator/); // NEW
     assert.match(harness.document.body.textContent, /Select a module, garden bed, or task board to manage grants/); // NEW
+    assert.doesNotMatch(harness.document.body.textContent, /You do not have access to this cell/); // NEW
     assert.equal(child.getAttribute(users.attrs.accessGrants), null); // NEW
     assert.equal(harness.module.getAttribute(users.attrs.accessGrants), parentGrantsBefore); // NEW
     assert.equal(harness.model.setValueCalls || 0, writesBefore); // NEW

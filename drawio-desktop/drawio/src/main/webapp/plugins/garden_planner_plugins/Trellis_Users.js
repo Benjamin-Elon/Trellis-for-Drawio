@@ -60,6 +60,7 @@ Draw.loadPlugin(function (ui) {
     const REMEMBER_STORAGE_PREFIX = "trellis_users_remembered_login_v1:"; // NEW
     const USERS_UI_LAYER_Z = 2000000000; // NEW
     const AUTH_OVERLAY_Z = 2147483000; // NEW
+    const REJECTED_EDIT_POPOVER_MS = 2500; // NEW
     const INTERNAL_FLAG = "__trellisUsersInternalChange";
     const REJECT_FLAG = "__trellisUsersRejecting";
 
@@ -89,6 +90,12 @@ Draw.loadPlugin(function (ui) {
     let graphAuthBlocked = false; // NEW
     let graphXmlLoading = 0; // NEW
     let selectionListenerInstalled = false;
+    let lastGraphPointerPoint = null; // NEW
+    let rejectedEditPopover = null; // NEW
+    let rejectedEditDismissTimer = 0; // NEW
+    let rejectedEditDismissPaused = false; // NEW
+    let rejectedEditKeyHandler = null; // NEW
+    let rejectedEditOutsideHandler = null; // NEW
 
     function nowMs() {
         return Date.now();
@@ -724,7 +731,14 @@ Draw.loadPlugin(function (ui) {
         return { ok: true, user: publicUser(user) };
     }
 
-    function enableUsers(name, pin) { // NEW
+    function finalizePublicAuthMutation(message, hadAuthGate) { // NEW
+        if (hadAuthGate) closeAuthOverlay(true); // NEW
+        refreshPanel(); // NEW
+        updateToolbarButton(); // NEW
+        if (!hadAuthGate && message) showStatus(message); // NEW
+    } // NEW
+
+    function enableUsersState(name, pin) { // NEW
         const store = readStore(); // NEW
         if (store.usersEnabled) return { ok: true, enabled: true }; // NEW
         const cleanName = String(name || "").trim(); // NEW
@@ -736,32 +750,35 @@ Draw.loadPlugin(function (ui) {
         store.users = [user]; // NEW
         currentUserId = user.id; // NEW
         writeStore(store); // NEW
-        showStatus("Users enabled. Created first admin: " + user.name); // NEW
-        closeAuthOverlay(true); // NEW
-        updateToolbarButton(); // NEW
         return { ok: true, user: publicUser(user) }; // NEW
     } // NEW
 
-    function login(name, pin) {
+    function enableUsers(name, pin) { // CHANGE
+        const hadAuthGate = !!authOverlay; // NEW
+        const result = enableUsersState(name, pin); // NEW
+        if (result.ok && result.user) finalizePublicAuthMutation("Users enabled. Created first admin: " + result.user.name, hadAuthGate); // NEW
+        return result; // NEW
+    } // NEW
+
+    function loginState(name, pin) { // NEW
         if (!isEnabled()) return { ok: false, reason: "Users are not enabled for this diagram." }; // NEW
         if (canBootstrapAdmin()) {
             const created = createUser(name, pin, true);
             if (!created.ok) return created;
             currentUserId = created.user.id;
-            showStatus("Created first admin: " + created.user.name);
-            closeAuthOverlay(true); // NEW
-            refreshPanel();
-            updateToolbarButton(); // NEW
             return { ok: true, user: created.user };
         }
         const user = userByName(name);
         if (!user || user.pinHash !== hashPin(pin, user.pinSalt)) return { ok: false, reason: "Unknown user or incorrect PIN." };
         currentUserId = user.id;
-        showStatus("Logged in as " + user.name);
-        closeAuthOverlay(true); // NEW
-        refreshPanel();
-        updateToolbarButton(); // NEW
         return { ok: true, user: publicUser(user) };
+    } // NEW
+
+    function login(name, pin) { // CHANGE
+        const hadAuthGate = !!authOverlay; // NEW
+        const result = loginState(name, pin); // NEW
+        if (result.ok && result.user) finalizePublicAuthMutation("Logged in as " + result.user.name, hadAuthGate); // NEW
+        return result; // NEW
     }
 
     function resetUserPin(userId, pin) { // NEW
@@ -1793,13 +1810,14 @@ Draw.loadPlugin(function (ui) {
         const requester = userById(request.requesterUserId); // NEW
         if (!requester) return { ok: false, reason: "The requester is disabled or unavailable." }; // NEW
         const preset = normalizePreset(source.requestedPreset || source.preset || request.requestedPreset); // NEW
+        const actor = currentUser(); // NEW
         if (requesterAlreadyHasRequestedAccess(scopeCell, requester, preset)) { // NEW
+            addAccessDecisionMessage(store, request, "approved", preset, source.decisionNote, actor); // CHANGE
             removeAccessRequestFromStore(store, request.id); // NEW
             writeStore(store); // NEW
             return { ok: true, alreadyGranted: true }; // NEW
         } // NEW
         const previousGrants = grantsFromAttr(scopeCell); // NEW
-        const actor = currentUser(); // NEW
         graph[INTERNAL_FLAG] = true; // NEW
         model.beginUpdate(); // NEW
         try { // NEW
@@ -2080,7 +2098,7 @@ Draw.loadPlugin(function (ui) {
         return { ok: true, invite: publicInvite(invite), code, emailDraft }; // NEW
     } // NEW
 
-    function acceptInvite(options) { // NEW
+    function acceptInviteState(options) { // NEW
         const source = options || {}; // NEW
         const email = normalizeEmail(source.email); // NEW
         const name = String(source.name || "").trim(); // NEW
@@ -2105,11 +2123,14 @@ Draw.loadPlugin(function (ui) {
         graph[INTERNAL_FLAG] = true; // NEW
         model.beginUpdate(); // NEW
         try { ensureGardenRoleCardsForUser(user.id); } finally { model.endUpdate(); graph[INTERNAL_FLAG] = false; } // NEW
-        showStatus("Invite accepted. Logged in as " + name + "."); // NEW
-        closeAuthOverlay(true); // NEW
-        refreshPanel(); // NEW
-        updateToolbarButton(); // NEW
         return { ok: true, user: publicUser(user) }; // NEW
+    } // NEW
+
+    function acceptInvite(options) { // CHANGE
+        const hadAuthGate = !!authOverlay; // NEW
+        const result = acceptInviteState(options); // NEW
+        if (result.ok && result.user) finalizePublicAuthMutation("Invite accepted. Logged in as " + result.user.name + ".", hadAuthGate); // NEW
+        return result; // NEW
     } // NEW
 
     function canManageInvite(invite) { // NEW
@@ -2476,19 +2497,18 @@ Draw.loadPlugin(function (ui) {
         return true;
     }
 
-    function rejectEdit(edit, reason) {
+    function rejectEdit(edit, reason, context) { // CHANGE
         logRejectedEdit(edit, reason); // NEW
         if (edit) edit.__trellisUsersRejected = true; // NEW
         graph[REJECT_FLAG] = true;
         graph[INTERNAL_FLAG] = true;
         try {
-            if (edit && typeof edit.undo === "function") edit.undo();
-            else showStatus(reason || "Change rejected.");
+            if (edit && typeof edit.undo === "function") edit.undo(); // CHANGE
         } finally {
             graph[INTERNAL_FLAG] = false;
             graph[REJECT_FLAG] = false;
         }
-        showStatus(reason || "Change rejected.");
+        showRejectedEditPopover(reason || "Change rejected.", context); // CHANGE
         if (graph.refresh) graph.refresh();
     }
 
@@ -2500,12 +2520,12 @@ Draw.loadPlugin(function (ui) {
         if (edit && (edit.undone || edit.redone)) return; // NEW
         const changes = edit && edit.changes || [];
         if (!changes.length) return;
-        if (!isLoggedIn()) { rejectEdit(edit, "Log in before editing this diagram."); return; }
+        if (!isLoggedIn()) { rejectEdit(edit, "Log in before editing this diagram.", { action: "login" }); return; } // CHANGE
         const permissionContext = editPermissionContext(changes); // NEW
         for (let i = 0; i < changes.length; i++) {
             if (!changeAllowed(changes[i], permissionContext)) { // CHANGE
                 logDeniedChange(changes[i], i); // NEW
-                rejectEdit(edit, "Change rejected by Trellis user permissions.");
+                rejectEdit(edit, "Change rejected by Trellis user permissions.", { cell: cellFromChange(changes[i]) }); // CHANGE
                 return;
             }
         }
@@ -2627,6 +2647,119 @@ Draw.loadPlugin(function (ui) {
         else if (ui && typeof ui.alert === "function") ui.alert(String(message || ""));
     }
 
+    function clientPointFromEvent(evt) { // NEW
+        const event = evt && typeof evt.getEvent === "function" ? evt.getEvent() : evt; // NEW
+        const x = Number(event && event.clientX); // NEW
+        const y = Number(event && event.clientY); // NEW
+        return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null; // NEW
+    } // NEW
+
+    function rememberGraphPointerPoint(evt) { // NEW
+        const point = clientPointFromEvent(evt); // NEW
+        if (point) lastGraphPointerPoint = point; // NEW
+    } // NEW
+
+    function fallbackRejectedEditPoint() { // NEW
+        const size = viewportSize(); // NEW
+        return { x: Math.round(size.width / 2), y: Math.round(size.height / 2) }; // NEW
+    } // NEW
+
+    function fixedPositionNearPoint(point, width, height, gap) { // NEW
+        const size = viewportSize(); // NEW
+        const margin = 8; // NEW
+        const anchor = point || fallbackRejectedEditPoint(); // NEW
+        const offset = gap || 12; // NEW
+        let left = anchor.x + offset; // NEW
+        let top = anchor.y + offset; // NEW
+        if (left + width > size.width - margin) left = anchor.x - width - offset; // NEW
+        if (top + height > size.height - margin) top = anchor.y - height - offset; // NEW
+        return { // NEW
+            left: Math.max(margin, Math.min(left, size.width - width - margin)), // NEW
+            top: Math.max(margin, Math.min(top, size.height - height - margin)) // NEW
+        }; // NEW
+    } // NEW
+
+    function clearRejectedEditDismissTimer() { // NEW
+        if (rejectedEditDismissTimer && typeof clearTimeout === "function") clearTimeout(rejectedEditDismissTimer); // NEW
+        rejectedEditDismissTimer = 0; // NEW
+    } // NEW
+
+    function closeRejectedEditPopover() { // NEW
+        clearRejectedEditDismissTimer(); // NEW
+        if (typeof document !== "undefined" && rejectedEditKeyHandler && document.removeEventListener) document.removeEventListener("keydown", rejectedEditKeyHandler, true); // NEW
+        if (typeof document !== "undefined" && rejectedEditOutsideHandler && document.removeEventListener) document.removeEventListener("mousedown", rejectedEditOutsideHandler, true); // NEW
+        rejectedEditKeyHandler = null; // NEW
+        rejectedEditOutsideHandler = null; // NEW
+        rejectedEditDismissPaused = false; // NEW
+        if (rejectedEditPopover && rejectedEditPopover.parentNode) rejectedEditPopover.parentNode.removeChild(rejectedEditPopover); // NEW
+        rejectedEditPopover = null; // NEW
+    } // NEW
+
+    function scheduleRejectedEditDismiss() { // NEW
+        clearRejectedEditDismissTimer(); // NEW
+        if (!rejectedEditPopover || rejectedEditDismissPaused || typeof setTimeout !== "function") return; // NEW
+        rejectedEditDismissTimer = setTimeout(closeRejectedEditPopover, REJECTED_EDIT_POPOVER_MS); // NEW
+    } // NEW
+
+    function rejectedEditPopoverAction(context) { // NEW
+        const source = context || {}; // NEW
+        if (!isLoggedIn()) return { label: "Log in", run: function () { showAuthDialog({ blocking: false, message: "Log in before editing this diagram." }); } }; // NEW
+        const cell = source.cell || selectedCell(); // NEW
+        return cell && accessRequestScopeSummary(cell) ? { label: "Request Access", run: function () { openAccessRequestDialog(cell); } } : null; // CHANGE
+    } // NEW
+
+    function showRejectedEditPopover(reason, context) { // NEW
+        const message = String(reason || "Change rejected."); // NEW
+        if (typeof document === "undefined") { showStatus(message); return false; } // NEW
+        const host = document.body || graph.container; // NEW
+        if (!host || !host.appendChild) { showStatus(message); return false; } // NEW
+        closeRejectedEditPopover(); // NEW
+        const width = 320; // NEW
+        const height = 126; // NEW
+        const pos = fixedPositionNearPoint(lastGraphPointerPoint, width, height, 12); // NEW
+        const root = document.createElement("div"); // NEW
+        root.className = "trellis-users-rejected-edit-popover"; // NEW
+        root.setAttribute("role", "status"); // NEW
+        root.style.cssText = "position:fixed;left:" + pos.left + "px;top:" + pos.top + "px;z-index:" + USERS_UI_LAYER_Z + ";width:" + width + "px;max-width:calc(100vw - 16px);background:#fff;border:1px solid #B91C1C;border-radius:4px;box-shadow:0 8px 24px rgba(0,0,0,.24);padding:10px 12px;box-sizing:border-box;font:12px Arial,sans-serif;color:#1F2937;line-height:16px;"; // NEW
+        const title = document.createElement("div"); // NEW
+        title.textContent = "Change rejected"; // NEW
+        title.style.cssText = "font-weight:700;color:#991B1B;margin-bottom:4px;"; // NEW
+        const detail = document.createElement("div"); // NEW
+        detail.textContent = message; // NEW
+        detail.style.cssText = "color:#374151;"; // NEW
+        root.appendChild(title); // NEW
+        root.appendChild(detail); // NEW
+        const action = rejectedEditPopoverAction(context); // NEW
+        if (action) { // NEW
+            const actions = document.createElement("div"); // NEW
+            actions.style.cssText = "display:flex;justify-content:flex-end;margin-top:8px;"; // NEW
+            const button = makeButton(action.label, function () { closeRejectedEditPopover(); action.run(); }); // NEW
+            button.className = action.label === "Request Access" ? "trellis-users-rejected-edit-request-access-button" : "trellis-users-rejected-edit-login-button"; // NEW
+            actions.appendChild(button); // NEW
+            root.appendChild(actions); // NEW
+        } // NEW
+        root.addEventListener("mouseenter", function () { rejectedEditDismissPaused = true; clearRejectedEditDismissTimer(); }); // NEW
+        root.addEventListener("mouseleave", function () { rejectedEditDismissPaused = false; scheduleRejectedEditDismiss(); }); // NEW
+        root.addEventListener("focusin", function () { rejectedEditDismissPaused = true; clearRejectedEditDismissTimer(); }); // NEW
+        root.addEventListener("focusout", function () { // NEW
+            setTimeout(function () { // NEW
+                if (rejectedEditPopover === root && (!document.activeElement || !root.contains(document.activeElement))) { // NEW
+                    rejectedEditDismissPaused = false; // NEW
+                    scheduleRejectedEditDismiss(); // NEW
+                } // NEW
+            }, 0); // NEW
+        }); // NEW
+        root.addEventListener("mousedown", function (evt) { if (evt) evt.stopPropagation(); }); // NEW
+        rejectedEditKeyHandler = function (evt) { if (evt && evt.key === "Escape") closeRejectedEditPopover(); }; // NEW
+        rejectedEditOutsideHandler = function (evt) { if (rejectedEditPopover && evt && !rejectedEditPopover.contains(evt.target)) closeRejectedEditPopover(); }; // NEW
+        document.addEventListener("keydown", rejectedEditKeyHandler, true); // NEW
+        document.addEventListener("mousedown", rejectedEditOutsideHandler, true); // NEW
+        host.appendChild(root); // NEW
+        rejectedEditPopover = root; // NEW
+        scheduleRejectedEditDismiss(); // NEW
+        return true; // NEW
+    } // NEW
+
     function openEmailDraft(emailDraft) { // NEW
         const bridge = window.trellisShare; // NEW
         if (!bridge || typeof bridge.openEmailDraft !== "function") { // NEW
@@ -2646,7 +2779,6 @@ Draw.loadPlugin(function (ui) {
     function showAuthStatus(message) { // NEW
         const text = String(message || ""); // NEW
         if (authStatusNode) authStatusNode.textContent = text; // NEW
-        showStatus(text); // NEW
     } // NEW
 
     function currentFileEditable() { // NEW
@@ -2688,7 +2820,7 @@ Draw.loadPlugin(function (ui) {
         return { row: label, checkbox }; // NEW
     } // NEW
 
-    function finishAuthSuccess(keepChecked, message) { // NEW
+    function finishAuthSuccess(keepChecked) { // CHANGE
         const user = currentUser(); // NEW
         if (user) { // NEW
             if (keepChecked) rememberLogin(user.id, true); // NEW
@@ -2697,7 +2829,6 @@ Draw.loadPlugin(function (ui) {
         closeAuthOverlay(true); // NEW
         refreshPanel(); // NEW
         updateToolbarButton(); // NEW
-        if (message) showStatus(message); // NEW
     } // NEW
 
     function appendAuthLoginForm(parent) { // NEW
@@ -2715,10 +2846,10 @@ Draw.loadPlugin(function (ui) {
         const keep = authKeepRow(); // NEW
         parent.appendChild(keep.row); // NEW
         const action = makeButton(canBootstrapAdmin() ? "Create Admin" : "Login", function () { // NEW
-            const result = login(name.value, pin.value); // NEW
+            const result = loginState(name.value, pin.value); // CHANGE
             pin.value = ""; // NEW
             if (!result.ok) { showAuthStatus(result.reason); return; } // NEW
-            finishAuthSuccess(keep.checkbox.checked, result.user && result.user.name ? "Logged in as " + result.user.name + "." : "Logged in."); // NEW
+            finishAuthSuccess(keep.checkbox.checked); // CHANGE
         }); // NEW
         parent.appendChild(action); // NEW
     } // NEW
@@ -2738,10 +2869,10 @@ Draw.loadPlugin(function (ui) {
         const keep = authKeepRow(); // NEW
         parent.appendChild(keep.row); // NEW
         parent.appendChild(makeButton("Enable Users", function () { // NEW
-            const result = enableUsers(name.value, pin.value); // NEW
+            const result = enableUsersState(name.value, pin.value); // CHANGE
             pin.value = ""; // NEW
             if (!result.ok) { showAuthStatus(result.reason); return; } // NEW
-            finishAuthSuccess(keep.checkbox.checked, "Users enabled. Logged in as " + result.user.name + "."); // NEW
+            finishAuthSuccess(keep.checkbox.checked); // CHANGE
         })); // NEW
     } // NEW
 
@@ -2766,10 +2897,10 @@ Draw.loadPlugin(function (ui) {
         const keep = authKeepRow(); // NEW
         box.appendChild(keep.row); // NEW
         box.appendChild(makeButton("Accept Invite", function () { // NEW
-            const result = acceptInvite({ email: email.value, code: code.value, name: name.value, pin: pin.value }); // NEW
+            const result = acceptInviteState({ email: email.value, code: code.value, name: name.value, pin: pin.value }); // CHANGE
             pin.value = ""; // NEW
             if (!result.ok) { showAuthStatus(result.reason); return; } // NEW
-            finishAuthSuccess(keep.checkbox.checked, "Invite accepted. Logged in as " + result.user.name + "."); // NEW
+            finishAuthSuccess(keep.checkbox.checked); // CHANGE
         })); // NEW
         parent.appendChild(box); // NEW
     } // NEW
@@ -2777,9 +2908,14 @@ Draw.loadPlugin(function (ui) {
     function showAuthDialog(options) { // NEW
         if (typeof document === "undefined") return { ok: false, reason: "Document UI is unavailable." }; // NEW
         closeAccountMenu(); // NEW
-        closeAuthOverlay(false); // NEW
         const source = options || {}; // NEW
         const blocking = !!source.blocking; // NEW
+        if (authOverlay && authOverlay.parentNode) { // NEW
+            if (authStatusNode) authStatusNode.textContent = source.message || (isEnabled() ? "Log in to open this diagram." : "Enable users for this diagram."); // NEW
+            if (blocking) setGraphAuthBlocked(true); // NEW
+            return { ok: true }; // NEW
+        } // NEW
+        closeAuthOverlay(false); // CHANGE
         const host = document.body || (graph.container && (graph.container.parentNode || graph.container)); // NEW
         if (!host) return { ok: false, reason: "Auth host is unavailable." }; // NEW
         authOverlay = document.createElement("div"); // NEW
@@ -3372,6 +3508,28 @@ Draw.loadPlugin(function (ui) {
         return presetLabel("visitor"); // NEW
     } // NEW
 
+    function currentAccessGrantForSummary(summary) { // NEW
+        const user = currentUser(); // NEW
+        if (!user || !summary) return null; // NEW
+        return (summary.directGrants || []).find(function (grant) { return grant.userId === user.id; }) || summary.inheritedAccessGrant || null; // NEW
+    } // NEW
+
+    function hasEffectiveAccessForSummary(summary) { // NEW
+        return !!(currentAccessGrantForSummary(summary) || (summary && summary.effectiveCapabilities && summary.effectiveCapabilities.length)); // NEW
+    } // NEW
+
+    function effectiveAccessDisplayLabel(summary) { // NEW
+        const grant = currentAccessGrantForSummary(summary); // NEW
+        return grant ? presetLabel(grant.preset) : effectiveAccessLabel(summary && summary.effectiveCapabilities); // NEW
+    } // NEW
+
+    function selectedAccessDetailText(summary) { // NEW
+        if (summary.canManageAccess) return "Select a module, garden bed, or task board to manage grants."; // NEW
+        if (summary.canEdit) return "You can edit this cell."; // NEW
+        if (hasEffectiveAccessForSummary(summary)) return "You have " + effectiveAccessDisplayLabel(summary) + " access here, but this selected cell is not directly editable."; // NEW
+        return "You do not have access to this cell."; // NEW
+    } // NEW
+
     function accessDisplayForUser(cell, summary, user) { // NEW
         const directGrant = grantForUser(summary, user.id); // NEW
         const directlyGranted = summary.directUserIds.indexOf(user.id) >= 0; // NEW
@@ -3488,9 +3646,10 @@ Draw.loadPlugin(function (ui) {
         note.focus(); // NEW
     } // NEW
 
-    function appendRequesterAccessRequestStatus(parent, cell) { // NEW
+    function appendRequesterAccessRequestStatus(parent, cell, decisionStatusVisible) { // CHANGE
         const request = getAccessRequestForCurrentUser(cell); // NEW
         if (!request) return; // NEW
+        if (decisionStatusVisible && request.status === "denied") return; // NEW
         const status = document.createElement("div"); // NEW
         status.className = "trellis-users-access-request-status"; // NEW
         status.style.cssText = "border:1px solid " + (request.status === "denied" ? "#FCA5A5" : "#FDE68A") + ";background:" + (request.status === "denied" ? "#FEF2F2" : "#FFFBEB") + ";color:#374151;border-radius:3px;padding:5px 6px;margin:6px 0;line-height:16px;"; // NEW
@@ -3498,6 +3657,29 @@ Draw.loadPlugin(function (ui) {
         status.textContent += " (" + presetLabel(request.requestedPreset) + ")."; // NEW
         if (request.status === "denied" && request.decisionNote) status.textContent += " " + request.decisionNote; // NEW
         parent.appendChild(status); // NEW
+    } // NEW
+
+    function latestAccessMessageForCell(cell) { // NEW
+        const scope = accessRequestScopeSummary(cell); // NEW
+        const messages = listAccessMessages({ scopeCell: scope ? scope.cell : cell }); // NEW
+        if (!messages.length) return null; // NEW
+        const unread = messages.filter(function (message) { return message.unread; }); // NEW
+        const candidates = unread.length ? unread : messages; // NEW
+        candidates.sort(function (left, right) { return Number(right.createdAt || 0) - Number(left.createdAt || 0); }); // NEW
+        return candidates[0] || null; // NEW
+    } // NEW
+
+    function appendRequesterAccessDecisionStatus(parent, cell) { // NEW
+        const message = latestAccessMessageForCell(cell); // NEW
+        if (!message) return false; // NEW
+        const approved = message.decision !== "denied"; // NEW
+        const status = document.createElement("div"); // NEW
+        status.className = "trellis-users-access-decision-status"; // NEW
+        status.style.cssText = "border:1px solid " + (approved ? "#86EFAC" : "#FCA5A5") + ";background:" + (approved ? "#F0FDF4" : "#FEF2F2") + ";color:#374151;border-radius:3px;padding:5px 6px;margin:6px 0;line-height:16px;"; // NEW
+        status.textContent = "Access " + (approved ? "approved" : "denied") + " (" + presetLabel(message.preset) + ")."; // NEW
+        if (message.note) status.textContent += " " + message.note; // NEW
+        parent.appendChild(status); // NEW
+        return true; // NEW
     } // NEW
 
     function openMessagesDialog(options) { // NEW
@@ -3653,7 +3835,7 @@ Draw.loadPlugin(function (ui) {
         if (!summary.canManageScopeGrants) { // CHANGE
             const caps = document.createElement("div"); // NEW
             caps.style.cssText = "color:#4B5563;margin:4px 0;"; // NEW
-            caps.textContent = "Your effective access: " + effectiveAccessLabel(summary.effectiveCapabilities); // NEW
+            caps.textContent = "Your effective access: " + (hasEffectiveAccessForSummary(summary) ? effectiveAccessDisplayLabel(summary) : "None"); // CHANGE
             box.appendChild(caps); // NEW
             if (summary.inheritedAccessSource) { // NEW
                 const inherited = document.createElement("div"); // NEW
@@ -3661,13 +3843,14 @@ Draw.loadPlugin(function (ui) {
                 inherited.textContent = inheritedLabel(summary.inheritedAccessSource, summary.inheritedAccessGrant); // CHANGE
                 box.appendChild(inherited); // NEW
             } // NEW
+            const decisionStatusVisible = appendRequesterAccessDecisionStatus(box, cell); // NEW
             const denied = document.createElement("div");
             denied.style.color = "#6B7280";
-            denied.textContent = summary.canManageAccess ? "Select a module, garden bed, or task board to manage grants." : (summary.canEdit ? "You can edit this cell." : "You do not have access to this cell."); // CHANGE
+            denied.textContent = selectedAccessDetailText(summary); // CHANGE
             box.appendChild(denied);
             if (!summary.canEdit) { // NEW
-                appendRequesterAccessRequestStatus(box, cell); // NEW
-                const requestButton = makeButton("Request Access", function () { openAccessRequestDialog(cell); }); // NEW
+                appendRequesterAccessRequestStatus(box, cell, decisionStatusVisible); // CHANGE
+                const requestButton = makeButton(hasEffectiveAccessForSummary(summary) ? "Request More Access" : "Request Access", function () { openAccessRequestDialog(cell); }); // CHANGE
                 requestButton.className = "trellis-users-request-access-button"; // NEW
                 box.appendChild(requestButton); // NEW
             } // NEW
@@ -3808,6 +3991,14 @@ Draw.loadPlugin(function (ui) {
         }, 0);
     }
 
+    function installRejectedEditPointerTracking() { // NEW
+        const container = graph && graph.container; // NEW
+        if (!container || !container.addEventListener) return; // NEW
+        container.addEventListener("pointermove", rememberGraphPointerPoint, true); // NEW
+        container.addEventListener("mousemove", rememberGraphPointerPoint, true); // NEW
+        container.addEventListener("mousedown", rememberGraphPointerPoint, true); // NEW
+    } // NEW
+
     model.addListener(mxEvent.CHANGE, inspectModelChange);
     if (graph.addListener && mxEvent && mxEvent.ADD_CELLS) graph.addListener(mxEvent.ADD_CELLS, function (_sender, evt) { // NEW
         const cells = evt && evt.getProperty ? (evt.getProperty("cells") || []) : []; // NEW
@@ -3821,6 +4012,7 @@ Draw.loadPlugin(function (ui) {
     installToolbarButton(); // NEW
     installFileLoadedGate(); // NEW
     installGraphXmlLoadGuard(); // NEW
+    installRejectedEditPointerTracking(); // NEW
     promptLoginIfNeeded();
 
     window.Trellis = window.Trellis || {};
@@ -3932,7 +4124,9 @@ Draw.loadPlugin(function (ui) {
             applyAuthGateIfNeeded, // CHANGE
             stampActorDirect, // NEW
             stampActorIntoEdit, // NEW
-            refreshPanel // NEW
+            refreshPanel, // CHANGE
+            closeRejectedEditPopover, // CHANGE
+            showRejectedEditPopover // NEW
         }
     };
     graph.__trellisUsers = window.Trellis.users;

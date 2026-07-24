@@ -117,12 +117,28 @@ test('scheduler sibling plant groups clone footprint and attrs without reusing s
     const source = readPlantTilerSource(); // ADDED
     const helperSource = sourceSlice(source, 'function createSiblingTilerGroupFromSource', 'function computeGridStatsXY'); // ADDED
     assert.match(helperSource, /const geometry = sourceGeo\.clone \? sourceGeo\.clone\(\) : new mxGeometry\(sourceGeo\.x, sourceGeo\.y, sourceGeo\.width, sourceGeo\.height\);/); // CHANGED
+    assert.match(helperSource, /const offsetCm = opts\.layoutOffsetCm \|\| opts\.offsetCm \|\| null;/); // ADDED
+    assert.match(helperSource, /geometry\.x = Number\(geometry\.x \|\| 0\) \+ offsetXPx;/); // ADDED
+    assert.match(helperSource, /attrs\.companion_layout_clamped = "1";/); // ADDED
     assert.match(helperSource, /const group = new mxCell\(value, geometry, style \|\| groupFrameStyle\(\)\);/); // CHANGED
     assert.match(helperSource, /group\.setVertex\(true\);/); // ADDED
     assert.match(helperSource, /activeGraphArg\.addCell\(group, parent\);/); // CHANGED
     assert.match(helperSource, /reorderModuleChildrenForLayering\(model, parent\);/); // CHANGED
     assert.doesNotMatch(helperSource, /group\.id\s*=\s*sourceCell\.id/); // ADDED
     assert.match(source, /createSiblingTilerGroupFromSource \/\/ ADDED/); // ADDED
+}); // ADDED
+
+test('interplant companion groups offset alternating tile slots during retile', () => { // ADDED
+    const source = readPlantTilerSource(); // ADDED
+    const slotSource = sourceSlice(source, 'function logicalSlotCenterLocal', 'function geometryFromVisualCenter'); // ADDED
+    const expandSource = sourceSlice(source, 'function expandTiles', 'function hasTileRC'); // ADDED
+    assert.match(slotSource, /function isInterplantLayoutGroup\(groupCell\)/); // ADDED
+    assert.match(slotSource, /getXmlAttr\(groupCell, "companion_layout_interplant", ""\) === "1"/); // ADDED
+    assert.match(slotSource, /function interplantSlotCenterLocal\(groupCell, r, c, spacingXpx, spacingYpx, bandPx\)/); // ADDED
+    assert.match(slotSource, /if \(\(r \+ c\) % 2 !== 0\) return center;/); // ADDED
+    assert.match(slotSource, /x: Math\.min\(maxX, center\.x \+ spacingXpx \/ 2\)/); // ADDED
+    assert.match(slotSource, /const logical = interplantSlotCenterLocal\(groupCell, r, c, spacingXpx, spacingYpx, bandPx\);/); // ADDED
+    assert.match(expandSource, /tileGeometryAtSlot\(groupCell, r, c, spacingXpx, spacingYpx, iconDiamPx, bandPx\)/); // ADDED
 }); // ADDED
 
 test('Bed fit diagnostics expose a self-verifying debug surface', () => { // NEW
@@ -153,6 +169,47 @@ test('Bed fit centers only fitted axes after plant group resize', () => { // NEW
     assert.doesNotMatch(fitSource, /positionGeometryForLocalPoint\(next, frameCenter, bedCenter, bedRotation\);/); // NEW
     assert.doesNotMatch(trimSource, /positionGeometryForLocalPoint\(next, localPlantCenter, bedCenter, getTilerRotationDeg\(bed\)\);/); // NEW
     assert.match(fitSource, /if \(!fitWidth && !fitHeight\) \{[\s\S]*reason: "not-close-enough"[\s\S]*return null;/); // NEW
+}); // NEW
+
+test('Bed fit persists per-axis intent and bed resize consumes only persisted axes', () => { // NEW
+    const source = readPlantTilerSource(); // NEW
+    const fitSource = sourceSlice(source, 'function applyBedFitGeometry', 'function retileAfterBedFit'); // NEW
+    const normalizeSource = sourceSlice(source, 'function normalizeMovedTilerGroupsToBeds', 'function retileAndFitToContainingBed'); // NEW
+    const listenerSource = sourceSlice(source, 'function installBedAutoFitListeners', 'function minGroupSizePx'); // NEW
+
+    assert.match(source, /const BED_FIT_WIDTH_ATTR = "bed_fit_width";/); // NEW
+    assert.match(source, /const BED_FIT_HEIGHT_ATTR = "bed_fit_height";/); // NEW
+    assert.match(source, /function bedFitAxesForGroup\(groupCell\)/); // NEW
+    assert.match(source, /function writeBedFitAxesNoTxn\(model, groupCell, fitWidth, fitHeight\)/); // NEW
+    assert.match(fitSource, /const usePersistedFitAxes = !!\(debugCtx && debugCtx\.usePersistedFitAxes\);/); // NEW
+    assert.match(fitSource, /const fitWidth = usePersistedFitAxes \? forcedFitWidth : \(widthClose \|\| canDragFit\);/); // NEW
+    assert.match(fitSource, /const fitHeight = usePersistedFitAxes \? forcedFitHeight : \(heightClose \|\| canDragFit\);/); // NEW
+    assert.match(fitSource, /if \(persistAxisIntent\) writeBedFitAxesNoTxn\(model, tg, fitWidth, fitHeight\);/); // NEW
+    assert.match(fitSource, /if \(persistAxisIntent\) writeBedFitAxesNoTxn\(model, tg, false, false\);/); // NEW
+    assert.match(normalizeSource, /const persistAxisIntent = !!\(opts && opts\.persistAxisIntent\);/); // NEW
+    assert.match(listenerSource, /source: "cells-moved"[\s\S]*persistAxisIntent: true/); // NEW
+    assert.match(listenerSource, /source: "cells-resized"[\s\S]*persistAxisIntent: true[\s\S]*clearFitAxisIntentOnNoBed: true/); // NEW
+}); // NEW
+
+test('Garden bed resize refits before-contained groups without capturing expanded-bed neighbors', () => { // NEW
+    const source = readPlantTilerSource(); // NEW
+    const snapshotSource = sourceSlice(source, 'function buildBedResizeSnapshot', 'function collectBedResizeSnapshots'); // NEW
+    const refitSource = sourceSlice(source, 'function refitGroupsForResizedBeds', '// -------------------- Resize'); // NEW
+    const wrapperSource = sourceSlice(source, 'function installResizeCellsWrapper', '// ---- Public API export'); // NEW
+
+    assert.match(snapshotSource, /const previousRect = getModelRect\(bed\);/); // NEW
+    assert.match(snapshotSource, /const previousRotatedRect = rotatedRectForModelRect\(bed, previousRect\);/); // NEW
+    assert.match(snapshotSource, /child\.getAttribute\(BED_AUTO_FIT_ATTR\) === "0"/); // NEW
+    assert.match(snapshotSource, /const axes = bedFitAxesForGroup\(child\);[\s\S]*if \(!axes\.fitWidth && !axes\.fitHeight\) continue;/); // NEW
+    assert.match(snapshotSource, /if \(!pointInRotatedRectModel\(center, previousRotatedRect\)\) continue;/); // NEW
+    assert.match(refitSource, /usePersistedFitAxes: true/); // NEW
+    assert.match(refitSource, /forceFitWidth: !!\(item\.axes && item\.axes\.fitWidth\)/); // NEW
+    assert.match(refitSource, /forceFitHeight: !!\(item\.axes && item\.axes\.fitHeight\)/); // NEW
+    assert.match(refitSource, /retileAfterBedFit\(item\.tg/); // NEW
+    assert.match(refitSource, /trimGroupToPlantFootprint\(item\.tg, item\.bed, bbox, item\.fitWidth, item\.fitHeight/); // NEW
+    assert.match(wrapperSource, /const bedSnapshots = collectBedResizeSnapshots\(cells\);/); // NEW
+    assert.match(wrapperSource, /const hasResizedBeds = bedSnapshots\.size > 0;/); // NEW
+    assert.match(wrapperSource, /refitGroupsForResizedBeds\(bedSnapshots, \{ source: "bed-resized", inTransaction: true, txnId: bedResizeTxnId \}\);/); // NEW
 }); // NEW
 
 test('Garden module overlay plant group add no longer runs a second post-creation bed fit', () => { // NEW

@@ -12,6 +12,7 @@ from .schema import (
     CITY_COLUMNS,
     CITY_GEO_IDENTITY_COLUMNS,  # ADDED
     COMPANION_COLUMNS,  # ADDED
+    COMPANION_LAYOUT_TEMPLATES,  # ADDED
     GENERATED_TABLES,
     PLANTING_WINDOW_CONFIDENCE,
     PLANTING_WINDOW_REFERENCE_COLUMNS,
@@ -235,6 +236,15 @@ def validate_row(
                 int(row.get(key))
             except (TypeError, ValueError):
                 errors.append(f"{prefix}.{key} must be an integer when provided.")  # ADDED
+        if row.get("layout_template") not in (None, "") and str(row.get("layout_template")).strip().casefold() not in COMPANION_LAYOUT_TEMPLATES:  # ADDED
+            errors.append(f"{prefix}.layout_template must be one of {sorted(COMPANION_LAYOUT_TEMPLATES)}.")  # ADDED
+        for key in ("layout_spacing_x_cm", "layout_spacing_y_cm", "layout_offset_x_cm", "layout_offset_y_cm"):  # ADDED
+            if row.get(key) in (None, ""):
+                continue
+            try:
+                float(row.get(key))
+            except (TypeError, ValueError):
+                errors.append(f"{prefix}.{key} must be a number when provided.")  # ADDED
     elif table == "PlantVarieties":
         unknown = sorted(set(row) - PLANT_VARIETY_COLUMNS)  # ADDED
         if unknown:

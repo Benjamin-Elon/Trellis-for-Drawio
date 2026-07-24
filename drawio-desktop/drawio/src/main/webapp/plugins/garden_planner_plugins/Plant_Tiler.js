@@ -63,6 +63,8 @@ Draw.loadPlugin(function (ui) {
     const BED_FIT_RESIZE_SUPPRESS_MS = 250; // CHANGE
     const EDGE_CIRCLE_CENTER_CONTAINED_PCT = 0.40; // MOVED
     const BED_AUTO_FIT_ATTR = "bed_auto_fit"; // MOVED
+    const BED_FIT_WIDTH_ATTR = "bed_fit_width"; // NEW
+    const BED_FIT_HEIGHT_ATTR = "bed_fit_height"; // NEW
 
 
     // -------------------- Debug helper ------------------
@@ -833,12 +835,29 @@ Draw.loadPlugin(function (ui) {
         }; // NEW
     } // NEW
 
+    function isInterplantLayoutGroup(groupCell) { // ADDED
+        return getXmlAttr(groupCell, "companion_layout_interplant", "") === "1" || getXmlAttr(groupCell, "companion_layout_template", "") === "interplant"; // ADDED
+    } // ADDED
+
+    function interplantSlotCenterLocal(groupCell, r, c, spacingXpx, spacingYpx, bandPx) { // ADDED
+        const center = logicalSlotCenterLocal(r, c, spacingXpx, spacingYpx, bandPx); // ADDED
+        if (!isInterplantLayoutGroup(groupCell)) return center; // ADDED
+        if ((r + c) % 2 !== 0) return center; // ADDED
+        const geo = groupCell && groupCell.getGeometry ? groupCell.getGeometry() : null; // ADDED
+        const maxX = Math.max(GROUP_PADDING_PX, Number(geo?.width || 0) - GROUP_PADDING_PX); // ADDED
+        const maxY = Math.max(GROUP_PADDING_PX + (bandPx || GROUP_LABEL_BAND_PX), Number(geo?.height || 0) - GROUP_PADDING_PX); // ADDED
+        return { // ADDED
+            x: Math.min(maxX, center.x + spacingXpx / 2), // ADDED
+            y: Math.min(maxY, center.y + spacingYpx / 2) // ADDED
+        }; // ADDED
+    } // ADDED
+
     function visualCenterFromLogicalCenter(groupCell, logicalCenter, rotationDeg) { // NEW
         return rotatePointAround(logicalCenter, groupCenterLocal(groupCell), rotationDeg); // NEW
     } // NEW
 
     function visualSlotCenterLocal(groupCell, r, c, spacingXpx, spacingYpx, bandPx) { // NEW
-        const logical = logicalSlotCenterLocal(r, c, spacingXpx, spacingYpx, bandPx); // NEW
+        const logical = interplantSlotCenterLocal(groupCell, r, c, spacingXpx, spacingYpx, bandPx); // CHANGED
         return visualCenterFromLogicalCenter(groupCell, logical, getTilerRotationDeg(groupCell)); // NEW
     } // NEW
 
@@ -2727,6 +2746,21 @@ Draw.loadPlugin(function (ui) {
         bedFitSuppressResizeUntil = bedFitSuppressResizeIds.size ? Date.now() + BED_FIT_RESIZE_SUPPRESS_MS : 0; // CHANGE
     } // CHANGE
 
+    function bedFitAxesForGroup(groupCell) { // NEW
+        return { // NEW
+            fitWidth: !!(groupCell && groupCell.getAttribute && groupCell.getAttribute(BED_FIT_WIDTH_ATTR) === "1"), // NEW
+            fitHeight: !!(groupCell && groupCell.getAttribute && groupCell.getAttribute(BED_FIT_HEIGHT_ATTR) === "1") // NEW
+        }; // NEW
+    } // NEW
+
+    function writeBedFitAxesNoTxn(model, groupCell, fitWidth, fitHeight) { // NEW
+        if (!model || !groupCell || !isTilerGroup(groupCell)) return; // NEW
+        setCellAttrsNoTxn(model, groupCell, { // NEW
+            [BED_FIT_WIDTH_ATTR]: fitWidth ? "1" : "0", // NEW
+            [BED_FIT_HEIGHT_ATTR]: fitHeight ? "1" : "0" // NEW
+        }); // NEW
+    } // NEW
+
     function shouldSuppressBedFitResize(source, groups) { // CHANGE
         if (source !== "cells-resized" || !bedFitSuppressResizeIds.size) return false; // CHANGE
         if (Date.now() > bedFitSuppressResizeUntil) { // CHANGE
@@ -2752,6 +2786,13 @@ Draw.loadPlugin(function (ui) {
         return rect ? Math.max(0, rect.w) * Math.max(0, rect.h) : 0; // MOVED
     } // MOVED
 
+    function rotatedRectForModelRect(cell, rect) { // NEW
+        if (!cell || !rect || rect.w <= 0 || rect.h <= 0) return null; // NEW
+        const center = rectCenterModel(rect); // NEW
+        const angleDeg = getTilerRotationDeg(cell); // NEW
+        return { x: rect.x, y: rect.y, w: rect.w, h: rect.h, cx: center.x, cy: center.y, center, angleDeg, angleRad: toRad(angleDeg) }; // NEW
+    } // NEW
+
     function rotateModelPoint(point, center, angleRad) { // MOVED
         const dx = point.x - center.x; // MOVED
         const dy = point.y - center.y; // MOVED
@@ -2762,10 +2803,7 @@ Draw.loadPlugin(function (ui) {
 
     function getRotatedRectModel(cell) { // MOVED
         const rect = getModelRect(cell); // MOVED
-        if (!rect || rect.w <= 0 || rect.h <= 0) return null; // MOVED
-        const center = rectCenterModel(rect); // MOVED
-        const angleDeg = getTilerRotationDeg(cell); // MOVED
-        return { x: rect.x, y: rect.y, w: rect.w, h: rect.h, cx: center.x, cy: center.y, center, angleDeg, angleRad: toRad(angleDeg) }; // MOVED
+        return rotatedRectForModelRect(cell, rect); // CHANGE
     } // MOVED
 
     function pointInRotatedRectModel(point, rotatedRect) { // MOVED
@@ -3079,6 +3117,8 @@ Draw.loadPlugin(function (ui) {
 
     function applyBedFitGeometry(tg, bed, allowDragIntoBedFit, debugCtx) { // CHANGE
         const ignoreBedAutoFit = !!(debugCtx && debugCtx.ignoreBedAutoFit); // CHANGE
+        const persistAxisIntent = !!(debugCtx && debugCtx.persistAxisIntent); // NEW
+        const usePersistedFitAxes = !!(debugCtx && debugCtx.usePersistedFitAxes); // NEW
         if (!tg || !bed || (!ignoreBedAutoFit && tg.getAttribute(BED_AUTO_FIT_ATTR) === "0")) { // CHANGE
             bedFitLog("fit-skip", { // CHANGE
                 txnId: debugCtx && debugCtx.txnId, // CHANGE
@@ -3111,9 +3151,12 @@ Draw.loadPlugin(function (ui) {
         const widthClose = Math.abs(frameRect.w - targetFrameWidth) <= bedRect.w * BED_FIT_TOLERANCE; // MOVED
         const heightClose = Math.abs(frameRect.h - targetFrameHeight) <= bedRect.h * BED_FIT_TOLERANCE; // MOVED
         const canDragFit = allowDragIntoBedFit && diameter < bedRect.w && diameter < bedRect.h; // MOVED
-        const fitWidth = widthClose || canDragFit; // MOVED
-        const fitHeight = heightClose || canDragFit; // MOVED
+        const forcedFitWidth = !!(debugCtx && debugCtx.forceFitWidth); // NEW
+        const forcedFitHeight = !!(debugCtx && debugCtx.forceFitHeight); // NEW
+        const fitWidth = usePersistedFitAxes ? forcedFitWidth : (widthClose || canDragFit); // CHANGE
+        const fitHeight = usePersistedFitAxes ? forcedFitHeight : (heightClose || canDragFit); // CHANGE
         if (!fitWidth && !fitHeight) { // CHANGE
+            if (persistAxisIntent) writeBedFitAxesNoTxn(model, tg, false, false); // NEW
             bedFitLog("fit-skip", { // CHANGE
                 txnId: debugCtx && debugCtx.txnId, // CHANGE
                 groupId: bedFitCellId(tg), // CHANGE
@@ -3126,7 +3169,10 @@ Draw.loadPlugin(function (ui) {
                 targetFrameHeight: bedFitRound(targetFrameHeight), // CHANGE
                 widthClose, // CHANGE
                 heightClose, // CHANGE
-                canDragFit // CHANGE
+                canDragFit, // CHANGE
+                usePersistedFitAxes, // NEW
+                forcedFitWidth, // NEW
+                forcedFitHeight // NEW
             }); // CHANGE
             return null; // CHANGE
         } // CHANGE
@@ -3148,6 +3194,7 @@ Draw.loadPlugin(function (ui) {
         positionGeometryForLocalPointAxisAware(next, frameCenter, bedCenter, bedRotation, fitWidth, fitHeight); // CHANGE
         const geometryChanged = !(nearlySameNumber(g.x, next.x) && nearlySameNumber(g.y, next.y) && nearlySameNumber(g.width, next.width) && nearlySameNumber(g.height, next.height)); // MOVED
         const rotationChanged = setCellRotationDeg(tg, bedRotation); // MOVED
+        if (persistAxisIntent) writeBedFitAxesNoTxn(model, tg, fitWidth, fitHeight); // NEW
         if (geometryChanged) model.setGeometry(tg, next); // MOVED
         const afterBandPx = groupLabelMetrics(tg).bandPx; // CHANGE
         const bandDeltaY = (Number(afterBandPx) || 0) - (Number(beforeBandPx) || 0); // CHANGE
@@ -3169,6 +3216,9 @@ Draw.loadPlugin(function (ui) {
             widthClose, // CHANGE
             heightClose, // CHANGE
             canDragFit, // CHANGE
+            usePersistedFitAxes, // NEW
+            forcedFitWidth, // NEW
+            forcedFitHeight, // NEW
             fitWidth, // CHANGE
             fitHeight, // CHANGE
             beforeRotation: bedFitRound(beforeRotation), // CHANGE
@@ -3263,6 +3313,8 @@ Draw.loadPlugin(function (ui) {
         const model = graph.getModel(); // MOVED
         const allowDragIntoBedFit = !!(opts && opts.allowDragIntoBedFit); // MOVED
         const skipSameBedMoveFit = !!(opts && opts.skipSameBedMoveFit); // MOVED
+        const persistAxisIntent = !!(opts && opts.persistAxisIntent); // NEW
+        const clearFitAxisIntentOnNoBed = !!(opts && opts.clearFitAxisIntentOnNoBed); // NEW
         const moveDx = finiteMoveDelta(opts && opts.moveDx); // MOVED
         const moveDy = finiteMoveDelta(opts && opts.moveDy); // MOVED
         const changed = []; // MOVED
@@ -3272,6 +3324,8 @@ Draw.loadPlugin(function (ui) {
             source, // CHANGE
             allowDragIntoBedFit, // CHANGE
             skipSameBedMoveFit, // CHANGE
+            persistAxisIntent, // NEW
+            clearFitAxisIntentOnNoBed, // NEW
             moveDx: bedFitRound(moveDx), // CHANGE
             moveDy: bedFitRound(moveDy), // CHANGE
             movedCellIds: movedCells.map(bedFitCellId), // CHANGE
@@ -3302,7 +3356,8 @@ Draw.loadPlugin(function (ui) {
                     skipReason: sameBedMove ? "same-bed-move" : "" // CHANGE
                 }); // CHANGE
                 if (sameBedMove) continue; // CHANGE
-                const fitResult = applyBedFitGeometry(tg, bed, allowDragIntoBedFit, { txnId, source }); // CHANGE
+                if (!bed && persistAxisIntent && clearFitAxisIntentOnNoBed && tg.getAttribute(BED_AUTO_FIT_ATTR) !== "0") writeBedFitAxesNoTxn(model, tg, false, false); // NEW
+                const fitResult = applyBedFitGeometry(tg, bed, allowDragIntoBedFit, { txnId, source, persistAxisIntent }); // CHANGE
                 if (fitResult) changed.push({ // CHANGE
                     tg: tg, // CHANGE
                     bed: fitResult.bed, // CHANGE
@@ -3374,7 +3429,7 @@ Draw.loadPlugin(function (ui) {
             const bed = findSmallestContainingBedModel(parent, center); // CHANGE
             bedFitLog("retile-fit-bed-resolve", { txnId, source, groupId: bedFitCellId(groupCell), parentId: bedFitCellId(parent), bedId: bedFitCellId(bed), center: center ? { x: bedFitRound(center.x), y: bedFitRound(center.y) } : null }); // NEW
             if (!bed) { result = { changed: false, fitted: false, reason: "no-containing-bed" }; return result; } // CHANGE
-            fitResult = applyBedFitGeometry(groupCell, bed, true, { txnId, source, ignoreBedAutoFit: true }); // CHANGE
+            fitResult = applyBedFitGeometry(groupCell, bed, true, { txnId, source, ignoreBedAutoFit: true, persistAxisIntent: true }); // CHANGE
             if (!fitResult) { result = { changed: false, fitted: false, reason: "fit-skipped", bed }; return result; } // CHANGE
             retileAfterBedFit(groupCell, { // CHANGE
                 txnId, // CHANGE
@@ -4407,6 +4462,28 @@ Draw.loadPlugin(function (ui) {
         const value = cloneXmlValueWithAttrs(sourceCell, attrs); // ADDED
         const style = typeof sourceCell.getStyle === "function" ? sourceCell.getStyle() : sourceCell.style; // ADDED
         const geometry = sourceGeo.clone ? sourceGeo.clone() : new mxGeometry(sourceGeo.x, sourceGeo.y, sourceGeo.width, sourceGeo.height); // ADDED
+        const offsetCm = opts.layoutOffsetCm || opts.offsetCm || null; // ADDED
+        const offsetXPx = Number.isFinite(Number(offsetCm && offsetCm.x)) ? toPx(Number(offsetCm.x)) : 0; // ADDED
+        const offsetYPx = Number.isFinite(Number(offsetCm && offsetCm.y)) ? toPx(Number(offsetCm.y)) : 0; // ADDED
+        let placementWarning = ""; // ADDED
+        if (offsetXPx || offsetYPx) { // ADDED
+            const parentGeo = parent.getGeometry && parent.getGeometry(); // ADDED
+            geometry.x = Number(geometry.x || 0) + offsetXPx; // ADDED
+            geometry.y = Number(geometry.y || 0) + offsetYPx; // ADDED
+            if (parentGeo) { // ADDED
+                const maxX = Math.max(0, Number(parentGeo.width || 0) - Number(geometry.width || 0)); // ADDED
+                const maxY = Math.max(0, Number(parentGeo.height || 0) - Number(geometry.height || 0)); // ADDED
+                const clampedX = clamp(geometry.x, 0, maxX); // ADDED
+                const clampedY = clamp(geometry.y, 0, maxY); // ADDED
+                if (Math.abs(clampedX - geometry.x) > 0.01 || Math.abs(clampedY - geometry.y) > 0.01) { // ADDED
+                    placementWarning = "Companion layout was clamped inside the garden module."; // ADDED
+                    attrs.companion_layout_clamped = "1"; // ADDED
+                    if (value && value.setAttribute) value.setAttribute("companion_layout_clamped", "1"); // ADDED
+                } // ADDED
+                geometry.x = clampedX; // ADDED
+                geometry.y = clampedY; // ADDED
+            } // ADDED
+        } // ADDED
         const group = new mxCell(value, geometry, style || groupFrameStyle()); // ADDED
         group.setVertex(true); // ADDED
         group.setConnectable(false); // ADDED
@@ -4420,6 +4497,7 @@ Draw.loadPlugin(function (ui) {
         } finally { // ADDED
             if (ownsUpdate) model.endUpdate(); // ADDED
         } // ADDED
+        if (placementWarning && typeof opts.onPlacementWarning === "function") opts.onPlacementWarning(placementWarning); // ADDED
         notifyTilerGroupCreated(activeGraphArg, group, creationSource); // ADDED
         return group; // ADDED
     } // ADDED
@@ -4812,6 +4890,7 @@ Draw.loadPlugin(function (ui) {
                 source: "cells-moved", // CHANGE
                 allowDragIntoBedFit: true, // MOVED
                 skipSameBedMoveFit: true, // MOVED
+                persistAxisIntent: true, // NEW
                 moveDx: evt.getProperty("dx"), // MOVED
                 moveDy: evt.getProperty("dy") // MOVED
             }); // MOVED
@@ -4819,7 +4898,7 @@ Draw.loadPlugin(function (ui) {
 
         graph.addListener(mxEvent.CELLS_RESIZED, function (_sender, evt) { // MOVED
             const cells = evt.getProperty("cells"); // MOVED
-            normalizeMovedTilerGroupsToBeds(cells, { source: "cells-resized", allowDragIntoBedFit: false }); // CHANGE
+            normalizeMovedTilerGroupsToBeds(cells, { source: "cells-resized", allowDragIntoBedFit: false, persistAxisIntent: true, clearFitAxisIntentOnNoBed: true }); // CHANGE
         }); // MOVED
     })(); // MOVED
 
@@ -5154,6 +5233,102 @@ Draw.loadPlugin(function (ui) {
         return { capacity: capacityCount, actual, disabledN };
     }
 
+    function buildBedResizeSnapshot(bed) { // NEW
+        if (!bed || !isGardenBed(bed)) return null; // NEW
+        const model = graph.getModel(); // NEW
+        const parent = model.getParent(bed); // NEW
+        const previousRect = getModelRect(bed); // NEW
+        const previousRotatedRect = rotatedRectForModelRect(bed, previousRect); // NEW
+        if (!parent || !previousRect || !previousRotatedRect) return null; // NEW
+        const targets = []; // NEW
+        const children = graph.getChildVertices(parent) || []; // NEW
+        for (const child of children) { // NEW
+            if (!child || !isTilerGroup(child) || child.getAttribute(BED_AUTO_FIT_ATTR) === "0") continue; // NEW
+            const axes = bedFitAxesForGroup(child); // NEW
+            if (!axes.fitWidth && !axes.fitHeight) continue; // NEW
+            const center = rectCenterModel(getModelRect(child)); // NEW
+            if (!pointInRotatedRectModel(center, previousRotatedRect)) continue; // NEW
+            targets.push({ tg: child, axes }); // NEW
+        } // NEW
+        return { bed, parent, previousRect, previousRotatedRect, previousArea: rectAreaModel(previousRect), targets }; // NEW
+    } // NEW
+
+    function collectBedResizeSnapshots(cells) { // NEW
+        const snapshots = new Map(); // NEW
+        for (const cell of (cells || [])) { // NEW
+            if (!cell || !cell.id || !isGardenBed(cell) || snapshots.has(cell.id)) continue; // NEW
+            const snapshot = buildBedResizeSnapshot(cell); // NEW
+            if (snapshot) snapshots.set(cell.id, snapshot); // NEW
+        } // NEW
+        return snapshots; // NEW
+    } // NEW
+
+    function refitGroupsForResizedBeds(bedSnapshots, opts) { // NEW
+        const source = (opts && opts.source) || "bed-resized"; // NEW
+        const txnId = (opts && opts.txnId) || ++bedFitTxnSeq; // NEW
+        const ownsTransaction = !(opts && opts.inTransaction); // NEW
+        const snapshots = Array.from((bedSnapshots && bedSnapshots.values) ? bedSnapshots.values() : (bedSnapshots || [])); // NEW
+        if (!snapshots.length || bedFitInProgress) { // NEW
+            bedFitLog("bed-resize-skip", { txnId, source, reason: !snapshots.length ? "no-beds" : "in-progress" }); // NEW
+            return { changed: [], trimmed: false }; // NEW
+        } // NEW
+        const model = graph.getModel(); // NEW
+        const targetByGroupId = new Map(); // NEW
+        for (const snap of snapshots) { // NEW
+            for (const target of (snap.targets || [])) { // NEW
+                const tg = target && target.tg; // NEW
+                if (!tg || !tg.id || !isTilerGroup(tg)) continue; // NEW
+                const previous = targetByGroupId.get(tg.id); // NEW
+                if (!previous || snap.previousArea < previous.previousArea) targetByGroupId.set(tg.id, { tg, bed: snap.bed, axes: target.axes, previousArea: snap.previousArea }); // NEW
+            } // NEW
+        } // NEW
+        if (!targetByGroupId.size) { // NEW
+            bedFitLog("bed-resize-skip", { txnId, source, reason: "no-fitted-groups", bedIds: snapshots.map(snap => bedFitCellId(snap.bed)) }); // NEW
+            return { changed: [], trimmed: false }; // NEW
+        } // NEW
+        const changed = []; // NEW
+        let trimmed = false; // NEW
+        bedFitLog("bed-resize-start", { txnId, source, bedIds: snapshots.map(snap => bedFitCellId(snap.bed)), groupIds: Array.from(targetByGroupId.values()).map(item => bedFitCellId(item.tg)) }); // NEW
+        bedFitInProgress = true; // NEW
+        if (ownsTransaction) model.beginUpdate(); // NEW
+        try { // NEW
+            for (const item of targetByGroupId.values()) { // NEW
+                const fitResult = applyBedFitGeometry(item.tg, item.bed, false, { // NEW
+                    txnId, // NEW
+                    source, // NEW
+                    usePersistedFitAxes: true, // NEW
+                    forceFitWidth: !!(item.axes && item.axes.fitWidth), // NEW
+                    forceFitHeight: !!(item.axes && item.axes.fitHeight) // NEW
+                }); // NEW
+                if (fitResult) changed.push({ // NEW
+                    tg: item.tg, // NEW
+                    bed: fitResult.bed, // NEW
+                    fitWidth: fitResult.fitWidth, // NEW
+                    fitHeight: fitResult.fitHeight, // NEW
+                    bedFitChanged: !!fitResult.changed, // NEW
+                    layoutSnapshot: fitResult.layoutSnapshot, // NEW
+                    previousRotationDeg: fitResult.previousRotationDeg // NEW
+                }); // NEW
+            } // NEW
+            for (const item of changed) retileAfterBedFit(item.tg, { // NEW
+                txnId, // NEW
+                source, // NEW
+                layoutSnapshot: item.layoutSnapshot, // NEW
+                previousRotationDeg: item.previousRotationDeg // NEW
+            }); // NEW
+            for (const item of changed) { // NEW
+                const bbox = getPlantCircleBBoxLogical(item.tg); // NEW
+                if (trimGroupToPlantFootprint(item.tg, item.bed, bbox, item.fitWidth, item.fitHeight, { txnId, source })) trimmed = true; // NEW
+            } // NEW
+        } finally { // NEW
+            if (ownsTransaction) model.endUpdate(); // NEW
+            bedFitInProgress = false; // NEW
+        } // NEW
+        if (trimmed || changed.some(item => item.bedFitChanged)) markBedFitResizeSuppression(changed); // NEW
+        bedFitLog("bed-resize-end", { txnId, source, changedCount: changed.length, trimmed }); // NEW
+        return { changed, trimmed }; // NEW
+    } // NEW
+
 
     // -------------------- Resize → Retile in SAME undo step --------------------
     (function installResizeCellsWrapper() {
@@ -5174,6 +5349,8 @@ Draw.loadPlugin(function (ui) {
             }
 
             const hasTiler = groups.size > 0;
+            const bedSnapshots = collectBedResizeSnapshots(cells); // NEW
+            const hasResizedBeds = bedSnapshots.size > 0; // NEW
 
             const snapshots = new Map(); // groupId -> { prev, spacingXpx, spacingYpx, iconDiamPx, bandPx, rotated, layoutSnapshot } // CHANGE
             for (const g of groups.values()) {
@@ -5186,18 +5363,19 @@ Draw.loadPlugin(function (ui) {
             }
 
             // During drag: do ONLY the geometry resize (lightweight)                         // CHANGED
-            if (duringResize || !hasTiler) {                                                 // CHANGED
+            if (duringResize || (!hasTiler && !hasResizedBeds)) {                            // CHANGE
                 return oldResizeCells.call(this, cells, bounds, hasTiler ? false : recurse); // CHANGED
             }
 
             // Mouse-up: make geometry resize + all follow-up edits ONE undoable change       // CHANGED
             let res;                                                                         // CHANGED
             const groupsNeedingRefresh = [];                                                 // CHANGED
+            const bedResizeTxnId = hasResizedBeds ? ++bedFitTxnSeq : null;                    // NEW
 
             model.beginUpdate();                                                             // CHANGED
             try {
                 // Geometry resize happens inside the SAME outer transaction                  // CHANGED
-                res = oldResizeCells.call(this, cells, bounds, false);                        // CHANGED
+                res = oldResizeCells.call(this, cells, bounds, hasTiler ? false : recurse);   // CHANGE
 
                 for (const g of groups.values()) {
                     const snap = snapshots.get(g.id);
@@ -5270,6 +5448,11 @@ Draw.loadPlugin(function (ui) {
 
                     groupsNeedingRefresh.push(g);
                 }
+
+                if (hasResizedBeds) { // NEW
+                    const bedFitResult = refitGroupsForResizedBeds(bedSnapshots, { source: "bed-resized", inTransaction: true, txnId: bedResizeTxnId }); // NEW
+                    for (const item of bedFitResult.changed || []) groupsNeedingRefresh.push(item.tg); // NEW
+                } // NEW
             } finally {
                 model.endUpdate();                                                           // CHANGED
             }

@@ -599,7 +599,9 @@ Draw.loadPlugin(function (ui) {
         chilling_stage: 'TEXT', // ADDED
         chilling_policy: 'TEXT', // ADDED
         killtemp_c: 'REAL', // ADDED
-        diagnostic_policy: 'TEXT' // ADDED
+        diagnostic_policy: 'TEXT', // CHANGED
+        spacing_x_cm: 'REAL', // ADDED
+        spacing_y_cm: 'REAL' // ADDED
     }); // ADDED
     const PHYSIOLOGY_CITY_COLUMNS = Object.freeze({ // CHANGED: scheduler owns lightweight city geography columns for grouped city selection.
         country_name: 'TEXT', // ADDED
@@ -607,10 +609,16 @@ Draw.loadPlugin(function (ui) {
         region_name: 'TEXT', // ADDED
         region_code: 'TEXT' // ADDED
     }); // CHANGED
+    const COMPANION_LAYOUT_TEMPLATES = Object.freeze(['beside', 'interplant', 'staggered']); // ADDED
     const COMPANION_TIMING_COLUMNS = Object.freeze({ // ADDED
         source_plant_id: 'INTEGER', // ADDED
         companion_plant_id: 'INTEGER', // ADDED
-        start_offset_days: 'INTEGER' // ADDED
+        start_offset_days: 'INTEGER', // CHANGED
+        layout_template: 'TEXT', // ADDED
+        layout_spacing_x_cm: 'REAL', // ADDED
+        layout_spacing_y_cm: 'REAL', // ADDED
+        layout_offset_x_cm: 'REAL', // ADDED
+        layout_offset_y_cm: 'REAL' // ADDED
     }); // ADDED
     let schedulerPhysiologySchemaEnsured = false; // ADDED
 
@@ -630,6 +638,14 @@ Draw.loadPlugin(function (ui) {
             await ensureTableColumns(dbId, 'Plants', PHYSIOLOGY_PLANT_COLUMNS); // ADDED
             await ensureTableColumns(dbId, 'Cities', PHYSIOLOGY_CITY_COLUMNS); // ADDED
             await ensureTableColumns(dbId, 'Companions', COMPANION_TIMING_COLUMNS); // ADDED
+            await execRunOnDb(dbId, `CREATE TABLE IF NOT EXISTS CompanionLayoutGroupDefaults (
+                group_default_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                plant_set_key TEXT NOT NULL,
+                anchor_plant_id INTEGER NOT NULL,
+                layout_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(plant_set_key, anchor_plant_id)
+            );`, []); // ADDED
         }); // ADDED
         schedulerPhysiologySchemaEnsured = true; // ADDED
     }
@@ -693,7 +709,7 @@ Draw.loadPlugin(function (ui) {
                  tmin_c, topt_low_c, topt_high_c, tmax_c, tbase_c, killtemp_c,
                  harvest_window_days, days_maturity, days_transplant, days_germ,
                  direct_sow, transplant, default_planting_method_category, default_planting_method, overwinter_ok, start_cooling_threshold_c,
-                 soil_temp_min_plant_c, annual, biennial, perennial, lifespan_years, veg_diameter_cm, spacing_cm,
+                  soil_temp_min_plant_c, annual, biennial, perennial, lifespan_years, veg_diameter_cm, spacing_cm, spacing_x_cm, spacing_y_cm,
                  establishment_temp_max_c, establishment_heat_window_days, establishment_heat_policy,
                  quality_temp_max_c, heat_stress_stage, quality_heat_policy,
                  photoperiod_response, critical_daylength_hours, photoperiod_stage, photoperiod_policy,
@@ -969,6 +985,11 @@ Draw.loadPlugin(function (ui) {
                        c.rating,
                        c.companion_type,
                        c.companion_type_id,
+                       c.layout_template,
+                       c.layout_spacing_x_cm,
+                       c.layout_spacing_y_cm,
+                       c.layout_offset_x_cm,
+                       c.layout_offset_y_cm,
                        ce.evidence_level,
                        ce.review_status,
                        ce.source_url,
@@ -1001,6 +1022,11 @@ Draw.loadPlugin(function (ui) {
                         rating: row.rating, // ADDED
                         companionType: row.companion_type || '', // ADDED
                         companionTypeId: row.companion_type_id != null ? String(row.companion_type_id) : '', // ADDED
+                        layoutTemplate: normalizeCompanionLayoutTemplate(row.layout_template), // ADDED
+                        layoutSpacingXCm: finiteNumberOrNull(row.layout_spacing_x_cm), // ADDED
+                        layoutSpacingYCm: finiteNumberOrNull(row.layout_spacing_y_cm), // ADDED
+                        layoutOffsetXCm: forward ? finiteNumberOrNull(row.layout_offset_x_cm) : (finiteNumberOrNull(row.layout_offset_x_cm) == null ? null : -finiteNumberOrNull(row.layout_offset_x_cm)), // CHANGED
+                        layoutOffsetYCm: forward ? finiteNumberOrNull(row.layout_offset_y_cm) : (finiteNumberOrNull(row.layout_offset_y_cm) == null ? null : -finiteNumberOrNull(row.layout_offset_y_cm)), // CHANGED
                         p1: row.p1 || '', // ADDED
                         p2: row.p2 || '', // ADDED
                         evidence: [] // ADDED
@@ -1017,6 +1043,158 @@ Draw.loadPlugin(function (ui) {
                 } // ADDED
             }); // ADDED
             return Array.from(byKey.values()); // ADDED
+        } // ADDED
+        static async saveLayoutDefaults(relationId, layout, relationship = null) { // CHANGED
+            const id = finiteNumberOrNull(relationId); // ADDED
+            if (id == null) throw new Error('Companion relationship is required before saving layout defaults.'); // ADDED
+            await ensureSchedulerPhysiologySchema(); // ADDED
+            const inverse = String(relationship?.direction || '').toLowerCase() === 'inverse'; // ADDED
+            const offsetX = layoutNumberOrNull(layout?.offsetXCm); // ADDED
+            const offsetY = layoutNumberOrNull(layout?.offsetYCm); // ADDED
+            const normalized = { // ADDED
+                layout_template: normalizeCompanionLayoutTemplate(layout?.template) || null, // ADDED
+                layout_spacing_x_cm: layoutNumberOrNull(layout?.spacingXCm), // ADDED
+                layout_spacing_y_cm: layoutNumberOrNull(layout?.spacingYCm), // ADDED
+                layout_offset_x_cm: inverse && offsetX != null ? -offsetX : offsetX, // CHANGED
+                layout_offset_y_cm: inverse && offsetY != null ? -offsetY : offsetY // CHANGED
+            }; // ADDED
+            await withDbTransaction(async dbId => { // ADDED
+                await execRunOnDb(dbId, `UPDATE Companions
+                    SET layout_template=?, layout_spacing_x_cm=?, layout_spacing_y_cm=?, layout_offset_x_cm=?, layout_offset_y_cm=?
+                    WHERE relation_id=?;`, [ // ADDED
+                    normalized.layout_template, // ADDED
+                    normalized.layout_spacing_x_cm, // ADDED
+                    normalized.layout_spacing_y_cm, // ADDED
+                    normalized.layout_offset_x_cm, // ADDED
+                    normalized.layout_offset_y_cm, // ADDED
+                    id // ADDED
+                ]); // ADDED
+            }); // ADDED
+            return String(id); // ADDED
+        } // ADDED
+        static async ensurePairDefaultsRelationship(sourcePlant, companionPlant, relationship = null, opts = {}) { // ADDED
+            const existingId = finiteNumberOrNull(relationship?.relationId); // ADDED
+            if (existingId != null) return Object.assign({}, relationship, { relationId: String(existingId) }); // ADDED
+            const sourceId = finiteNumberOrNull(sourcePlant?.plant_id ?? relationship?.sourcePlantId ?? relationship?.storedSourcePlantId); // ADDED
+            const companionId = finiteNumberOrNull(companionPlant?.plant_id ?? relationship?.companionPlantId ?? relationship?.storedCompanionPlantId); // ADDED
+            if (sourceId == null || companionId == null) throw new Error('Source and companion plants are required before saving pair defaults.'); // ADDED
+            await ensureSchedulerPhysiologySchema(); // ADDED
+            const existing = (await CompanionRelationshipModel.listForSourcePlant(sourceId)).find(rel => String(rel.companionPlantId) === String(companionId)); // ADDED
+            if (existing?.relationId) return existing; // ADDED
+            const sourceName = String(sourcePlant?.plant_name || relationship?.p1 || `Plant ${sourceId}`); // ADDED
+            const companionName = String(companionPlant?.plant_name || relationship?.p2 || `Plant ${companionId}`); // ADDED
+            const startOffsetDays = layoutNumberOrNull(opts.startOffsetDays ?? relationship?.recommendedStartOffsetDays ?? relationship?.storedStartOffsetDays) ?? 0; // ADDED
+            let relationId = ''; // ADDED
+            await withDbTransaction(async dbId => { // ADDED
+                await execRunOnDb(dbId, `INSERT INTO Companions
+                    (p1, p2, rating, companion_type, source_plant_id, companion_plant_id, start_offset_days)
+                    VALUES (?, ?, ?, ?, ?, ?, ?);`, [ // ADDED
+                    sourceName, // ADDED
+                    companionName, // ADDED
+                    0, // ADDED
+                    'user', // ADDED
+                    sourceId, // ADDED
+                    companionId, // ADDED
+                    startOffsetDays // ADDED
+                ]); // ADDED
+                const rows = await queryAllOnDb(dbId, 'SELECT last_insert_rowid() AS relation_id;', []); // ADDED
+                relationId = String(rows?.[0]?.relation_id || ''); // ADDED
+            }); // ADDED
+            if (!relationId) throw new Error('Pair default relationship was inserted but no relation_id was returned.'); // ADDED
+            return Object.assign(buildGraphCreatedCompanionRelationship(sourcePlant, companionPlant, { startOffsetDays }), { // ADDED
+                relationId, // ADDED
+                known: true, // ADDED
+                graphCreated: true, // ADDED
+                companionType: 'user', // ADDED
+                rating: 0 // ADDED
+            }); // ADDED
+        } // ADDED
+    } // ADDED
+
+    class CompanionLayoutGroupDefaultModel { // ADDED
+        static plantSetKey(plantIds) { // ADDED
+            return Array.from(new Set((plantIds || []) // ADDED
+                .map(id => finiteNumberOrNull(id)) // ADDED
+                .filter(id => id != null) // ADDED
+                .map(id => String(Math.trunc(id))))) // ADDED
+                .sort((a, b) => Number(a) - Number(b)) // ADDED
+                .join('+'); // ADDED
+        } // ADDED
+
+        static normalizeLayout(layout, plantIds, anchorPlantId) { // ADDED
+            const key = CompanionLayoutGroupDefaultModel.plantSetKey(plantIds); // ADDED
+            const anchorId = finiteNumberOrNull(anchorPlantId); // ADDED
+            const rows = Array.isArray(layout?.rows) ? layout.rows : []; // ADDED
+            return { // ADDED
+                version: 1, // ADDED
+                plantSetKey: key, // ADDED
+                anchorPlantId: anchorId, // ADDED
+                rows: rows.map(row => ({ // ADDED
+                    role: row?.role === 'anchor' ? 'anchor' : 'companion', // ADDED
+                    plantId: finiteNumberOrNull(row?.plantId), // ADDED
+                    plantName: String(row?.plantName || ''), // ADDED
+                    template: normalizeCompanionLayoutTemplate(row?.template) || (row?.role === 'anchor' ? '' : 'beside'), // ADDED
+                    spacingXCm: layoutNumberOrNull(row?.spacingXCm), // ADDED
+                    spacingYCm: layoutNumberOrNull(row?.spacingYCm), // ADDED
+                    vegDiameterCm: layoutNumberOrNull(row?.vegDiameterCm), // ADDED
+                    offsetXCm: layoutNumberOrNull(row?.offsetXCm), // ADDED
+                    offsetYCm: layoutNumberOrNull(row?.offsetYCm) // ADDED
+                })).filter(row => row.plantId != null) // ADDED
+            }; // ADDED
+        } // ADDED
+
+        static parseRow(row) { // ADDED
+            if (!row) return null; // ADDED
+            try { // ADDED
+                const parsed = JSON.parse(row.layout_json || '{}'); // ADDED
+                return Object.assign({}, parsed, { // ADDED
+                    groupDefaultId: String(row.group_default_id || ''), // ADDED
+                    plantSetKey: row.plant_set_key || parsed.plantSetKey || '', // ADDED
+                    anchorPlantId: finiteNumberOrNull(row.anchor_plant_id ?? parsed.anchorPlantId), // ADDED
+                    updatedAt: row.updated_at || '' // ADDED
+                }); // ADDED
+            } catch (_) { // ADDED
+                return null; // ADDED
+            } // ADDED
+        } // ADDED
+
+        static async load(plantIds, anchorPlantId = null) { // ADDED
+            const key = CompanionLayoutGroupDefaultModel.plantSetKey(plantIds); // ADDED
+            if (!key) return null; // ADDED
+            await ensureSchedulerPhysiologySchema(); // ADDED
+            const anchorId = finiteNumberOrNull(anchorPlantId); // ADDED
+            const rows = anchorId == null // ADDED
+                ? await queryAll('SELECT * FROM CompanionLayoutGroupDefaults WHERE plant_set_key = ? ORDER BY updated_at DESC LIMIT 1;', [key]) // ADDED
+                : await queryAll('SELECT * FROM CompanionLayoutGroupDefaults WHERE plant_set_key = ? AND anchor_plant_id = ? LIMIT 1;', [key, anchorId]); // ADDED
+            return CompanionLayoutGroupDefaultModel.parseRow(rows[0]); // ADDED
+        } // ADDED
+
+        static async listForPlant(plantId) { // ADDED
+            const id = finiteNumberOrNull(plantId); // ADDED
+            if (id == null) return []; // ADDED
+            await ensureSchedulerPhysiologySchema(); // ADDED
+            const token = String(Math.trunc(id)); // ADDED
+            const rows = await queryAll(`SELECT * FROM CompanionLayoutGroupDefaults
+                WHERE plant_set_key = ? OR plant_set_key LIKE ? OR plant_set_key LIKE ? OR plant_set_key LIKE ?
+                ORDER BY updated_at DESC;`, [token, `${token}+%`, `%+${token}+%`, `%+${token}`]); // ADDED
+            return rows.map(row => CompanionLayoutGroupDefaultModel.parseRow(row)).filter(Boolean); // ADDED
+        } // ADDED
+
+        static async save(plantIds, anchorPlantId, layout) { // ADDED
+            const key = CompanionLayoutGroupDefaultModel.plantSetKey(plantIds); // ADDED
+            const anchorId = finiteNumberOrNull(anchorPlantId); // ADDED
+            if (!key || anchorId == null) throw new Error('Plant set and anchor plant are required before saving group layout defaults.'); // ADDED
+            const normalized = CompanionLayoutGroupDefaultModel.normalizeLayout(layout, plantIds, anchorId); // ADDED
+            await ensureSchedulerPhysiologySchema(); // ADDED
+            await withDbTransaction(async dbId => { // ADDED
+                await execRunOnDb(dbId, `INSERT INTO CompanionLayoutGroupDefaults
+                    (plant_set_key, anchor_plant_id, layout_json, updated_at)
+                    VALUES (?, ?, ?, datetime('now'))
+                    ON CONFLICT(plant_set_key, anchor_plant_id) DO UPDATE SET
+                        layout_json = excluded.layout_json,
+                        updated_at = excluded.updated_at;`, [key, anchorId, JSON.stringify(normalized)]); // ADDED
+            }); // ADDED
+            return normalized; // ADDED
         } // ADDED
     } // ADDED
 
@@ -3159,6 +3337,354 @@ Draw.loadPlugin(function (ui) {
         }
         return { profile: normalizeBedProfile(null), source: 'generic garden bed' }; // ADDED
     }
+    function normalizeCompanionLayoutTemplate(value) { // ADDED
+        const normalized = String(value || '').trim().toLowerCase(); // ADDED
+        return COMPANION_LAYOUT_TEMPLATES.includes(normalized) ? normalized : ''; // ADDED
+    } // ADDED
+    function buildGraphCreatedCompanionRelationship(sourcePlant, companionPlant, attrs = {}) { // ADDED
+        const sourcePlantId = String(sourcePlant?.plant_id ?? attrs.sourcePlantId ?? attrs.storedSourcePlantId ?? '').trim(); // ADDED
+        const companionPlantId = String(companionPlant?.plant_id ?? attrs.companionPlantId ?? attrs.storedCompanionPlantId ?? '').trim(); // ADDED
+        if (!sourcePlantId || !companionPlantId) return null; // ADDED
+        const recommendedStartOffsetDays = layoutNumberOrNull(attrs.recommendedStartOffsetDays ?? attrs.startOffsetDays ?? attrs.storedStartOffsetDays) ?? 0; // ADDED
+        return { // ADDED
+            relationId: String(attrs.relationId || ''), // ADDED
+            sourcePlantId, // ADDED
+            companionPlantId, // ADDED
+            storedSourcePlantId: sourcePlantId, // ADDED
+            storedCompanionPlantId: companionPlantId, // ADDED
+            direction: 'forward', // ADDED
+            recommendedStartOffsetDays, // ADDED
+            storedStartOffsetDays: recommendedStartOffsetDays, // ADDED
+            rating: attrs.rating == null ? null : attrs.rating, // ADDED
+            companionType: String(attrs.companionType || ''), // ADDED
+            companionTypeId: String(attrs.companionTypeId || ''), // ADDED
+            layoutTemplate: normalizeCompanionLayoutTemplate(attrs.layoutTemplate), // ADDED
+            layoutSpacingXCm: layoutNumberOrNull(attrs.layoutSpacingXCm), // ADDED
+            layoutSpacingYCm: layoutNumberOrNull(attrs.layoutSpacingYCm), // ADDED
+            layoutOffsetXCm: layoutNumberOrNull(attrs.layoutOffsetXCm), // ADDED
+            layoutOffsetYCm: layoutNumberOrNull(attrs.layoutOffsetYCm), // ADDED
+            p1: String(sourcePlant?.plant_name || attrs.p1 || ''), // ADDED
+            p2: String(companionPlant?.plant_name || attrs.p2 || ''), // ADDED
+            evidence: [], // ADDED
+            known: !!attrs.known, // ADDED
+            graphCreated: true // ADDED
+        }; // ADDED
+    } // ADDED
+    function layoutNumberOrNull(value) { // ADDED
+        const n = finiteNumberOrNull(value); // ADDED
+        return n == null ? null : n; // ADDED
+    } // ADDED
+    function plantSpacingDefaults(plant) { // ADDED
+        const fallback = layoutNumberOrNull(plant?.spacing_cm) ?? 30; // ADDED
+        return { // ADDED
+            spacingCm: fallback, // ADDED
+            spacingXCm: layoutNumberOrNull(plant?.spacing_x_cm) ?? fallback, // ADDED
+            spacingYCm: layoutNumberOrNull(plant?.spacing_y_cm) ?? fallback, // ADDED
+            vegDiameterCm: layoutNumberOrNull(plant?.veg_diameter_cm) // ADDED
+        }; // ADDED
+    } // ADDED
+    function companionLayoutDefaultsForRelationship(relationship) { // ADDED
+        return { // ADDED
+            template: normalizeCompanionLayoutTemplate(relationship?.layoutTemplate) || 'beside', // ADDED
+            spacingXCm: layoutNumberOrNull(relationship?.layoutSpacingXCm), // ADDED
+            spacingYCm: layoutNumberOrNull(relationship?.layoutSpacingYCm), // ADDED
+            offsetXCm: layoutNumberOrNull(relationship?.layoutOffsetXCm), // ADDED
+            offsetYCm: layoutNumberOrNull(relationship?.layoutOffsetYCm) // ADDED
+        }; // ADDED
+    } // ADDED
+    function resolveCompanionLayout(sourceCell, targetPlant, relationship, overrides = {}) { // ADDED
+        const targetSpacing = plantSpacingDefaults(targetPlant); // ADDED
+        const relLayout = companionLayoutDefaultsForRelationship(relationship); // ADDED
+        const template = normalizeCompanionLayoutTemplate(overrides.template) || relLayout.template; // ADDED
+        const spacingXCm = layoutNumberOrNull(overrides.spacingXCm) ?? relLayout.spacingXCm ?? targetSpacing.spacingXCm; // ADDED
+        const spacingYCm = layoutNumberOrNull(overrides.spacingYCm) ?? relLayout.spacingYCm ?? targetSpacing.spacingYCm; // ADDED
+        const sourceSpacingX = layoutNumberOrNull(sourceCell?.getAttribute?.('spacing_x_cm')) ?? layoutNumberOrNull(sourceCell?.getAttribute?.('spacing_cm')) ?? 30; // ADDED
+        const sourceSpacingY = layoutNumberOrNull(sourceCell?.getAttribute?.('spacing_y_cm')) ?? layoutNumberOrNull(sourceCell?.getAttribute?.('spacing_cm')) ?? 30; // ADDED
+        const sourceGeo = sourceCell?.getGeometry?.(); // ADDED
+        const pxPerCm = 5 * 0.18; // ADDED: matches Plant_Tiler.js toPx without coupling to private helpers.
+        const sourceWidthCm = sourceGeo ? Math.max(0, Number(sourceGeo.width || 0)) / pxPerCm : sourceSpacingX; // ADDED
+        const defaultOffset = template === 'interplant' // ADDED
+            ? { x: sourceSpacingX / 2, y: 0 } // ADDED
+            : (template === 'staggered' ? { x: sourceSpacingX / 2, y: sourceSpacingY / 2 } : { x: sourceWidthCm + Math.max(sourceSpacingX, spacingXCm), y: 0 }); // ADDED
+        const offsetXCm = layoutNumberOrNull(overrides.offsetXCm) ?? relLayout.offsetXCm ?? defaultOffset.x; // ADDED
+        const offsetYCm = layoutNumberOrNull(overrides.offsetYCm) ?? relLayout.offsetYCm ?? defaultOffset.y; // ADDED
+        return { template, spacingXCm, spacingYCm, offsetXCm, offsetYCm, vegDiameterCm: targetSpacing.vegDiameterCm }; // ADDED
+    } // ADDED
+    function companionLayoutAttributePatch(layout) { // ADDED
+        const patch = { // ADDED
+            companion_layout_template: layout.template || '', // ADDED
+            companion_offset_x_cm: layout.offsetXCm == null ? '' : String(layout.offsetXCm), // ADDED
+            companion_offset_y_cm: layout.offsetYCm == null ? '' : String(layout.offsetYCm), // ADDED
+            companion_layout_spacing_x_cm: layout.spacingXCm == null ? '' : String(layout.spacingXCm), // ADDED
+            companion_layout_spacing_y_cm: layout.spacingYCm == null ? '' : String(layout.spacingYCm) // ADDED
+        }; // ADDED
+        if (layout.spacingXCm != null) patch.spacing_x_cm = String(layout.spacingXCm); // ADDED
+        if (layout.spacingYCm != null) patch.spacing_y_cm = String(layout.spacingYCm); // ADDED
+        if (layout.vegDiameterCm != null) patch.veg_diameter_cm = String(layout.vegDiameterCm); // ADDED
+        return patch; // ADDED
+    } // ADDED
+    function graphRectForCell(cell) { // ADDED
+        const geo = cell?.getGeometry?.(); // ADDED
+        if (!geo) return null; // ADDED
+        const model = graph && typeof graph.getModel === 'function' ? graph.getModel() : null; // ADDED
+        let x = Number(geo.x || 0), y = Number(geo.y || 0); // CHANGED
+        for (let cur = model?.getParent?.(cell); cur; cur = model.getParent(cur)) { // ADDED
+            const pg = cur?.getGeometry?.(); // ADDED
+            if (pg) { x += Number(pg.x || 0); y += Number(pg.y || 0); } // ADDED
+        } // ADDED
+        return { x, y, width: Number(geo.width || 0), height: Number(geo.height || 0) }; // CHANGED
+    } // ADDED
+    function graphCellById(activeGraph, id) { // ADDED
+        const model = activeGraph && typeof activeGraph.getModel === 'function' ? activeGraph.getModel() : null; // ADDED
+        const cellId = String(id || '').trim(); // ADDED
+        return cellId && model && typeof model.getCell === 'function' ? model.getCell(cellId) : null; // ADDED
+    } // ADDED
+    function absoluteParentOffsetForCell(activeGraph, cell) { // ADDED
+        const model = activeGraph && typeof activeGraph.getModel === 'function' ? activeGraph.getModel() : null; // ADDED
+        let x = 0, y = 0; // ADDED
+        for (let cur = model?.getParent?.(cell); cur; cur = model.getParent(cur)) { // ADDED
+            const geo = cur?.getGeometry?.(); // ADDED
+            if (geo) { x += Number(geo.x || 0); y += Number(geo.y || 0); } // ADDED
+        } // ADDED
+        return { x, y }; // ADDED
+    } // ADDED
+    function setCellAbsoluteRect(activeGraph, cell, rect, model = null) { // ADDED
+        const geo = cell?.getGeometry?.(); // ADDED
+        if (!geo || !rect) return false; // ADDED
+        const parentOffset = absoluteParentOffsetForCell(activeGraph, cell); // ADDED
+        const nextGeo = geo.clone ? geo.clone() : Object.assign({}, geo); // ADDED
+        nextGeo.x = Number(rect.x || 0) - parentOffset.x; // ADDED
+        nextGeo.y = Number(rect.y || 0) - parentOffset.y; // ADDED
+        nextGeo.width = Number(rect.width || geo.width || 0); // ADDED
+        nextGeo.height = Number(rect.height || geo.height || 0); // ADDED
+        if (model && typeof model.setGeometry === 'function') model.setGeometry(cell, nextGeo); // ADDED
+        else if (cell.setGeometry) cell.setGeometry(nextGeo); // ADDED
+        else cell.geometry = nextGeo; // ADDED
+        return true; // ADDED
+    } // ADDED
+    function cellPlantId(cell) { // ADDED
+        return finiteNumberOrNull(cell?.getAttribute?.('plant_id') ?? cell?.getAttribute?.('derived_target_plant_id')); // ADDED
+    } // ADDED
+    function cellLayoutLabel(cell) { // ADDED
+        const plant = String(cell?.getAttribute?.('plant_name') || cell?.getAttribute?.('crop_name') || '').trim(); // ADDED
+        const label = String(cell?.getAttribute?.('label') || cell?.id || '').trim(); // ADDED
+        return plant || label || 'Planting'; // ADDED
+    } // ADDED
+    function companionSourceGroupId(cell) { // ADDED
+        return String(cell?.getAttribute?.('derived_mode') || '').trim().toLowerCase() === 'companion' // ADDED
+            ? String(cell?.getAttribute?.('derived_source_group_id') || '').trim() // ADDED
+            : ''; // ADDED
+    } // ADDED
+    function resolveCompanionLayoutAnchorCell(activeGraph, selectedCell) { // ADDED
+        const sourceId = companionSourceGroupId(selectedCell); // ADDED
+        const sourceCell = sourceId ? graphCellById(activeGraph, sourceId) : null; // ADDED
+        return sourceCell && isTilerGroup(sourceCell) ? sourceCell : selectedCell; // ADDED
+    } // ADDED
+    function collectLinkedCompanionLayoutCells(activeGraph, selectedCell) { // ADDED
+        const model = activeGraph && typeof activeGraph.getModel === 'function' ? activeGraph.getModel() : null; // ADDED
+        const anchor = resolveCompanionLayoutAnchorCell(activeGraph, selectedCell); // ADDED
+        if (!model || !anchor || !isTilerGroup(anchor)) return { anchor: null, companions: [], bed: null }; // ADDED
+        const bed = findContainingBedForScheduleCell(anchor); // ADDED
+        const bedId = String(bed?.id || ''); // ADDED
+        const parent = model.getParent(anchor); // ADDED
+        const siblings = parent && activeGraph && typeof activeGraph.getChildVertices === 'function' ? activeGraph.getChildVertices(parent) : []; // ADDED
+        const companions = (siblings || []).filter(candidate => { // ADDED
+            if (!candidate || candidate === anchor || !isTilerGroup(candidate)) return false; // ADDED
+            if (companionSourceGroupId(candidate) !== String(anchor.id || '')) return false; // ADDED
+            if (!bed) return true; // ADDED
+            return String(findContainingBedForScheduleCell(candidate)?.id || '') === bedId; // ADDED
+        }); // ADDED
+        return { anchor, companions, bed }; // ADDED
+    } // ADDED
+    function computePreviewPlantCircles(groupRect, spacingXCm, spacingYCm, opts = {}) { // ADDED
+        const pxPerCm = 5 * 0.18; // ADDED
+        const spacingX = Math.max(1, (layoutNumberOrNull(spacingXCm) ?? 30) * pxPerCm); // ADDED
+        const spacingY = Math.max(1, (layoutNumberOrNull(spacingYCm) ?? 30) * pxPerCm); // ADDED
+        const maxCircles = Math.max(1, Math.trunc(layoutNumberOrNull(opts.maxCircles) ?? 120)); // ADDED
+        const cols = Math.max(1, Math.floor(Math.max(1, groupRect.width) / spacingX)); // ADDED
+        const rows = Math.max(1, Math.floor(Math.max(1, groupRect.height) / spacingY)); // ADDED
+        const total = rows * cols; // ADDED
+        const count = Math.min(total, maxCircles); // ADDED
+        const circles = []; // ADDED
+        for (let i = 0; i < count; i++) { // ADDED
+            const r = Math.floor(i / cols); // ADDED
+            const c = i % cols; // ADDED
+            circles.push({ // ADDED
+                x: groupRect.x + spacingX / 2 + c * spacingX, // ADDED
+                y: groupRect.y + spacingY / 2 + r * spacingY // ADDED
+            }); // ADDED
+        } // ADDED
+        return { circles, total, summarized: total > count }; // ADDED
+    } // ADDED
+    function buildLayoutPreviewModel({ bedRect = null, sourceRect = null, layout = null, sourceSpacing = null, companionLabel = 'Companion', sourceLabel = 'Source', requireRealBed = false, showCompanion = true } = {}) { // CHANGED
+        if (!bedRect && requireRealBed) return { status: 'no-bed', message: 'No containing garden bed for this planting.' }; // ADDED
+        const pxPerCm = 5 * 0.18; // ADDED
+        const bed = bedRect || { x: 0, y: 0, width: 420, height: 180, generic: true }; // ADDED
+        const source = sourceRect || { x: bed.x + bed.width * 0.15, y: bed.y + bed.height * 0.2, width: bed.width * 0.34, height: bed.height * 0.55 }; // ADDED
+        const offsetX = (layoutNumberOrNull(layout?.offsetXCm) ?? 0) * pxPerCm; // ADDED
+        const offsetY = (layoutNumberOrNull(layout?.offsetYCm) ?? 0) * pxPerCm; // ADDED
+        const rawCompanion = showCompanion ? { x: source.x + offsetX, y: source.y + offsetY, width: source.width, height: source.height } : null; // CHANGED
+        const companion = rawCompanion ? { ...rawCompanion } : null; // CHANGED
+        let clamped = false; // ADDED
+        if (companion) { // ADDED
+            const minX = bed.x, minY = bed.y; // ADDED
+            const maxX = bed.x + Math.max(0, bed.width - companion.width); // ADDED
+            const maxY = bed.y + Math.max(0, bed.height - companion.height); // ADDED
+            const nextX = Math.max(minX, Math.min(maxX, companion.x)); // ADDED
+            const nextY = Math.max(minY, Math.min(maxY, companion.y)); // ADDED
+            if (Math.abs(nextX - companion.x) > 0.01 || Math.abs(nextY - companion.y) > 0.01) clamped = true; // ADDED
+            companion.x = nextX; companion.y = nextY; // ADDED
+        } // ADDED
+        const sourceCircles = computePreviewPlantCircles(source, sourceSpacing?.spacingXCm ?? 30, sourceSpacing?.spacingYCm ?? 30); // ADDED
+        const companionCircles = companion ? computePreviewPlantCircles(companion, layout?.spacingXCm ?? 30, layout?.spacingYCm ?? 30) : { circles: [], total: 0, summarized: false }; // CHANGED
+        return { status: 'ok', bed, source, companion, sourceLabel, companionLabel, layout: layout || {}, sourceCircles, companionCircles, clamped, warning: clamped ? 'Preview placement is clamped inside the bed.' : '' }; // ADDED
+    } // ADDED
+    function clampRectInsideRect(rect, bounds) { // ADDED
+        const next = Object.assign({}, rect || {}); // ADDED
+        const width = Math.max(0, Number(next.width || 0)); // ADDED
+        const height = Math.max(0, Number(next.height || 0)); // ADDED
+        const minX = Number(bounds?.x || 0); // ADDED
+        const minY = Number(bounds?.y || 0); // ADDED
+        const maxX = minX + Math.max(0, Number(bounds?.width || 0) - width); // ADDED
+        const maxY = minY + Math.max(0, Number(bounds?.height || 0) - height); // ADDED
+        const rawX = Number(next.x || 0); // ADDED
+        const rawY = Number(next.y || 0); // ADDED
+        next.x = Math.max(minX, Math.min(maxX, rawX)); // ADDED
+        next.y = Math.max(minY, Math.min(maxY, rawY)); // ADDED
+        next.width = width; // ADDED
+        next.height = height; // ADDED
+        next.clamped = Math.abs(next.x - rawX) > 0.01 || Math.abs(next.y - rawY) > 0.01; // ADDED
+        return next; // ADDED
+    } // ADDED
+    function computeActiveCompanionPlacement(anchorRect, companionRect, bedRect, row = {}, anchorSpacing = {}) { // ADDED
+        const pxPerCm = 5 * 0.18; // ADDED
+        const anchor = anchorRect || { x: 0, y: 0, width: 120, height: 80 }; // ADDED
+        const companion = companionRect || { x: anchor.x, y: anchor.y, width: anchor.width, height: anchor.height }; // ADDED
+        const template = normalizeCompanionLayoutTemplate(row.template) || 'beside'; // ADDED
+        const offsetX = (layoutNumberOrNull(row.offsetXCm) ?? 0) * pxPerCm; // ADDED
+        const offsetY = (layoutNumberOrNull(row.offsetYCm) ?? 0) * pxPerCm; // ADDED
+        const anchorSpacingX = layoutNumberOrNull(anchorSpacing.spacingXCm) ?? 30; // ADDED
+        const anchorSpacingY = layoutNumberOrNull(anchorSpacing.spacingYCm) ?? 30; // ADDED
+        const rowSpacingX = layoutNumberOrNull(row.spacingXCm) ?? anchorSpacingX; // ADDED
+        let raw; // ADDED
+        if (template === 'interplant') { // ADDED
+            raw = { x: anchor.x + offsetX, y: anchor.y + offsetY, width: anchor.width, height: anchor.height }; // ADDED
+        } else if (template === 'staggered') { // ADDED
+            raw = { x: anchor.x + anchorSpacingX * pxPerCm / 2 + offsetX, y: anchor.y + anchorSpacingY * pxPerCm / 2 + offsetY, width: companion.width, height: companion.height }; // ADDED
+        } else { // ADDED
+            raw = { x: anchor.x + anchor.width + Math.max(anchorSpacingX, rowSpacingX) * pxPerCm + offsetX, y: anchor.y + offsetY, width: companion.width, height: companion.height }; // ADDED
+        } // ADDED
+        const placed = bedRect ? clampRectInsideRect(raw, bedRect) : Object.assign({ clamped: false }, raw); // ADDED
+        return Object.assign(placed, { template, rawX: raw.x, rawY: raw.y, interplant: template === 'interplant' }); // ADDED
+    } // ADDED
+    function computePreviewCirclesForLayoutRow(rect, row, anchorSpacing = {}) { // ADDED
+        const spacingX = layoutNumberOrNull(row?.spacingXCm) ?? 30; // ADDED
+        const spacingY = layoutNumberOrNull(row?.spacingYCm) ?? 30; // ADDED
+        const dots = computePreviewPlantCircles(rect, spacingX, spacingY, { maxCircles: 140 }); // ADDED
+        if (normalizeCompanionLayoutTemplate(row?.template) !== 'interplant') return dots; // ADDED
+        const pxPerCm = 5 * 0.18; // ADDED
+        const dx = (layoutNumberOrNull(anchorSpacing.spacingXCm) ?? spacingX) * pxPerCm / 2; // ADDED
+        const dy = (layoutNumberOrNull(anchorSpacing.spacingYCm) ?? spacingY) * pxPerCm / 2; // ADDED
+        dots.circles = dots.circles.map((p, index) => ({ // ADDED
+            x: Math.min(rect.x + rect.width - 2, p.x + (index % 2 === 0 ? dx : 0)), // ADDED
+            y: Math.min(rect.y + rect.height - 2, p.y + (index % 2 === 0 ? dy : 0)) // ADDED
+        })); // ADDED
+        return dots; // ADDED
+    } // ADDED
+    function buildCompanionLayoutPreviewModel({ bedRect = null, anchorRow = null, companionRows = [], requireRealBed = true } = {}) { // ADDED
+        if (!bedRect && requireRealBed) return { status: 'no-bed', message: 'No containing garden bed for this companion group.' }; // ADDED
+        const bed = bedRect || { x: 0, y: 0, width: 520, height: 240, generic: true }; // ADDED
+        const anchorRect = anchorRow?.rect || { x: bed.x + bed.width * 0.1, y: bed.y + bed.height * 0.25, width: bed.width * 0.32, height: bed.height * 0.45 }; // ADDED
+        const anchorSpacing = { // ADDED
+            spacingXCm: layoutNumberOrNull(anchorRow?.spacingXCm) ?? 30, // ADDED
+            spacingYCm: layoutNumberOrNull(anchorRow?.spacingYCm) ?? 30 // ADDED
+        }; // ADDED
+        const rows = [{ // ADDED
+            role: 'anchor', // ADDED
+            label: anchorRow?.label || 'Anchor', // ADDED
+            cellId: anchorRow?.cellId || '', // ADDED
+            plantId: anchorRow?.plantId ?? null, // ADDED
+            rect: anchorRect, // ADDED
+            dots: computePreviewPlantCircles(anchorRect, anchorSpacing.spacingXCm, anchorSpacing.spacingYCm, { maxCircles: 140 }), // ADDED
+            className: 'usl-layout-preview-source', // ADDED
+            dotClassName: 'usl-layout-preview-source-dot', // ADDED
+            warning: '' // ADDED
+        }]; // ADDED
+        const warnings = []; // ADDED
+        (companionRows || []).forEach((row, index) => { // ADDED
+            const currentRect = row?.rect || { x: anchorRect.x, y: anchorRect.y, width: anchorRect.width, height: anchorRect.height }; // ADDED
+            const placed = computeActiveCompanionPlacement(anchorRect, currentRect, bed, row, anchorSpacing); // ADDED
+            const warning = placed.clamped ? 'Clamped inside bed.' : ''; // ADDED
+            if (warning) warnings.push(`${row?.label || 'Companion'}: ${warning}`); // ADDED
+            rows.push({ // ADDED
+                role: 'companion', // ADDED
+                label: row?.label || `Companion ${index + 1}`, // ADDED
+                cellId: row?.cellId || '', // ADDED
+                plantId: row?.plantId ?? null, // ADDED
+                template: placed.template, // ADDED
+                rect: placed, // ADDED
+                rawRect: { x: placed.rawX, y: placed.rawY, width: placed.width, height: placed.height }, // ADDED
+                dots: computePreviewCirclesForLayoutRow(placed, row, anchorSpacing), // ADDED
+                className: `usl-layout-preview-companion usl-layout-preview-companion-${placed.template}`, // ADDED
+                dotClassName: `usl-layout-preview-companion-dot usl-layout-preview-companion-dot-${placed.template}`, // ADDED
+                warning // ADDED
+            }); // ADDED
+        }); // ADDED
+        const summarized = rows.some(row => row.dots?.summarized); // ADDED
+        return { status: 'ok', mode: 'multi-companion', bed, rows, warning: [warnings.join(' '), summarized ? 'Dense layout summarized.' : ''].filter(Boolean).join(' ') }; // ADDED
+    } // ADDED
+    function renderLayoutPreviewSvg(container, model) { // ADDED
+        if (!container) return; // ADDED
+        container.innerHTML = ''; // ADDED
+        if (!model || model.status !== 'ok') { // ADDED
+            const empty = document.createElement('div'); // ADDED
+            empty.className = 'usl-layout-preview-empty'; // ADDED
+            empty.textContent = model?.message || 'No layout preview available.'; // ADDED
+            container.appendChild(empty); // ADDED
+            return; // ADDED
+        } // ADDED
+        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); // ADDED
+        const pad = 16; // ADDED
+        const viewX = model.bed.x - pad, viewY = model.bed.y - pad; // ADDED
+        svg.setAttribute('viewBox', `${viewX} ${viewY} ${model.bed.width + pad * 2} ${model.bed.height + pad * 2}`); // ADDED
+        svg.setAttribute('class', 'usl-layout-preview-svg'); // ADDED
+        function rect(r, cls) { // ADDED
+            const el = document.createElementNS('http://www.w3.org/2000/svg', 'rect'); // ADDED
+            el.setAttribute('x', r.x); el.setAttribute('y', r.y); el.setAttribute('width', r.width); el.setAttribute('height', r.height); // ADDED
+            el.setAttribute('class', cls); // ADDED
+            svg.appendChild(el); // ADDED
+            return el; // ADDED
+        } // ADDED
+        function text(x, y, value, cls) { // ADDED
+            const el = document.createElementNS('http://www.w3.org/2000/svg', 'text'); // ADDED
+            el.setAttribute('x', x); el.setAttribute('y', y); el.setAttribute('class', cls); el.textContent = value; // ADDED
+            svg.appendChild(el); // ADDED
+        } // ADDED
+        if (model.mode === 'multi-companion') { // ADDED
+            rect(model.bed, 'usl-layout-preview-bed'); // ADDED
+            (model.rows || []).forEach(row => { // ADDED
+                rect(row.rect, row.className || 'usl-layout-preview-companion'); // ADDED
+            }); // ADDED
+            (model.rows || []).forEach(row => { // ADDED
+                (row.dots?.circles || []).forEach(p => { const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle'); c.setAttribute('cx', p.x); c.setAttribute('cy', p.y); c.setAttribute('r', row.role === 'anchor' ? 2.6 : 2.35); c.setAttribute('class', row.dotClassName || 'usl-layout-preview-companion-dot'); svg.appendChild(c); }); // ADDED
+            }); // ADDED
+            (model.rows || []).forEach(row => text(row.rect.x + 4, row.rect.y + 12, row.label || '', 'usl-layout-preview-label')); // ADDED
+            if (model.warning) text(model.bed.x + 4, model.bed.y + model.bed.height - 6, model.warning, 'usl-layout-preview-warning'); // ADDED
+            container.appendChild(svg); // ADDED
+            return; // ADDED
+        } // ADDED
+        rect(model.bed, 'usl-layout-preview-bed'); // ADDED
+        rect(model.source, 'usl-layout-preview-source'); // ADDED
+        if (model.companion) rect(model.companion, 'usl-layout-preview-companion'); // CHANGED
+        (model.sourceCircles.circles || []).forEach(p => { const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle'); c.setAttribute('cx', p.x); c.setAttribute('cy', p.y); c.setAttribute('r', 2.6); c.setAttribute('class', 'usl-layout-preview-source-dot'); svg.appendChild(c); }); // ADDED
+        (model.companionCircles.circles || []).forEach(p => { const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle'); c.setAttribute('cx', p.x); c.setAttribute('cy', p.y); c.setAttribute('r', 2.4); c.setAttribute('class', 'usl-layout-preview-companion-dot'); svg.appendChild(c); }); // ADDED
+        text(model.source.x + 4, model.source.y + 12, model.sourceLabel, 'usl-layout-preview-label'); // ADDED
+        if (model.companion) text(model.companion.x + 4, model.companion.y + 12, model.companionLabel, 'usl-layout-preview-label'); // CHANGED
+        if (model.warning || model.sourceCircles.summarized || model.companionCircles.summarized) { // ADDED
+            text(model.bed.x + 4, model.bed.y + model.bed.height - 6, [model.warning, model.sourceCircles.summarized || model.companionCircles.summarized ? 'Dense layout summarized.' : ''].filter(Boolean).join(' '), 'usl-layout-preview-warning'); // ADDED
+        } // ADDED
+        container.appendChild(svg); // ADDED
+    } // ADDED
     // --- helpers: find garden module ancestor & scoped board lookup ---
     function isGardenModule(cell) {
         return !!(cell && cell.getAttribute && cell.getAttribute('garden_module') === '1');
@@ -5101,6 +5627,68 @@ Draw.loadPlugin(function (ui) {
                 text-overflow:ellipsis;
                 white-space:nowrap;
             }
+            .usl-plant-editor-layout-panel{ /* ADDED */
+                margin-top:12px;
+                padding-top:10px;
+                border-top:1px solid #d1d5db;
+            }
+            .usl-plant-editor-layout-heading{ /* ADDED */
+                font-weight:700;
+                font-size:13px;
+                margin:0 0 8px 0;
+            }
+            .usl-plant-editor-layout-actions{ /* ADDED */
+                display:flex;
+                gap:8px;
+                align-items:center;
+                flex-wrap:wrap;
+                margin:8px 0;
+            }
+            .usl-layout-preview{ /* ADDED */
+                min-height:150px;
+                border:1px solid #d1d5db;
+                border-radius:6px;
+                background:#f8fafc;
+                overflow:hidden;
+                margin-top:8px;
+            }
+            .usl-layout-preview-svg{ /* ADDED */
+                display:block;
+                width:100%;
+                height:150px;
+            }
+            .usl-layout-preview-bed{fill:#f8fafc;stroke:#64748b;stroke-width:2}
+            .usl-layout-preview-source{fill:#dcfce7;stroke:#166534;stroke-width:1.5}
+            .usl-layout-preview-companion{fill:#dbeafe;stroke:#1d4ed8;stroke-width:1.5}
+            .usl-layout-preview-source-dot{fill:#166534;opacity:.78}
+            .usl-layout-preview-companion-dot{fill:#1d4ed8;opacity:.78}
+            .usl-layout-preview-label{font-size:10px;font-weight:700;fill:#111827}
+            .usl-layout-preview-warning{font-size:10px;font-weight:700;fill:#92400e}
+            .usl-layout-preview-empty{ /* ADDED */
+                min-height:150px;
+                display:flex;
+                align-items:center;
+                justify-content:center;
+                padding:12px;
+                color:#4b5563;
+                box-sizing:border-box;
+                text-align:center;
+            }
+            .usl-layout-status{ /* ADDED */
+                color:#4b5563;
+                margin-top:6px;
+                min-height:16px;
+            }
+            .usl-companion-defaults-list{ /* ADDED */
+                margin-top:10px;
+                border-top:1px solid #e5e7eb;
+                padding-top:8px;
+                display:grid;
+                gap:5px;
+            }
+            .usl-companion-defaults-heading{font-weight:700;color:#374151;font-size:12px} /* ADDED */
+            .usl-companion-defaults-empty,.usl-companion-defaults-item{font-size:12px;color:#4b5563} /* ADDED */
+            .usl-companion-defaults-item{border:1px solid #e5e7eb;border-radius:6px;background:#fff;padding:6px 8px} /* ADDED */
             @media (max-width:760px){
                 .usl-plant-editor.usl-plant-editor-variety-mode .usl-plant-editor-override-row{
                     grid-template-columns:minmax(0,1fr);
@@ -5825,6 +6413,8 @@ Draw.loadPlugin(function (ui) {
         const vegHeightInput = makeNullableNumber(existing?.veg_height_cm ?? null, { min: 0, step: 1 });
         const vegDiamInput = makeNullableNumber(existing?.veg_diameter_cm ?? null, { min: 0, step: 1 });
         const spacingInput = makeNullableNumber(existing?.spacing_cm ?? null, { min: 0, step: 1 });
+        const spacingXInput = makeNullableNumber(existing?.spacing_x_cm ?? null, { min: 0, step: 1 }); // ADDED
+        const spacingYInput = makeNullableNumber(existing?.spacing_y_cm ?? null, { min: 0, step: 1 }); // ADDED
 
         const vegHeightRow = row('Veg height (cm):', vegHeightInput);
         leftCol.appendChild(vegHeightRow.row);
@@ -5837,6 +6427,187 @@ Draw.loadPlugin(function (ui) {
         const spacingRow = row('Spacing (cm):', spacingInput);
         leftCol.appendChild(spacingRow.row);
         attachInlineOverrideToRow(spacingRow, { key: 'spacing_cm', type: 'num_ge0', step: 1 });
+        const spacingXRow = row('Spacing X (cm):', spacingXInput); // ADDED
+        leftCol.appendChild(spacingXRow.row); // ADDED
+        attachInlineOverrideToRow(spacingXRow, { key: 'spacing_x_cm', type: 'num_ge0', step: 1 }); // ADDED
+        const spacingYRow = row('Spacing Y (cm):', spacingYInput); // ADDED
+        leftCol.appendChild(spacingYRow.row); // ADDED
+        attachInlineOverrideToRow(spacingYRow, { key: 'spacing_y_cm', type: 'num_ge0', step: 1 }); // ADDED
+
+        const plantLayoutPanel = document.createElement('div'); // ADDED
+        plantLayoutPanel.className = 'usl-plant-editor-layout-panel'; // ADDED
+        const plantLayoutHeading = document.createElement('div'); // ADDED
+        plantLayoutHeading.className = 'usl-plant-editor-layout-heading'; // ADDED
+        plantLayoutHeading.textContent = 'Layout'; // ADDED
+        plantLayoutPanel.appendChild(plantLayoutHeading); // ADDED
+        const plantLayoutPreview = document.createElement('div'); // ADDED
+        plantLayoutPreview.className = 'usl-layout-preview'; // ADDED
+        const plantLayoutStatus = document.createElement('div'); // ADDED
+        plantLayoutStatus.className = 'usl-layout-status'; // ADDED
+        plantLayoutPanel.appendChild(plantLayoutPreview); // ADDED
+        plantLayoutPanel.appendChild(plantLayoutStatus); // ADDED
+        leftCol.appendChild(plantLayoutPanel); // ADDED
+
+        const companionLayoutPanel = document.createElement('div'); // ADDED
+        companionLayoutPanel.className = 'usl-plant-editor-layout-panel'; // ADDED
+        const companionLayoutHeading = document.createElement('div'); // ADDED
+        companionLayoutHeading.className = 'usl-plant-editor-layout-heading'; // ADDED
+        companionLayoutHeading.textContent = 'Companion pair layout defaults'; // ADDED
+        companionLayoutPanel.appendChild(companionLayoutHeading); // ADDED
+        const companionLayoutRelSel = document.createElement('select'); // ADDED
+        companionLayoutRelSel.style.width = '100%'; // ADDED
+        companionLayoutRelSel.style.padding = '6px'; // ADDED
+        companionLayoutPanel.appendChild(row('Pair:', companionLayoutRelSel).row); // ADDED
+        const companionLayoutTemplateSel = makeSelect([ // ADDED
+            { value: 'beside', label: 'Beside' }, // ADDED
+            { value: 'interplant', label: 'Interplant' }, // ADDED
+            { value: 'staggered', label: 'Staggered' } // ADDED
+        ], 'beside'); // ADDED
+        const companionLayoutSpacingXInput = makeNullableNumber('', { min: 0.1, step: 0.1 }); // ADDED
+        const companionLayoutSpacingYInput = makeNullableNumber('', { min: 0.1, step: 0.1 }); // ADDED
+        const companionLayoutOffsetXInput = makeNullableNumber('', { step: 0.1 }); // ADDED
+        const companionLayoutOffsetYInput = makeNullableNumber('', { step: 0.1 }); // ADDED
+        companionLayoutPanel.appendChild(row('Template:', companionLayoutTemplateSel).row); // ADDED
+        companionLayoutPanel.appendChild(row('Spacing X (cm):', companionLayoutSpacingXInput).row); // ADDED
+        companionLayoutPanel.appendChild(row('Spacing Y (cm):', companionLayoutSpacingYInput).row); // ADDED
+        companionLayoutPanel.appendChild(row('Offset X (cm):', companionLayoutOffsetXInput).row); // ADDED
+        companionLayoutPanel.appendChild(row('Offset Y (cm):', companionLayoutOffsetYInput).row); // ADDED
+        const companionLayoutActions = document.createElement('div'); // ADDED
+        companionLayoutActions.className = 'usl-plant-editor-layout-actions'; // ADDED
+        const companionLayoutSaveBtn = mxUtils.button('Save pair layout default', async () => { // ADDED
+            try { // ADDED
+                const relationship = selectedCompanionLayoutRelationship(); // ADDED
+                if (!relationship) throw new Error('Select a companion pair.'); // ADDED
+                await CompanionRelationshipModel.saveLayoutDefaults(relationship.relationId, readCompanionLayoutDraft(), relationship); // ADDED
+                companionLayoutStatus.textContent = 'Saved pair layout default.'; // ADDED
+                await refreshCompanionLayoutDefaultsUI(relationship.relationId); // ADDED
+            } catch (e) { // ADDED
+                companionLayoutStatus.textContent = 'Save error: ' + (e?.message || String(e)); // ADDED
+            } // ADDED
+        }); // ADDED
+        companionLayoutActions.appendChild(companionLayoutSaveBtn); // ADDED
+        companionLayoutPanel.appendChild(companionLayoutActions); // ADDED
+        const companionLayoutPreview = document.createElement('div'); // ADDED
+        companionLayoutPreview.className = 'usl-layout-preview'; // ADDED
+        const companionLayoutStatus = document.createElement('div'); // ADDED
+        companionLayoutStatus.className = 'usl-layout-status'; // ADDED
+        const companionGroupDefaultsList = document.createElement('div'); // ADDED
+        companionGroupDefaultsList.className = 'usl-companion-defaults-list'; // ADDED
+        companionLayoutPanel.appendChild(companionGroupDefaultsList); // ADDED
+        companionLayoutPanel.appendChild(companionLayoutStatus); // ADDED
+        leftCol.appendChild(companionLayoutPanel); // ADDED
+        let companionLayoutRelationships = []; // ADDED
+
+        function plantEditorSpacingDraft() { // ADDED
+            const fallback = readNullableNumber(spacingInput) ?? 30; // ADDED
+            return { // ADDED
+                spacingCm: fallback, // ADDED
+                spacingXCm: readNullableNumber(spacingXInput) ?? fallback, // ADDED
+                spacingYCm: readNullableNumber(spacingYInput) ?? fallback, // ADDED
+                vegDiameterCm: readNullableNumber(vegDiamInput) // ADDED
+            }; // ADDED
+        } // ADDED
+        function refreshPlantEditorLayoutPreview() { // ADDED
+            const spacing = plantEditorSpacingDraft(); // ADDED
+            const model = buildLayoutPreviewModel({ // ADDED
+                sourceSpacing: spacing, // ADDED
+                layout: { spacingXCm: spacing.spacingXCm, spacingYCm: spacing.spacingYCm, offsetXCm: 0, offsetYCm: 0 }, // ADDED
+                sourceLabel: String(nameInput.value || currentPlantRow?.plant_name || 'Plant'), // ADDED
+                requireRealBed: false, // ADDED
+                showCompanion: false // ADDED
+            }); // ADDED
+            renderLayoutPreviewSvg(plantLayoutPreview, model); // ADDED
+            plantLayoutStatus.textContent = model.sourceCircles?.summarized ? 'Dense layout summarized.' : 'Generic sample bed preview.'; // ADDED
+        } // ADDED
+        function selectedCompanionLayoutRelationship() { // ADDED
+            const key = String(companionLayoutRelSel.value || ''); // ADDED
+            return companionLayoutRelationships.find(rel => String(rel.relationId || '') === key) || null; // ADDED
+        } // ADDED
+        function plantEditorRowById(id) { // ADDED
+            const key = String(id || ''); // ADDED
+            return (plantRows || []).find(plant => String(plant?.plant_id || '') === key) || null; // ADDED
+        } // ADDED
+        function readCompanionLayoutDraft() { // ADDED
+            return { // ADDED
+                template: normalizeCompanionLayoutTemplate(companionLayoutTemplateSel.value) || 'beside', // ADDED
+                spacingXCm: readNullableNumber(companionLayoutSpacingXInput), // ADDED
+                spacingYCm: readNullableNumber(companionLayoutSpacingYInput), // ADDED
+                offsetXCm: readNullableNumber(companionLayoutOffsetXInput), // ADDED
+                offsetYCm: readNullableNumber(companionLayoutOffsetYInput) // ADDED
+            }; // ADDED
+        } // ADDED
+        function writeCompanionLayoutControls(relationship) { // ADDED
+            const companionPlant = plantEditorRowById(relationship?.companionPlantId); // ADDED
+            const layout = relationship ? resolveCompanionLayout(null, companionPlant, relationship, {}) : null; // ADDED
+            companionLayoutTemplateSel.value = layout?.template || 'beside'; // ADDED
+            companionLayoutSpacingXInput.value = layout?.spacingXCm == null ? '' : String(layout.spacingXCm); // ADDED
+            companionLayoutSpacingYInput.value = layout?.spacingYCm == null ? '' : String(layout.spacingYCm); // ADDED
+            companionLayoutOffsetXInput.value = layout?.offsetXCm == null ? '' : String(layout.offsetXCm); // ADDED
+            companionLayoutOffsetYInput.value = layout?.offsetYCm == null ? '' : String(layout.offsetYCm); // ADDED
+            refreshCompanionLayoutPreview(); // ADDED
+        } // ADDED
+        function refreshCompanionLayoutPreview() { // ADDED
+            const relationship = selectedCompanionLayoutRelationship(); // ADDED
+            if (!relationship) companionLayoutStatus.textContent = Number.isFinite(Number(currentPlantId)) ? 'No companion pairs found for this plant.' : 'Save or select a plant to edit companion pair defaults.'; // ADDED
+            else companionLayoutStatus.textContent = 'Pair layout defaults are used as fallbacks for scheduler groups.'; // CHANGED
+        } // ADDED
+        async function refreshCompanionGroupDefaultsList() { // ADDED
+            companionGroupDefaultsList.innerHTML = ''; // ADDED
+            const defaults = Number.isFinite(Number(currentPlantId)) ? await CompanionLayoutGroupDefaultModel.listForPlant(currentPlantId) : []; // ADDED
+            const heading = document.createElement('div'); // ADDED
+            heading.className = 'usl-companion-defaults-heading'; // ADDED
+            heading.textContent = 'Saved plant-set layout defaults'; // ADDED
+            companionGroupDefaultsList.appendChild(heading); // ADDED
+            if (!defaults.length) { // ADDED
+                const empty = document.createElement('div'); // ADDED
+                empty.className = 'usl-companion-defaults-empty'; // ADDED
+                empty.textContent = 'No saved plant-set defaults for this plant.'; // ADDED
+                companionGroupDefaultsList.appendChild(empty); // ADDED
+                return; // ADDED
+            } // ADDED
+            defaults.slice(0, 8).forEach(item => { // ADDED
+                const rows = Array.isArray(item.rows) ? item.rows : []; // ADDED
+                const row = document.createElement('div'); // ADDED
+                row.className = 'usl-companion-defaults-item'; // ADDED
+                const plants = rows.map(spec => spec.plantName || (spec.plantId ? `Plant ${spec.plantId}` : '')).filter(Boolean).join(' + '); // ADDED
+                const companionCount = rows.filter(spec => spec.role === 'companion').length; // ADDED
+                row.textContent = `${plants || item.plantSetKey} (${companionCount} companion${companionCount === 1 ? '' : 's'}, anchor ${item.anchorPlantId || 'unknown'})`; // ADDED
+                companionGroupDefaultsList.appendChild(row); // ADDED
+            }); // ADDED
+        } // ADDED
+        async function refreshCompanionLayoutDefaultsUI(preferredRelationId = null) { // ADDED
+            companionLayoutRelationships = Number.isFinite(Number(currentPlantId)) ? await CompanionRelationshipModel.listForSourcePlant(currentPlantId) : []; // ADDED
+            companionLayoutRelSel.innerHTML = ''; // ADDED
+            if (!companionLayoutRelationships.length) { // ADDED
+                const opt = document.createElement('option'); // ADDED
+                opt.value = ''; // ADDED
+                opt.textContent = ''; // ADDED
+                companionLayoutRelSel.appendChild(opt); // ADDED
+            } // ADDED
+            for (const rel of companionLayoutRelationships) { // ADDED
+                const plant = plantEditorRowById(rel.companionPlantId); // ADDED
+                const opt = document.createElement('option'); // ADDED
+                opt.value = String(rel.relationId || ''); // ADDED
+                opt.textContent = `${String(currentPlantRow?.plant_name || nameInput.value || 'Plant')} + ${String(plant?.plant_name || rel.p2 || rel.p1 || rel.companionPlantId)}`; // ADDED
+                companionLayoutRelSel.appendChild(opt); // ADDED
+            } // ADDED
+            const preferred = String(preferredRelationId || companionLayoutRelSel.value || ''); // ADDED
+            const valid = new Set(Array.from(companionLayoutRelSel.options).map(opt => opt.value)); // ADDED
+            companionLayoutRelSel.value = valid.has(preferred) ? preferred : String(companionLayoutRelationships[0]?.relationId || ''); // ADDED
+            const hasRelationship = !!selectedCompanionLayoutRelationship(); // ADDED
+            [companionLayoutTemplateSel, companionLayoutSpacingXInput, companionLayoutSpacingYInput, companionLayoutOffsetXInput, companionLayoutOffsetYInput, companionLayoutSaveBtn].forEach(el => { if (el) el.disabled = !hasRelationship; }); // ADDED
+            writeCompanionLayoutControls(selectedCompanionLayoutRelationship()); // ADDED
+            await refreshCompanionGroupDefaultsList(); // ADDED
+        } // ADDED
+        [spacingInput, spacingXInput, spacingYInput, vegDiamInput, nameInput].forEach(control => { // ADDED
+            control.addEventListener('input', () => { refreshPlantEditorLayoutPreview(); refreshCompanionLayoutPreview(); }); // ADDED
+            control.addEventListener('change', () => { refreshPlantEditorLayoutPreview(); refreshCompanionLayoutPreview(); }); // ADDED
+        }); // ADDED
+        companionLayoutRelSel.addEventListener('change', () => writeCompanionLayoutControls(selectedCompanionLayoutRelationship())); // ADDED
+        [companionLayoutTemplateSel, companionLayoutSpacingXInput, companionLayoutSpacingYInput, companionLayoutOffsetXInput, companionLayoutOffsetYInput].forEach(control => { // ADDED
+            control.addEventListener('input', refreshCompanionLayoutPreview); // ADDED
+            control.addEventListener('change', refreshCompanionLayoutPreview); // ADDED
+        }); // ADDED
         // Attach overwinter override to the overwinter row (base is checkbox)
         attachInlineOverrideToRow(overwinterRow, { key: 'overwinter_ok', type: 'bool01' });
 
@@ -5884,6 +6655,8 @@ Draw.loadPlugin(function (ui) {
             { key: 'veg_height_cm', input: vegHeightInput, kind: 'nullable-number', empty: '' }, // ADDED
             { key: 'veg_diameter_cm', input: vegDiamInput, kind: 'nullable-number', empty: '' }, // ADDED
             { key: 'spacing_cm', input: spacingInput, kind: 'nullable-number', empty: '' }, // ADDED
+            { key: 'spacing_x_cm', input: spacingXInput, kind: 'nullable-number', empty: '' }, // ADDED
+            { key: 'spacing_y_cm', input: spacingYInput, kind: 'nullable-number', empty: '' }, // ADDED
         ]; // ADDED
 
         function setBoundInputValue(binding, row) { // ADDED
@@ -5927,7 +6700,7 @@ Draw.loadPlugin(function (ui) {
                 photoperiodResponseSel, criticalDaylengthInput, photoperiodStageSel, photoperiodPolicySel,
                 chillingDaysInput, chillingHoursInput, chillingMinInput, chillingMaxInput, chillingStageSel, chillingPolicySel,
                 diagnosticPolicySel,
-                vegHeightInput, vegDiamInput, spacingInput
+                vegHeightInput, vegDiamInput, spacingInput, spacingXInput, spacingYInput // CHANGED
             ];
 
             for (const el of els) {
@@ -6038,6 +6811,8 @@ Draw.loadPlugin(function (ui) {
                 varietySel.appendChild(none);
                 addVarBtn.disabled = true;
 
+                refreshPlantEditorLayoutPreview(); // ADDED
+                await refreshCompanionLayoutDefaultsUI(); // ADDED
                 return;
             }
 
@@ -6052,9 +6827,11 @@ Draw.loadPlugin(function (ui) {
             title.textContent = 'Edit plant';
 
             applyPlantRowToUI(currentPlantRow);
+            refreshPlantEditorLayoutPreview(); // ADDED
             refreshInlineBaseHints();
             await refreshAllowedMethodCategoriesUIForPlant(pid);
             selectDefaultMethodFromPlantRow();
+            await refreshCompanionLayoutDefaultsUI(); // ADDED
 
             await refreshVarietyDropdown(pid, preferredVarietyId);
 
@@ -6278,7 +7055,9 @@ Draw.loadPlugin(function (ui) {
 
                     veg_height_cm: readNullableNumber(vegHeightInput),
                     veg_diameter_cm: readNullableNumber(vegDiamInput),
-                    spacing_cm: readNullableNumber(spacingInput)
+                    spacing_cm: readNullableNumber(spacingInput), // CHANGED
+                    spacing_x_cm: readNullableNumber(spacingXInput), // ADDED
+                    spacing_y_cm: readNullableNumber(spacingYInput) // ADDED
                 };
 
                 const plantIdToSave = currentPlantMode === 'edit' ? Number(currentPlantId) : null; // FIX: provide one atomic save path
@@ -7271,6 +8050,404 @@ Draw.loadPlugin(function (ui) {
             transplantDaysOverrideEnabled: transplantDaysOverrideInitial != null, // ADDED
             transplantDaysOverrideValue: transplantDaysOverrideInitial // ADDED
         };
+        const layoutTab = document.createElement('div'); // ADDED
+        layoutTab.className = 'usl-scheduler-layout-tab'; // ADDED
+        const layoutTemplateSel = makeSelect([ // ADDED
+            { value: 'beside', label: 'Beside' }, // ADDED
+            { value: 'interplant', label: 'Interplant' }, // ADDED
+            { value: 'staggered', label: 'Staggered' } // ADDED
+        ], 'beside'); // ADDED
+        const layoutSpacingXInput = makeNullableNumber('', { min: 0.1, step: 0.1 }); // ADDED
+        const layoutSpacingYInput = makeNullableNumber('', { min: 0.1, step: 0.1 }); // ADDED
+        const layoutOffsetXInput = makeNullableNumber('', { step: 0.1 }); // ADDED
+        const layoutOffsetYInput = makeNullableNumber('', { step: 0.1 }); // ADDED
+        const saveLayoutDefaultChk = makeCheckbox(false); // ADDED
+        const layoutPreview = document.createElement('div'); // ADDED
+        layoutPreview.className = 'usl-layout-preview'; // ADDED
+        const layoutStatus = document.createElement('div'); // ADDED
+        layoutStatus.className = 'usl-layout-status'; // ADDED
+        const layoutGroupEditor = document.createElement('div'); // ADDED
+        layoutGroupEditor.className = 'usl-companion-layout-editor'; // ADDED
+        const applyGroupLayoutBtn = mxUtils.button('Apply layout', () => runUiAsyncOperation('Apply layout', applyCompanionGroupLayoutToGraph, showErrorInline)); // ADDED
+        const saveGroupLayoutDefaultBtn = mxUtils.button('Save changed defaults', () => runUiAsyncOperation('Save group layout defaults', saveCompanionGroupLayoutDefaults, showErrorInline)); // ADDED
+        let singleLayoutSectionWrap = null; // ADDED
+        let groupLayoutSectionWrap = null; // ADDED
+        let companionLayoutEditorState = null; // ADDED
+        let companionLayoutEditorLoadToken = 0; // ADDED
+
+        function currentLayoutRelationship() { // ADDED
+            return derivedContext?.mode === 'companion' ? derivedContext.relationshipByPlantId?.get?.(String(plantSel?.value || '')) : null; // ADDED
+        } // ADDED
+        function selectedLayoutPlant() { // ADDED
+            return findPlantById(Number(plantSel.value)) || effectivePlant || selPlant; // ADDED
+        } // ADDED
+        function readLayoutDraftFromControls() { // ADDED
+            return { // ADDED
+                template: normalizeCompanionLayoutTemplate(layoutTemplateSel.value) || 'beside', // ADDED
+                spacingXCm: readNullableNumber(layoutSpacingXInput), // ADDED
+                spacingYCm: readNullableNumber(layoutSpacingYInput), // ADDED
+                offsetXCm: readNullableNumber(layoutOffsetXInput), // ADDED
+                offsetYCm: readNullableNumber(layoutOffsetYInput) // ADDED
+            }; // ADDED
+        } // ADDED
+        function writeLayoutControlsFromSelection() { // ADDED
+            const targetPlant = selectedLayoutPlant(); // ADDED
+            const relationship = currentLayoutRelationship(); // ADDED
+            const layout = derivedContext?.mode === 'companion' // ADDED
+                ? resolveCompanionLayout(derivedContext.sourceCell || cell, targetPlant, relationship, {}) // ADDED
+                : resolveCompanionLayout(cell, targetPlant, null, { template: 'beside', offsetXCm: 0, offsetYCm: 0 }); // ADDED
+            layoutTemplateSel.value = layout.template || 'beside'; // ADDED
+            layoutSpacingXInput.value = layout.spacingXCm == null ? '' : String(layout.spacingXCm); // ADDED
+            layoutSpacingYInput.value = layout.spacingYCm == null ? '' : String(layout.spacingYCm); // ADDED
+            layoutOffsetXInput.value = derivedContext?.mode === 'companion' ? (layout.offsetXCm == null ? '' : String(layout.offsetXCm)) : '0'; // ADDED
+            layoutOffsetYInput.value = derivedContext?.mode === 'companion' ? (layout.offsetYCm == null ? '' : String(layout.offsetYCm)) : '0'; // ADDED
+            layoutTemplateSel.disabled = derivedContext?.mode !== 'companion'; // ADDED
+            layoutOffsetXInput.disabled = derivedContext?.mode !== 'companion'; // ADDED
+            layoutOffsetYInput.disabled = derivedContext?.mode !== 'companion'; // ADDED
+            saveLayoutDefaultChk.checked = false; // ADDED
+            void rebuildCompanionGroupLayoutEditor(); // ADDED
+        } // ADDED
+        function syncLayoutDraftFromControls() { // ADDED
+            if (companionLayoutEditorState?.active) { // ADDED
+                const groupDraft = readCompanionGroupLayoutDraftFromEditor(); // ADDED
+                if (derivedContext?.mode === 'companion') derivedContext.groupLayoutDraft = groupDraft; // ADDED
+                return groupDraft?.rows?.find(row => row.role === 'companion') || {}; // ADDED
+            } // ADDED
+            const draft = readLayoutDraftFromControls(); // ADDED
+            formState.layoutTemplate = draft.template; // ADDED
+            formState.layoutSpacingXCm = draft.spacingXCm; // ADDED
+            formState.layoutSpacingYCm = draft.spacingYCm; // ADDED
+            formState.layoutOffsetXCm = draft.offsetXCm; // ADDED
+            formState.layoutOffsetYCm = draft.offsetYCm; // ADDED
+            if (derivedContext?.mode === 'companion') derivedContext.layoutDraft = draft; // ADDED
+            return draft; // ADDED
+        } // ADDED
+        function plantForLayoutCell(layoutCell) { // ADDED
+            return findPlantById(cellPlantId(layoutCell)) || null; // ADDED
+        } // ADDED
+        function readCellLayoutNumber(layoutCell, key) { // ADDED
+            return layoutNumberOrNull(layoutCell?.getAttribute?.(key)); // ADDED
+        } // ADDED
+        function readAnchorLayoutRow(anchorCell) { // ADDED
+            const plant = plantForLayoutCell(anchorCell); // ADDED
+            const defaults = plantSpacingDefaults(plant); // ADDED
+            return { // ADDED
+                role: 'anchor', // ADDED
+                cell: anchorCell, // ADDED
+                cellId: String(anchorCell?.id || ''), // ADDED
+                plantId: cellPlantId(anchorCell), // ADDED
+                plantName: plant?.plant_name || cellLayoutLabel(anchorCell), // ADDED
+                label: plant?.plant_name || cellLayoutLabel(anchorCell), // ADDED
+                rect: graphRectForCell(anchorCell), // ADDED
+                spacingXCm: readCellLayoutNumber(anchorCell, 'spacing_x_cm') ?? readCellLayoutNumber(anchorCell, 'spacing_cm') ?? defaults.spacingXCm, // ADDED
+                spacingYCm: readCellLayoutNumber(anchorCell, 'spacing_y_cm') ?? readCellLayoutNumber(anchorCell, 'spacing_cm') ?? defaults.spacingYCm, // ADDED
+                vegDiameterCm: readCellLayoutNumber(anchorCell, 'veg_diameter_cm') ?? defaults.vegDiameterCm // ADDED
+            }; // ADDED
+        } // ADDED
+        function relationshipForCompanionLayoutCell(anchorCell, companionCell) { // ADDED
+            const targetPlant = plantForLayoutCell(companionCell); // ADDED
+            const key = String(targetPlant?.plant_id || cellPlantId(companionCell) || ''); // ADDED
+            const existing = key ? derivedContext?.relationshipByPlantId?.get?.(key) : null; // ADDED
+            if (existing) return existing; // ADDED
+            const sourcePlant = plantForLayoutCell(anchorCell) || derivedContext?.sourcePlant || null; // ADDED
+            return buildGraphCreatedCompanionRelationship(sourcePlant, targetPlant, { // ADDED
+                startOffsetDays: finiteNumberOrNull(companionCell?.getAttribute?.('companion_start_offset_days')) ?? 0, // ADDED
+                layoutTemplate: companionCell?.getAttribute?.('companion_layout_template') || '', // ADDED
+                layoutSpacingXCm: finiteNumberOrNull(companionCell?.getAttribute?.('companion_layout_spacing_x_cm')), // ADDED
+                layoutSpacingYCm: finiteNumberOrNull(companionCell?.getAttribute?.('companion_layout_spacing_y_cm')), // ADDED
+                layoutOffsetXCm: finiteNumberOrNull(companionCell?.getAttribute?.('companion_offset_x_cm')), // ADDED
+                layoutOffsetYCm: finiteNumberOrNull(companionCell?.getAttribute?.('companion_offset_y_cm')), // ADDED
+                known: !!companionCell?.getAttribute?.('companion_relation_id') // ADDED
+            }); // ADDED
+        } // ADDED
+        function readCompanionLayoutRow(anchorCell, companionCell) { // ADDED
+            const targetPlant = plantForLayoutCell(companionCell) || selectedLayoutPlant(); // ADDED
+            const relationship = relationshipForCompanionLayoutCell(anchorCell, companionCell); // ADDED
+            const fallback = resolveCompanionLayout(anchorCell, targetPlant, relationship, {}); // ADDED
+            const template = normalizeCompanionLayoutTemplate(companionCell?.getAttribute?.('companion_layout_template')) || fallback.template; // ADDED
+            return { // ADDED
+                role: 'companion', // ADDED
+                cell: companionCell, // ADDED
+                cellId: String(companionCell?.id || ''), // ADDED
+                plantId: cellPlantId(companionCell), // ADDED
+                plantName: targetPlant?.plant_name || cellLayoutLabel(companionCell), // ADDED
+                label: targetPlant?.plant_name || cellLayoutLabel(companionCell), // ADDED
+                rect: graphRectForCell(companionCell), // ADDED
+                template, // ADDED
+                spacingXCm: readCellLayoutNumber(companionCell, 'spacing_x_cm') ?? readCellLayoutNumber(companionCell, 'companion_layout_spacing_x_cm') ?? fallback.spacingXCm, // ADDED
+                spacingYCm: readCellLayoutNumber(companionCell, 'spacing_y_cm') ?? readCellLayoutNumber(companionCell, 'companion_layout_spacing_y_cm') ?? fallback.spacingYCm, // ADDED
+                vegDiameterCm: readCellLayoutNumber(companionCell, 'veg_diameter_cm') ?? fallback.vegDiameterCm, // ADDED
+                offsetXCm: readCellLayoutNumber(companionCell, 'companion_offset_x_cm') ?? fallback.offsetXCm, // ADDED
+                offsetYCm: readCellLayoutNumber(companionCell, 'companion_offset_y_cm') ?? fallback.offsetYCm, // ADDED
+                relationship // ADDED
+            }; // ADDED
+        } // ADDED
+        function applySavedGroupDefaultToRows(anchorRow, companionRows, savedDefault) { // ADDED
+            const rows = Array.isArray(savedDefault?.rows) ? savedDefault.rows : []; // ADDED
+            if (!rows.length) return; // ADDED
+            const byPlant = new Map(rows.map(row => [String(row.plantId || ''), row])); // ADDED
+            const savedAnchor = byPlant.get(String(anchorRow.plantId || '')); // ADDED
+            if (savedAnchor) { // ADDED
+                anchorRow.spacingXCm = layoutNumberOrNull(savedAnchor.spacingXCm) ?? anchorRow.spacingXCm; // ADDED
+                anchorRow.spacingYCm = layoutNumberOrNull(savedAnchor.spacingYCm) ?? anchorRow.spacingYCm; // ADDED
+                anchorRow.vegDiameterCm = layoutNumberOrNull(savedAnchor.vegDiameterCm) ?? anchorRow.vegDiameterCm; // ADDED
+            } // ADDED
+            companionRows.forEach(row => { // ADDED
+                const saved = byPlant.get(String(row.plantId || '')); // ADDED
+                if (!saved) return; // ADDED
+                row.template = normalizeCompanionLayoutTemplate(saved.template) || row.template; // ADDED
+                row.spacingXCm = layoutNumberOrNull(saved.spacingXCm) ?? row.spacingXCm; // ADDED
+                row.spacingYCm = layoutNumberOrNull(saved.spacingYCm) ?? row.spacingYCm; // ADDED
+                row.vegDiameterCm = layoutNumberOrNull(saved.vegDiameterCm) ?? row.vegDiameterCm; // ADDED
+                row.offsetXCm = layoutNumberOrNull(saved.offsetXCm) ?? row.offsetXCm; // ADDED
+                row.offsetYCm = layoutNumberOrNull(saved.offsetYCm) ?? row.offsetYCm; // ADDED
+            }); // ADDED
+        } // ADDED
+        function makeGroupLayoutNumberControl(value, opts = {}) { // ADDED
+            const input = makeNullableNumber(value == null ? '' : String(value), opts); // ADDED
+            input.className = 'usl-companion-layout-input'; // ADDED
+            return input; // ADDED
+        } // ADDED
+        function appendCompanionLayoutEditorRow(rowState) { // ADDED
+            const rowEl = document.createElement('div'); // ADDED
+            rowEl.className = `usl-companion-layout-row usl-companion-layout-row--${rowState.role}`; // ADDED
+            const name = document.createElement('div'); // ADDED
+            name.className = 'usl-companion-layout-name'; // ADDED
+            name.textContent = rowState.role === 'anchor' ? `${rowState.label} (anchor)` : rowState.label; // ADDED
+            rowEl.appendChild(name); // ADDED
+            if (rowState.role === 'companion') { // ADDED
+                rowState.templateControl = makeSelect([ // ADDED
+                    { value: 'beside', label: 'Beside' }, // ADDED
+                    { value: 'interplant', label: 'Interplant' }, // ADDED
+                    { value: 'staggered', label: 'Staggered' } // ADDED
+                ], rowState.template || 'beside'); // ADDED
+                rowEl.appendChild(rowState.templateControl); // ADDED
+            } else { // ADDED
+                const anchorTag = document.createElement('span'); // ADDED
+                anchorTag.className = 'usl-companion-layout-anchor-tag'; // ADDED
+                anchorTag.textContent = 'Anchor'; // ADDED
+                rowEl.appendChild(anchorTag); // ADDED
+            } // ADDED
+            rowState.spacingXControl = makeGroupLayoutNumberControl(rowState.spacingXCm, { min: 0.1, step: 0.1 }); // ADDED
+            rowState.spacingYControl = makeGroupLayoutNumberControl(rowState.spacingYCm, { min: 0.1, step: 0.1 }); // ADDED
+            rowState.vegDiameterControl = makeGroupLayoutNumberControl(rowState.vegDiameterCm, { min: 0.1, step: 0.1 }); // ADDED
+            rowEl.appendChild(rowState.spacingXControl); // ADDED
+            rowEl.appendChild(rowState.spacingYControl); // ADDED
+            rowEl.appendChild(rowState.vegDiameterControl); // ADDED
+            if (rowState.role === 'companion') { // ADDED
+                rowState.offsetXControl = makeGroupLayoutNumberControl(rowState.offsetXCm, { step: 0.1 }); // ADDED
+                rowState.offsetYControl = makeGroupLayoutNumberControl(rowState.offsetYCm, { step: 0.1 }); // ADDED
+                rowEl.appendChild(rowState.offsetXControl); // ADDED
+                rowEl.appendChild(rowState.offsetYControl); // ADDED
+            } else { // ADDED
+                rowEl.appendChild(document.createElement('span')); // ADDED
+                rowEl.appendChild(document.createElement('span')); // ADDED
+            } // ADDED
+            rowState.warningEl = document.createElement('div'); // ADDED
+            rowState.warningEl.className = 'usl-companion-layout-warning'; // ADDED
+            rowEl.appendChild(rowState.warningEl); // ADDED
+            rowState.changedEl = document.createElement('div'); // ADDED
+            rowState.changedEl.className = 'usl-companion-layout-changed'; // ADDED
+            rowEl.appendChild(rowState.changedEl); // ADDED
+            rowState.rowEl = rowEl; // ADDED
+            const controls = [rowState.templateControl, rowState.spacingXControl, rowState.spacingYControl, rowState.vegDiameterControl, rowState.offsetXControl, rowState.offsetYControl].filter(Boolean); // ADDED
+            controls.forEach(control => { // ADDED
+                control.addEventListener('input', () => markCompanionLayoutRowChanged(rowState)); // ADDED
+                control.addEventListener('change', () => markCompanionLayoutRowChanged(rowState)); // ADDED
+            }); // ADDED
+            layoutGroupEditor.appendChild(rowEl); // ADDED
+        } // ADDED
+        function markCompanionLayoutRowChanged(rowState) { // ADDED
+            rowState.changed = true; // ADDED
+            if (rowState.changedEl) rowState.changedEl.textContent = 'Changed'; // ADDED
+            refreshLayoutPreview(); // ADDED
+        } // ADDED
+        function readCompanionGroupLayoutDraftFromEditor() { // ADDED
+            const state = companionLayoutEditorState; // ADDED
+            if (!state?.active) return null; // ADDED
+            const rows = (state.rows || []).map(row => { // ADDED
+                const draft = { // ADDED
+                    role: row.role, // ADDED
+                    cell: row.cell, // ADDED
+                    cellId: row.cellId, // ADDED
+                    plantId: row.plantId, // ADDED
+                    plantName: row.plantName, // ADDED
+                    label: row.label, // ADDED
+                    rect: row.rect, // ADDED
+                    spacingXCm: readNullableNumber(row.spacingXControl), // ADDED
+                    spacingYCm: readNullableNumber(row.spacingYControl), // ADDED
+                    vegDiameterCm: readNullableNumber(row.vegDiameterControl), // ADDED
+                    changed: !!row.changed // ADDED
+                }; // ADDED
+                if (row.role === 'companion') { // ADDED
+                    draft.template = normalizeCompanionLayoutTemplate(row.templateControl?.value) || 'beside'; // ADDED
+                    draft.offsetXCm = readNullableNumber(row.offsetXControl); // ADDED
+                    draft.offsetYCm = readNullableNumber(row.offsetYControl); // ADDED
+                    draft.relationship = row.relationship; // ADDED
+                } // ADDED
+                return draft; // ADDED
+            }); // ADDED
+            return { // ADDED
+                anchorCell: state.anchor, // ADDED
+                bed: state.bed, // ADDED
+                plantSetKey: CompanionLayoutGroupDefaultModel.plantSetKey(rows.map(row => row.plantId)), // ADDED
+                anchorPlantId: rows.find(row => row.role === 'anchor')?.plantId ?? null, // ADDED
+                rows // ADDED
+            }; // ADDED
+        } // ADDED
+        function refreshCompanionGroupLayoutPreview() { // ADDED
+            const draft = readCompanionGroupLayoutDraftFromEditor(); // ADDED
+            if (!draft) return false; // ADDED
+            const anchorRow = draft.rows.find(row => row.role === 'anchor'); // ADDED
+            const companionRows = draft.rows.filter(row => row.role === 'companion'); // ADDED
+            const model = buildCompanionLayoutPreviewModel({ // ADDED
+                bedRect: graphRectForCell(draft.bed), // ADDED
+                anchorRow, // ADDED
+                companionRows, // ADDED
+                requireRealBed: true // ADDED
+            }); // ADDED
+            renderLayoutPreviewSvg(layoutPreview, model); // ADDED
+            layoutStatus.textContent = model.warning || (model.status === 'no-bed' ? model.message : ''); // ADDED
+            if (model.status === 'ok') { // ADDED
+                const rowModels = new Map((model.rows || []).filter(row => row.role === 'companion').map(row => [String(row.cellId || row.plantId || ''), row])); // CHANGED
+                (companionLayoutEditorState.rows || []).forEach(row => { // ADDED
+                    if (!row.warningEl || row.role !== 'companion') return; // ADDED
+                    row.warningEl.textContent = rowModels.get(String(row.cellId || row.plantId || ''))?.warning || ''; // CHANGED
+                }); // ADDED
+            } // ADDED
+            return true; // ADDED
+        } // ADDED
+        async function rebuildCompanionGroupLayoutEditor() { // ADDED
+            const token = ++companionLayoutEditorLoadToken; // ADDED
+            const activeGraph = ui?.editor?.graph; // ADDED
+            const linked = collectLinkedCompanionLayoutCells(activeGraph, cell); // ADDED
+            const hasEditor = derivedContext?.mode === 'companion' && linked.anchor && linked.companions.length > 0; // ADDED
+            companionLayoutEditorState = hasEditor ? { active: true, anchor: linked.anchor, companions: linked.companions, bed: linked.bed, rows: [] } : null; // ADDED
+            if (singleLayoutSectionWrap) singleLayoutSectionWrap.style.display = hasEditor ? 'none' : ''; // ADDED
+            if (groupLayoutSectionWrap) groupLayoutSectionWrap.style.display = hasEditor ? '' : 'none'; // ADDED
+            layoutGroupEditor.innerHTML = ''; // ADDED
+            if (!hasEditor) return; // ADDED
+            const header = document.createElement('div'); // ADDED
+            header.className = 'usl-companion-layout-row usl-companion-layout-row--header'; // ADDED
+            ['Planting', 'Template', 'Spacing X', 'Spacing Y', 'Veg diam.', 'Offset X', 'Offset Y', 'Warning', 'State'].forEach(label => { const el = document.createElement('div'); el.textContent = label; header.appendChild(el); }); // ADDED
+            layoutGroupEditor.appendChild(header); // ADDED
+            const anchorRow = readAnchorLayoutRow(linked.anchor); // ADDED
+            const companionRows = linked.companions.map(companionCell => readCompanionLayoutRow(linked.anchor, companionCell)); // ADDED
+            const plantIds = [anchorRow.plantId].concat(companionRows.map(row => row.plantId)); // ADDED
+            const saved = await CompanionLayoutGroupDefaultModel.load(plantIds, anchorRow.plantId) || await CompanionLayoutGroupDefaultModel.load(plantIds, null); // ADDED
+            if (token !== companionLayoutEditorLoadToken) return; // ADDED
+            applySavedGroupDefaultToRows(anchorRow, companionRows, saved); // ADDED
+            companionLayoutEditorState.savedDefault = saved; // ADDED
+            companionLayoutEditorState.rows = [anchorRow].concat(companionRows); // ADDED
+            companionLayoutEditorState.rows.forEach(rowState => appendCompanionLayoutEditorRow(rowState)); // ADDED
+            refreshCompanionGroupLayoutPreview(); // ADDED
+        } // ADDED
+        async function applyCompanionGroupLayoutToGraph() { // ADDED
+            const draft = readCompanionGroupLayoutDraftFromEditor(); // ADDED
+            if (!draft) throw new Error('No companion layout group is available to apply.'); // ADDED
+            const activeGraph = ui?.editor?.graph; // ADDED
+            const model = activeGraph?.getModel?.(); // ADDED
+            if (!activeGraph || !model) throw new Error('Graph is unavailable.'); // ADDED
+            const anchorRow = draft.rows.find(row => row.role === 'anchor'); // ADDED
+            const companionRows = draft.rows.filter(row => row.role === 'companion'); // ADDED
+            const preview = buildCompanionLayoutPreviewModel({ bedRect: graphRectForCell(draft.bed), anchorRow, companionRows, requireRealBed: true }); // ADDED
+            if (preview.status !== 'ok') throw new Error(preview.message || 'Layout preview is unavailable.'); // ADDED
+            const byCell = new Map(preview.rows.filter(row => row.role === 'companion').map(row => [String(row.cellId || row.plantId || ''), row])); // CHANGED
+            model.beginUpdate(); // ADDED
+            try { // ADDED
+                const tiler = window.USL && window.USL.tiler ? window.USL.tiler : null; // ADDED
+                draft.rows.forEach(row => { // ADDED
+                    const patch = row.role === 'anchor' ? {} : companionLayoutAttributePatch(row); // ADDED
+                    if (row.spacingXCm != null) patch.spacing_x_cm = String(row.spacingXCm); // ADDED
+                    if (row.spacingYCm != null) patch.spacing_y_cm = String(row.spacingYCm); // ADDED
+                    if (row.vegDiameterCm != null) patch.veg_diameter_cm = String(row.vegDiameterCm); // ADDED
+                    if (row.role === 'companion') { // ADDED
+                        const placed = byCell.get(String(row.cellId || row.plantId || '')); // CHANGED
+                        patch.companion_layout_anchor_group_id = String(draft.anchorCell?.id || ''); // ADDED
+                        patch.companion_layout_interplant = row.template === 'interplant' ? '1' : ''; // ADDED
+                        patch.companion_layout_clamped = placed?.rect?.clamped || placed?.clamped ? '1' : ''; // ADDED
+                        if (placed) setCellAbsoluteRect(activeGraph, row.cell, placed.rect || placed, model); // ADDED
+                    } // ADDED
+                    applyCellAttributePatch(row.cell, patch, model); // ADDED
+                    if (tiler && typeof tiler.retileGroup === 'function') tiler.retileGroup(activeGraph, row.cell, { inTransaction: true, preferInPlace: true }); // ADDED
+                }); // ADDED
+            } finally { // ADDED
+                model.endUpdate(); // ADDED
+            } // ADDED
+            draft.rows.forEach(row => activeGraph.refresh?.(row.cell)); // ADDED
+            layoutStatus.textContent = preview.warning || 'Layout applied.'; // ADDED
+            (companionLayoutEditorState?.rows || []).forEach(row => { row.changed = false; if (row.changedEl) row.changedEl.textContent = ''; }); // ADDED
+            refreshCompanionGroupLayoutPreview(); // ADDED
+        } // ADDED
+        async function saveCompanionGroupLayoutDefaults() { // ADDED
+            const draft = readCompanionGroupLayoutDraftFromEditor(); // ADDED
+            if (!draft) throw new Error('No companion layout group is available to save.'); // ADDED
+            await CompanionLayoutGroupDefaultModel.save(draft.rows.map(row => row.plantId), draft.anchorPlantId, { rows: draft.rows }); // ADDED
+            layoutStatus.textContent = 'Group layout defaults saved.'; // ADDED
+            (companionLayoutEditorState?.rows || []).forEach(row => { row.changed = false; if (row.changedEl) row.changedEl.textContent = ''; }); // ADDED
+        } // ADDED
+        function refreshLayoutPreview() { // ADDED
+            try { // ADDED
+                if (refreshCompanionGroupLayoutPreview()) return; // ADDED
+                const draft = syncLayoutDraftFromControls(); // ADDED
+                const anchorCell = derivedContext?.sourceCell || cell; // ADDED
+                const bed = findContainingBedForScheduleCell(anchorCell); // ADDED
+                const bedRect = graphRectForCell(bed); // ADDED
+                const sourceRect = graphRectForCell(anchorCell); // ADDED
+                const sourceSpacing = { // ADDED
+                    spacingXCm: layoutNumberOrNull(anchorCell?.getAttribute?.('spacing_x_cm')) ?? layoutNumberOrNull(anchorCell?.getAttribute?.('spacing_cm')) ?? 30, // ADDED
+                    spacingYCm: layoutNumberOrNull(anchorCell?.getAttribute?.('spacing_y_cm')) ?? layoutNumberOrNull(anchorCell?.getAttribute?.('spacing_cm')) ?? 30 // ADDED
+                }; // ADDED
+                const model = buildLayoutPreviewModel({ // ADDED
+                    bedRect, // ADDED
+                    sourceRect, // ADDED
+                    sourceSpacing, // ADDED
+                    layout: draft, // ADDED
+                    sourceLabel: schedulerCellLabelForGap(anchorCell), // ADDED
+                    companionLabel: selectedLayoutPlant()?.plant_name || 'Companion', // ADDED
+                    requireRealBed: true, // ADDED
+                    showCompanion: derivedContext?.mode === 'companion' // ADDED
+                }); // ADDED
+                renderLayoutPreviewSvg(layoutPreview, model); // ADDED
+                layoutStatus.textContent = model.warning || (model.status === 'no-bed' ? model.message : ''); // ADDED
+            } catch (e) { // ADDED
+                layoutStatus.textContent = 'Layout preview error: ' + (e?.message || String(e)); // ADDED
+            } // ADDED
+        } // ADDED
+        function appendLayoutTabControls() { // ADDED
+            const layoutSection = makeSection('Layout'); // ADDED
+            layoutSection.body.appendChild(row('Template:', layoutTemplateSel).row); // ADDED
+            layoutSection.body.appendChild(row('Spacing X (cm):', layoutSpacingXInput).row); // ADDED
+            layoutSection.body.appendChild(row('Spacing Y (cm):', layoutSpacingYInput).row); // ADDED
+            layoutSection.body.appendChild(row('Offset X (cm):', layoutOffsetXInput).row); // ADDED
+            layoutSection.body.appendChild(row('Offset Y (cm):', layoutOffsetYInput).row); // ADDED
+            const saveRow = row(derivedContext?.mode === 'companion' ? 'Save pair default:' : 'Save plant default:', saveLayoutDefaultChk); // ADDED
+            layoutSection.body.appendChild(saveRow.row); // ADDED
+            layoutTab.appendChild(layoutSection.wrap); // ADDED
+            singleLayoutSectionWrap = layoutSection.wrap; // ADDED
+            const groupSection = makeSection('Companion group layout'); // ADDED
+            const intro = document.createElement('div'); // ADDED
+            intro.className = 'usl-companion-layout-note'; // ADDED
+            intro.textContent = 'Controls edit the live preview until Apply layout is selected.'; // ADDED
+            groupSection.body.appendChild(intro); // ADDED
+            groupSection.body.appendChild(layoutGroupEditor); // ADDED
+            const groupActions = document.createElement('div'); // ADDED
+            groupActions.className = 'usl-companion-layout-actions'; // ADDED
+            groupActions.appendChild(applyGroupLayoutBtn); // ADDED
+            groupActions.appendChild(saveGroupLayoutDefaultBtn); // ADDED
+            groupSection.body.appendChild(groupActions); // ADDED
+            layoutTab.appendChild(groupSection.wrap); // ADDED
+            groupLayoutSectionWrap = groupSection.wrap; // ADDED
+            groupLayoutSectionWrap.style.display = 'none'; // ADDED
+            const previewSection = makeSection('Bed preview'); // ADDED
+            previewSection.body.appendChild(layoutPreview); // ADDED
+            previewSection.body.appendChild(layoutStatus); // ADDED
+            layoutTab.appendChild(previewSection.wrap); // ADDED
+        } // ADDED
+        [layoutTemplateSel, layoutSpacingXInput, layoutSpacingYInput, layoutOffsetXInput, layoutOffsetYInput].forEach(control => { // ADDED
+            control.addEventListener('input', refreshLayoutPreview); // ADDED
+            control.addEventListener('change', refreshLayoutPreview); // ADDED
+        }); // ADDED
 
         function currentMethodUsesTransplantDateInput() { // ADDED
             return !mode.perennial && methodUsesTransplantDateInput(formState.methodId); // ADDED
@@ -7373,6 +8550,7 @@ Draw.loadPlugin(function (ui) {
             formState.seasonStartYear = Number(seasonYearInput.value || (new Date()).getUTCFullYear());
             formState.harvestWindowDays = (harvestWindowInput.value === '' ? null : Number(harvestWindowInput.value));
             formState.minYieldMultiplier = Number(minYieldMultInput.value || 0);
+            syncLayoutDraftFromControls(); // ADDED
         }
 
         function selectedVarietyName() { // ADDED
@@ -8545,6 +9723,8 @@ Draw.loadPlugin(function (ui) {
                 updateCompanionTimingHelp(); // CHANGED
             } // ADDED
             updateCompanionTimingHelp(); // ADDED
+            writeLayoutControlsFromSelection(); // ADDED
+            refreshLayoutPreview(); // ADDED
             syncStateFromControls();
             refreshClimateModelControls({ preserveDraft: false }); // ADDED
 
@@ -8577,6 +9757,8 @@ Draw.loadPlugin(function (ui) {
             harvestWindowInput.value = (effectivePlant.defaultHW() ?? '');
             formState.harvestWindowDays = (harvestWindowInput.value === '' ? null : Number(harvestWindowInput.value));
             await recomputeAll('varietyChanged');
+            writeLayoutControlsFromSelection(); // ADDED
+            refreshLayoutPreview(); // ADDED
             await refreshTaskTemplateFromSelection();
             scheduleCropPickerSuitabilityRefresh(); // ADDED
 
@@ -8606,6 +9788,7 @@ Draw.loadPlugin(function (ui) {
                 userEditedStartThisSession = true; // FIX
                 syncStateFromControls();
                 updateCompanionTimingHelp(); // ADDED
+                refreshLayoutPreview(); // ADDED
                 if (mode.perennial) {
                     seasonEndInput.value = computePerennialEndISO(
                         startInput.value,
@@ -9033,6 +10216,40 @@ Draw.loadPlugin(function (ui) {
                             methodId: normId(formState.methodId) // FIX
                         });
                     }
+                    if (saveLayoutDefaultChk.checked) { // ADDED
+                        const layoutDraft = readLayoutDraftFromControls(); // ADDED
+                        if (derivedContext?.mode === 'companion') { // ADDED
+                            try { // ADDED
+                                const relationship = currentLayoutRelationship(); // ADDED
+                                const sourcePlantForPair = derivedContext.sourcePlant || null; // ADDED
+                                const companionPlantForPair = selectedLayoutPlant(); // ADDED
+                                const actualStartOffsetDays = derivedContext.sourceOccupancy ? daysDeltaISO(derivedContext.sourceOccupancy.startISO, derivedOccupancyStartISO(scheduleResult)) : null; // ADDED
+                                const ensured = await CompanionRelationshipModel.ensurePairDefaultsRelationship(sourcePlantForPair, companionPlantForPair, relationship, { startOffsetDays: actualStartOffsetDays }); // ADDED
+                                await CompanionRelationshipModel.saveLayoutDefaults(ensured.relationId, layoutDraft, ensured); // ADDED
+                                const companionKey = String(companionPlantForPair?.plant_id || ''); // ADDED
+                                if (companionKey) { // ADDED
+                                    derivedContext.relationshipByPlantId?.set?.(companionKey, Object.assign({}, ensured, { // ADDED
+                                        layoutTemplate: layoutDraft.template, // ADDED
+                                        layoutSpacingXCm: layoutDraft.spacingXCm, // ADDED
+                                        layoutSpacingYCm: layoutDraft.spacingYCm, // ADDED
+                                        layoutOffsetXCm: layoutDraft.offsetXCm, // ADDED
+                                        layoutOffsetYCm: layoutDraft.offsetYCm // ADDED
+                                    })); // ADDED
+                                    derivedContext.metadataByPlantId?.set?.(companionKey, Object.assign({ known: true }, ensured)); // ADDED
+                                } // ADDED
+                                if (targetCell && ensured.relationId) writeCellAttribute(targetCell, 'companion_relation_id', ensured.relationId, ui?.editor?.graph?.getModel?.() || null); // CHANGED
+                            } catch (e) { // ADDED
+                                throw new Error('Save pair default error: ' + (e?.message || String(e))); // ADDED
+                            } // ADDED
+                        } else { // ADDED
+                            const spacingPatch = {}; // ADDED
+                            if (layoutDraft.spacingXCm != null) spacingPatch.spacing_x_cm = layoutDraft.spacingXCm; // ADDED
+                            if (layoutDraft.spacingYCm != null) spacingPatch.spacing_y_cm = layoutDraft.spacingYCm; // ADDED
+                            if (layoutDraft.spacingXCm != null && layoutDraft.spacingYCm != null && layoutDraft.spacingXCm === layoutDraft.spacingYCm) spacingPatch.spacing_cm = layoutDraft.spacingXCm; // ADDED
+                            if (!Object.keys(spacingPatch).length) throw new Error('Enter spacing before saving the plant layout default.'); // ADDED
+                            await PlantModel.update(formState.plantId, spacingPatch); // ADDED
+                        } // ADDED
+                    } // ADDED
                 };
 
                 const taskTemplateJson = taskDirty
@@ -9051,7 +10268,12 @@ Draw.loadPlugin(function (ui) {
                         if (!createSibling) throw new Error('Plant tiler sibling creation API is unavailable.'); // ADDED
                         createdDerivedCell = createSibling(graph, relationshipSourceCell, { // CHANGED
                             source: 'scheduler-' + derivedContext.mode, // ADDED
-                            attributes: derivedRelationshipPatch // ADDED
+                            attributes: derivedRelationshipPatch, // CHANGED
+                            layoutOffsetCm: derivedContext.mode === 'companion' ? { // ADDED
+                                x: finiteNumberOrNull(derivedRelationshipPatch.companion_offset_x_cm) || 0, // ADDED
+                                y: finiteNumberOrNull(derivedRelationshipPatch.companion_offset_y_cm) || 0 // ADDED
+                            } : null, // ADDED
+                            onPlacementWarning: message => showErrorInline(message) // ADDED
                         }); // ADDED
                         if (!createdDerivedCell) throw new Error('Could not create derived plant group.'); // ADDED
                         targetCell = createdDerivedCell; // ADDED
@@ -9819,6 +11041,10 @@ Draw.loadPlugin(function (ui) {
         taskDefaultsActions.appendChild(row("Save these tasks as plant default", saveDefaultChk).row); // CHANGED
         tasksTab.insertBefore(taskDefaultsActions, taskEditorDiv); // ADDED
 
+        appendLayoutTabControls(); // ADDED
+        writeLayoutControlsFromSelection(); // ADDED
+        refreshLayoutPreview(); // ADDED
+
 
         // ============================================================================
         // TABS WRAPPER
@@ -9882,6 +11108,34 @@ Draw.loadPlugin(function (ui) {
             .usl-scheduler-summary-warning-list li{margin:0 0 2px 0!important;padding:0!important} /* ADDED */
             .usl-scheduler-dialog details{border:1px solid var(--usl-neutral-300)!important;border-radius:8px;background:#fff;margin-top:12px!important;overflow:hidden}
             .usl-scheduler-dialog summary{padding:9px 10px!important;background:var(--usl-neutral-100);border-bottom:1px solid var(--usl-neutral-300);font-weight:700!important}
+            .usl-layout-preview{min-height:260px;border:1px solid var(--usl-neutral-300);border-radius:8px;background:#f9fafb;display:flex;align-items:center;justify-content:center;overflow:hidden} /* ADDED */
+            .usl-layout-preview-svg{width:100%;height:260px;display:block;background:#f9fafb} /* ADDED */
+            .usl-layout-preview-bed{fill:#eef2ff;stroke:#4f46e5;stroke-width:2} /* ADDED */
+            .usl-layout-preview-source{fill:rgba(37,99,235,.12);stroke:#2563eb;stroke-width:1.5;stroke-dasharray:4 3} /* ADDED */
+            .usl-layout-preview-companion{fill:rgba(22,101,52,.12);stroke:#166534;stroke-width:1.5;stroke-dasharray:4 3} /* ADDED */
+            .usl-layout-preview-source-dot{fill:#2563eb} /* ADDED */
+            .usl-layout-preview-companion-dot{fill:#16a34a} /* ADDED */
+            .usl-layout-preview-label{font:11px Arial,sans-serif;fill:#172018;font-weight:700} /* ADDED */
+            .usl-layout-preview-warning{font:11px Arial,sans-serif;fill:#92400e;font-weight:700} /* ADDED */
+            .usl-layout-preview-empty{padding:18px;color:#92400e;font-weight:700;text-align:center} /* ADDED */
+            .usl-layout-status{margin-top:8px;color:#92400e;font-weight:700;min-height:16px} /* ADDED */
+            .usl-companion-layout-note{font-size:12px;color:var(--usl-neutral-700);margin-bottom:8px} /* ADDED */
+            .usl-companion-layout-editor{display:grid;gap:4px;overflow-x:auto} /* ADDED */
+            .usl-companion-layout-row{display:grid;grid-template-columns:minmax(120px,1.4fr) minmax(100px,.9fr) 78px 78px 78px 78px 78px minmax(100px,1fr) 72px;gap:6px;align-items:center;min-width:860px} /* ADDED */
+            .usl-companion-layout-row--header{font-size:10px;text-transform:uppercase;color:var(--usl-neutral-700);font-weight:700;border-bottom:1px solid var(--usl-neutral-300);padding-bottom:4px} /* ADDED */
+            .usl-companion-layout-row--anchor{background:rgba(37,99,235,.06)} /* ADDED */
+            .usl-companion-layout-name{font-weight:700;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap} /* ADDED */
+            .usl-companion-layout-anchor-tag{font-size:12px;color:var(--usl-neutral-700)} /* ADDED */
+            .usl-companion-layout-input{width:72px!important;box-sizing:border-box} /* ADDED */
+            .usl-companion-layout-warning{font-size:11px;color:#92400e;font-weight:700;min-height:14px} /* ADDED */
+            .usl-companion-layout-changed{font-size:11px;color:#2563eb;font-weight:700;min-height:14px} /* ADDED */
+            .usl-companion-layout-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px} /* ADDED */
+            .usl-layout-preview-companion-interplant{fill:rgba(217,119,6,.13);stroke:#b45309} /* ADDED */
+            .usl-layout-preview-companion-staggered{fill:rgba(22,163,74,.12);stroke:#15803d} /* ADDED */
+            .usl-layout-preview-companion-beside{fill:rgba(14,165,233,.12);stroke:#0369a1} /* ADDED */
+            .usl-layout-preview-companion-dot-interplant{fill:#d97706} /* ADDED */
+            .usl-layout-preview-companion-dot-staggered{fill:#16a34a} /* ADDED */
+            .usl-layout-preview-companion-dot-beside{fill:#0284c7} /* ADDED */
             @media (max-width:900px){.usl-scheduler-row--crop-picker{grid-template-columns:50px minmax(120px,1fr) auto auto!important}.usl-scheduler-crop-combobox-wrap{grid-column:2 / -1;min-width:0!important}.usl-scheduler-crop-action{grid-row:3}.usl-scheduler-crop-action:first-of-type{grid-column:3}.usl-scheduler-crop-action:last-of-type{grid-column:4}}
             @media (max-width:760px){.usl-scheduler-summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important}.usl-scheduler-row-label{flex-basis:100%}.usl-scheduler-body{padding:10px}.usl-scheduler-title{white-space:normal}}
             @media (max-width:640px){.usl-scheduler-row--crop-picker{grid-template-columns:1fr auto auto!important}.usl-scheduler-row--crop-picker > .usl-scheduler-row-label{grid-column:1 / -1}.usl-scheduler-row--crop-variety > .usl-scheduler-row-label{flex-basis:100%!important}.usl-scheduler-crop-filter{grid-column:1 / -1}.usl-scheduler-crop-combobox-wrap{grid-column:1 / -1;min-width:0!important}}
@@ -9938,9 +11192,19 @@ Draw.loadPlugin(function (ui) {
         });
         tasksTabBtn.className = "usl-scheduler-tab"; // NEW
         tasksTabBtn.style.minWidth = "100px";
+        const layoutTabBtn = mxUtils.button("Layout", () => { // ADDED
+            writeLayoutControlsFromSelection(); // ADDED
+            refreshLayoutPreview(); // ADDED
+            tabsBody.innerHTML = ""; // ADDED
+            tabsBody.appendChild(layoutTab); // ADDED
+            setActiveTabButton(layoutTabBtn); // ADDED
+        }); // ADDED
+        layoutTabBtn.className = "usl-scheduler-tab"; // ADDED
+        layoutTabBtn.style.minWidth = "100px"; // ADDED
 
         tabsHeader.appendChild(scheduleTabBtn);
         tabsHeader.appendChild(tasksTabBtn);
+        tabsHeader.appendChild(layoutTabBtn); // ADDED
         tabsBody.appendChild(div);
 
         const dialogFooter = document.createElement("div"); // NEW
@@ -11691,11 +12955,13 @@ Draw.loadPlugin(function (ui) {
         if (mode === 'companion') { // ADDED
             const actualOffset = sourceWindow ? daysDeltaISO(sourceWindow.startISO, targetStartISO) : null; // ADDED
             const relationship = derivedContext.relationshipByPlantId?.get?.(String(targetPlant?.plant_id)) || null; // ADDED
+            const layout = resolveCompanionLayout(sourceCell, targetPlant, relationship, derivedContext.layoutDraft || {}); // ADDED
             patch.companion_relation_id = relationship?.relationId || ''; // ADDED
             patch.companion_start_offset_days = actualOffset == null ? '' : String(actualOffset); // ADDED
             patch.companion_recommended_start_offset_days = String(relationship?.recommendedStartOffsetDays ?? 0); // ADDED
             patch.companion_rating = relationship?.rating == null ? '' : String(relationship.rating); // ADDED
             patch.companion_type = relationship?.companionType || ''; // ADDED
+            Object.assign(patch, companionLayoutAttributePatch(layout)); // ADDED
         } else if (mode === 'turnover') { // ADDED
             const gap = sourceWindow ? daysDeltaISO(sourceWindow.endISO, targetStartISO) : null; // ADDED
             patch.turnover_gap_days = gap == null ? '' : String(gap); // ADDED
@@ -11725,6 +12991,7 @@ Draw.loadPlugin(function (ui) {
             candidatePlants.forEach(plant => { // ADDED
                 const key = String(plant?.plant_id); // ADDED
                 const rel = relationshipByPlantId.get(key); // ADDED
+                if (!rel) relationshipByPlantId.set(key, buildGraphCreatedCompanionRelationship(sourcePlant, plant, { known: false })); // ADDED
                 metadataByPlantId.set(key, rel ? Object.assign({ known: true }, rel) : { known: false, recommendedStartOffsetDays: 0, rating: null, evidence: [] }); // ADDED
             }); // ADDED
             const firstRel = candidatePlants.length ? relationshipByPlantId.get(String(candidatePlants[0]?.plant_id)) : null; // ADDED
@@ -11776,6 +13043,18 @@ Draw.loadPlugin(function (ui) {
                 derived.metadataByPlantId.set(targetPlantId, rel ? Object.assign({ known: true }, rel) : { known: false, recommendedStartOffsetDays: 0, rating: null, evidence: [] }); // ADDED
             } // ADDED
         } // ADDED
+        if (selectedPlant && targetPlantId && !finiteNumberOrNull(derived.relationshipByPlantId.get(targetPlantId)?.relationId)) { // ADDED
+            const graphRelationship = buildGraphCreatedCompanionRelationship(sourcePlant, selectedPlant, { // ADDED
+                startOffsetDays: finiteNumberOrNull(cell.getAttribute?.('companion_start_offset_days')) ?? 0, // ADDED
+                layoutTemplate: cell.getAttribute?.('companion_layout_template') || '', // ADDED
+                layoutSpacingXCm: finiteNumberOrNull(cell.getAttribute?.('companion_layout_spacing_x_cm')), // ADDED
+                layoutSpacingYCm: finiteNumberOrNull(cell.getAttribute?.('companion_layout_spacing_y_cm')), // ADDED
+                layoutOffsetXCm: finiteNumberOrNull(cell.getAttribute?.('companion_offset_x_cm')), // ADDED
+                layoutOffsetYCm: finiteNumberOrNull(cell.getAttribute?.('companion_offset_y_cm')), // ADDED
+                known: false // ADDED
+            }); // ADDED
+            if (graphRelationship) derived.relationshipByPlantId.set(targetPlantId, graphRelationship); // ADDED
+        } // ADDED
         derived.operation = 'edit'; // ADDED
         derived.targetCell = cell; // ADDED
         derived.defaultPrimaryStartISO = ''; // ADDED
@@ -11805,6 +13084,7 @@ Draw.loadPlugin(function (ui) {
         root.appendChild(body); // ADDED
         root.appendChild(actions); // ADDED
         ui.showDialog(root, 430, 160, true, true); // ADDED
+        elevateTrellisDialog(ui); // FIX
     } // ADDED
 
 
@@ -12263,6 +13543,7 @@ Draw.loadPlugin(function (ui) {
         window.USL.scheduler.__test = {
             PlantModel,
             TaskTemplateModel,
+            CompanionLayoutGroupDefaultModel, // ADDED
             CityClimate,
             PolicyFlags,
             ScheduleInputs: sharedCore.ScheduleInputs, // CHANGED
@@ -12280,6 +13561,14 @@ Draw.loadPlugin(function (ui) {
             layoutLifecycleTimelineMarkerOffsets, // ADDED
             attachLifecycleTimelineMarkerTooltip, // ADDED
             findFirstLifecycleTimelineTaskRule, // ADDED
+            buildGraphCreatedCompanionRelationship, // ADDED
+            normalizeCompanionLayoutTemplate, // ADDED
+            resolveCompanionLayout, // ADDED
+            companionLayoutAttributePatch, // ADDED
+            buildLayoutPreviewModel, // ADDED
+            buildCompanionLayoutPreviewModel, // ADDED
+            computeActiveCompanionPlacement, // ADDED
+            computePreviewPlantCircles, // ADDED
             normId, // FIX
             resolveStartAfterWindow // FIX
         }; // FIX: expose pure planner internals only when the regression harness opts in
@@ -12743,6 +14032,7 @@ Draw.loadPlugin(function (ui) {
             validateTaskRuleAnchorOrder, // ADDED
             describeTaskRule, // ADDED
             buildTasksForPlan, // ADDED
+            CompanionLayoutGroupDefaultModel, // ADDED
             findRepeatCutoffOmittedRuleKeys, // ADDED
             filterPreviewTasks, // ADDED
             getTaskPreviewRuleKey, // ADDED
@@ -12770,6 +14060,14 @@ Draw.loadPlugin(function (ui) {
             turnoverComputedWindowFitsSourceCluster, // ADDED
             turnoverCandidateFitsSourceCluster, // ADDED
             buildDerivedRelationshipPatch, // ADDED
+            buildGraphCreatedCompanionRelationship, // ADDED
+            normalizeCompanionLayoutTemplate, // ADDED
+            resolveCompanionLayout, // ADDED
+            companionLayoutAttributePatch, // ADDED
+            buildLayoutPreviewModel, // ADDED
+            buildCompanionLayoutPreviewModel, // ADDED
+            computeActiveCompanionPlacement, // ADDED
+            computePreviewPlantCircles, // ADDED
             companionRatingLabel, // ADDED
             formatSignedDays, // ADDED
             sharedCore, // CHANGED

@@ -2606,7 +2606,7 @@ test('scheduler permission guard blocks unauthorized planting groups', () => { /
 
 test('scheduler open and save preflight permissions before side effects', () => { // NEW
     const schedulerSource = fs.readFileSync(schedulerPath, 'utf8'); // NEW
-    const openStart = schedulerSource.indexOf('async function openScheduleDialog(ui, cell)'); // NEW
+    const openStart = schedulerSource.indexOf('async function openScheduleDialog(ui, cell'); // CHANGED
     const openLoad = schedulerSource.indexOf('const plants = await PlantModel.listBasic();', openStart); // NEW
     const openGuard = schedulerSource.indexOf('requireCanSchedulePlantingGroup(cell); // NEW', openStart); // NEW
     assert.ok(openStart >= 0 && openGuard > openStart && openGuard < openLoad); // NEW

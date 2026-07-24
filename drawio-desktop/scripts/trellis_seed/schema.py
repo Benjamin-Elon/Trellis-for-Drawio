@@ -25,7 +25,9 @@ CITY_GEO_IDENTITY_COLUMNS = {"country_name", "country_code", "region_name", "reg
 CITY_CLIMATE_BANDS = {"hot", "temperate", "cold"}  # ADDED
 VARIETY_MATURITY_CLASSES = {"early", "mid", "late"}  # ADDED
 PLANT_VARIETY_COLUMNS = {"variety_id", "plant_id", "plant_name", "variety_name", "maturity_class", "overrides", "overrides_json"}  # ADDED
-COMPANION_COLUMNS = {"relation_id", "p1", "p2", "rating", "companion_type", "companion_type_id", "source_plant_id", "companion_plant_id", "start_offset_days"}  # ADDED
+COMPANION_LAYOUT_COLUMNS = {"layout_template", "layout_spacing_x_cm", "layout_spacing_y_cm", "layout_offset_x_cm", "layout_offset_y_cm"}  # ADDED
+COMPANION_LAYOUT_TEMPLATES = {"beside", "interplant", "staggered"}  # ADDED
+COMPANION_COLUMNS = {"relation_id", "p1", "p2", "rating", "companion_type", "companion_type_id", "source_plant_id", "companion_plant_id", "start_offset_days", *COMPANION_LAYOUT_COLUMNS}  # CHANGED
 
 PLANTING_WINDOW_REFERENCE_COLUMNS = {
     "reference_id", "plant_id", "plant_name", "city_id", "city_name", "method_id",

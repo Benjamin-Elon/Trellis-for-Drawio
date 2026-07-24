@@ -10,7 +10,7 @@ from typing import Any
 
 from .jsonio import read_json, write_json
 from .migrations import apply_migrations, pending_migrations
-from .schema import CITY_COLUMNS, COMPANION_COLUMNS, PLANT_COLUMNS, PLANTING_WINDOW_REFERENCE_COLUMNS, VARIETY_MATURITY_CLASSES, WEATHER_TABLES  # CHANGED
+from .schema import CITY_COLUMNS, COMPANION_COLUMNS, COMPANION_LAYOUT_TEMPLATES, PLANT_COLUMNS, PLANTING_WINDOW_REFERENCE_COLUMNS, VARIETY_MATURITY_CLASSES, WEATHER_TABLES  # CHANGED
 from .validator import normalize_key, validate_run
 from .weather import checksum_rows
 
@@ -301,7 +301,7 @@ def _normalize_maturity_class(value: Any) -> str | None:  # ADDED
 
 def _upsert_companions(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> int:
     companion_columns = set(_table_columns(conn, "Companions"))  # ADDED
-    writable_columns = [column for column in ("p1", "p2", "rating", "companion_type", "companion_type_id", "source_plant_id", "companion_plant_id", "start_offset_days") if column in companion_columns]  # ADDED
+    writable_columns = [column for column in ("p1", "p2", "rating", "companion_type", "companion_type_id", "source_plant_id", "companion_plant_id", "start_offset_days", "layout_template", "layout_spacing_x_cm", "layout_spacing_y_cm", "layout_offset_x_cm", "layout_offset_y_cm") if column in companion_columns]  # CHANGED
     for row in rows:
         relation_id = row.get("relation_id") or _find_companion_id(conn, row.get("p1"), row.get("p2"))
         normalized = _normalize_companion_row(conn, row, companion_columns)  # ADDED
@@ -619,6 +619,12 @@ def _optional_int(value: Any) -> int | None:  # ADDED
     return int(value)  # ADDED
 
 
+def _optional_float(value: Any) -> float | None:  # ADDED
+    if value in (None, ""):  # ADDED
+        return None  # ADDED
+    return float(value)  # ADDED
+
+
 def _normalize_companion_row(conn: sqlite3.Connection, row: dict[str, Any], existing_columns: set[str] | None = None) -> dict[str, Any]:  # ADDED
     columns = existing_columns or set(_table_columns(conn, "Companions"))  # ADDED
     normalized = {column: row.get(column) for column in COMPANION_COLUMNS if column in row}  # ADDED
@@ -628,6 +634,12 @@ def _normalize_companion_row(conn: sqlite3.Connection, row: dict[str, Any], exis
         normalized["companion_plant_id"] = _optional_int(row.get("companion_plant_id")) or _find_id_by_name(conn, "Plants", "plant_id", "plant_name", row.get("p2"))  # ADDED
     if "start_offset_days" in columns:  # ADDED
         normalized["start_offset_days"] = _optional_int(row.get("start_offset_days"))  # ADDED
+    if "layout_template" in columns:  # ADDED
+        template = str(row.get("layout_template") or "").strip().casefold()  # ADDED
+        normalized["layout_template"] = template if template in COMPANION_LAYOUT_TEMPLATES else None  # ADDED
+    for key in ("layout_spacing_x_cm", "layout_spacing_y_cm", "layout_offset_x_cm", "layout_offset_y_cm"):  # ADDED
+        if key in columns:  # ADDED
+            normalized[key] = _optional_float(row.get(key))  # ADDED
     return normalized  # ADDED
 
 

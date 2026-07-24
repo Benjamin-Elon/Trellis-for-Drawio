@@ -282,6 +282,92 @@ test('derived schedule helpers snapshot actual and recommended companion timing 
     assert.equal(patch.companion_recommended_start_offset_days, '7'); // ADDED
 }); // ADDED
 
+test('derived companion layout patch materializes template spacing and offsets', () => { // ADDED
+    const sourceCell = { // ADDED
+        id: 'source-layout', // ADDED
+        getGeometry: () => ({ x: 10, y: 20, width: 120, height: 80 }), // ADDED
+        getAttribute: key => ({ plant_id: '11', sow_date: '2026-04-01', harvest_end: '2026-08-01', spacing_x_cm: '40', spacing_y_cm: '50' }[key] || '') // ADDED
+    }; // ADDED
+    const targetPlant = makeCrop({ plant_id: 22, spacing_cm: 30, spacing_x_cm: 25, spacing_y_cm: 35, veg_diameter_cm: 18 }); // ADDED
+    const relationship = { relationId: 9, rating: 1, companionType: 'interplant', recommendedStartOffsetDays: 7, layoutTemplate: 'staggered', layoutSpacingXCm: 20, layoutSpacingYCm: 22, layoutOffsetXCm: 12, layoutOffsetYCm: -6 }; // ADDED
+    const result = { timelines: [{ sow: new Date('2026-04-15T00:00:00Z'), harvestEnd: new Date('2026-07-01T00:00:00Z') }] }; // ADDED
+    const patch = hooks.buildDerivedRelationshipPatch(sourceCell, targetPlant, result, { // ADDED
+        mode: 'companion', // ADDED
+        sourceOccupancy: hooks.sourceOccupancyWindowForDerived(sourceCell, makeCrop({ plant_id: 11 })), // ADDED
+        relationshipByPlantId: new Map([['22', relationship]]) // ADDED
+    }); // ADDED
+    assert.equal(patch.companion_layout_template, 'staggered'); // ADDED
+    assert.equal(patch.spacing_x_cm, '20'); // ADDED
+    assert.equal(patch.spacing_y_cm, '22'); // ADDED
+    assert.equal(patch.companion_offset_x_cm, '12'); // ADDED
+    assert.equal(patch.companion_offset_y_cm, '-6'); // ADDED
+    assert.equal(patch.veg_diameter_cm, '18'); // ADDED
+}); // ADDED
+
+test('layout preview model renders no-bed and clamps companion placement', () => { // ADDED
+    const noBed = hooks.buildLayoutPreviewModel({ requireRealBed: true }); // ADDED
+    assert.equal(noBed.status, 'no-bed'); // ADDED
+    const model = hooks.buildLayoutPreviewModel({ // ADDED
+        bedRect: { x: 0, y: 0, width: 100, height: 60 }, // ADDED
+        sourceRect: { x: 70, y: 20, width: 40, height: 30 }, // ADDED
+        sourceSpacing: { spacingXCm: 10, spacingYCm: 10 }, // ADDED
+        layout: { spacingXCm: 10, spacingYCm: 10, offsetXCm: 80, offsetYCm: 0 }, // ADDED
+        showCompanion: true // ADDED
+    }); // ADDED
+    assert.equal(model.status, 'ok'); // ADDED
+    assert.equal(model.clamped, true); // ADDED
+    assert.ok(model.companion.x <= 60); // ADDED
+    const dense = hooks.computePreviewPlantCircles({ x: 0, y: 0, width: 400, height: 400 }, 1, 1, { maxCircles: 12 }); // ADDED
+    assert.equal(dense.circles.length, 12); // ADDED
+    assert.equal(dense.summarized, true); // ADDED
+}); // ADDED
+
+test('active companion layout templates compute distinct placements', () => { // ADDED
+    const anchor = { x: 10, y: 20, width: 100, height: 80 }; // ADDED
+    const companion = { x: 10, y: 20, width: 60, height: 40 }; // ADDED
+    const bed = { x: 0, y: 0, width: 260, height: 160 }; // ADDED
+    const anchorSpacing = { spacingXCm: 40, spacingYCm: 30 }; // ADDED
+    const beside = hooks.computeActiveCompanionPlacement(anchor, companion, bed, { template: 'beside', spacingXCm: 20, offsetXCm: 0, offsetYCm: 0 }, anchorSpacing); // ADDED
+    const staggered = hooks.computeActiveCompanionPlacement(anchor, companion, bed, { template: 'staggered', offsetXCm: 0, offsetYCm: 0 }, anchorSpacing); // ADDED
+    const interplant = hooks.computeActiveCompanionPlacement(anchor, companion, bed, { template: 'interplant', offsetXCm: 0, offsetYCm: 0 }, anchorSpacing); // ADDED
+    assert.notDeepEqual({ x: beside.x, y: beside.y }, { x: staggered.x, y: staggered.y }); // ADDED
+    assert.notDeepEqual({ x: beside.x, y: beside.y }, { x: interplant.x, y: interplant.y }); // ADDED
+    assert.equal(interplant.width, anchor.width); // ADDED
+    assert.equal(interplant.height, anchor.height); // ADDED
+    assert.equal(interplant.interplant, true); // ADDED
+}); // ADDED
+
+test('multi-companion preview model renders anchor and all companions with warnings', () => { // ADDED
+    const model = hooks.buildCompanionLayoutPreviewModel({ // ADDED
+        bedRect: { x: 0, y: 0, width: 180, height: 120 }, // ADDED
+        anchorRow: { plantId: 1, label: 'Carrot', rect: { x: 20, y: 20, width: 80, height: 50 }, spacingXCm: 20, spacingYCm: 20 }, // ADDED
+        companionRows: [ // ADDED
+            { plantId: 2, label: 'Lettuce', rect: { x: 0, y: 0, width: 40, height: 40 }, template: 'staggered', spacingXCm: 18, spacingYCm: 18, offsetXCm: 0, offsetYCm: 0 }, // ADDED
+            { plantId: 3, label: 'Tomato', rect: { x: 0, y: 0, width: 80, height: 80 }, template: 'beside', spacingXCm: 30, spacingYCm: 30, offsetXCm: 120, offsetYCm: 0 } // ADDED
+        ], // ADDED
+        requireRealBed: true // ADDED
+    }); // ADDED
+    assert.equal(model.status, 'ok'); // ADDED
+    assert.equal(model.rows.length, 3); // ADDED
+    assert.equal(model.rows[0].role, 'anchor'); // ADDED
+    assert.match(model.warning, /Tomato: Clamped inside bed/); // ADDED
+}); // ADDED
+
+test('graph-created companion pairs get an in-memory relationship before DB default save', () => { // ADDED
+    const sourcePlant = makeCrop({ plant_id: 11, plant_name: 'Tomato' }); // ADDED
+    const companionPlant = makeCrop({ plant_id: 22, plant_name: 'Basil' }); // ADDED
+    const relationship = hooks.buildGraphCreatedCompanionRelationship(sourcePlant, companionPlant, { startOffsetDays: -3, layoutTemplate: 'staggered', layoutOffsetXCm: 12 }); // ADDED
+    assert.equal(relationship.relationId, ''); // ADDED
+    assert.equal(relationship.sourcePlantId, '11'); // ADDED
+    assert.equal(relationship.companionPlantId, '22'); // ADDED
+    assert.equal(relationship.p1, 'Tomato'); // ADDED
+    assert.equal(relationship.p2, 'Basil'); // ADDED
+    assert.equal(relationship.recommendedStartOffsetDays, -3); // ADDED
+    assert.equal(relationship.layoutTemplate, 'staggered'); // ADDED
+    assert.equal(relationship.layoutOffsetXCm, 12); // ADDED
+    assert.equal(relationship.graphCreated, true); // ADDED
+}); // ADDED
+
 test('derived schedule helpers gate companion lifecycle and compute turnover gaps', () => { // ADDED
     const annual = makeCrop({ plant_id: 1, annual: 1, biennial: 0, perennial: 0 }); // ADDED
     const perennial = makeCrop({ plant_id: 2, annual: 0, biennial: 0, perennial: 1, lifespan_years: 3 }); // ADDED
@@ -331,6 +417,30 @@ test('scheduler adjacent gap hints support companion pair and turnover bases', (
         { cellId: 'next', label: 'Carrot', startISO: '2026-08-20', endISO: '2026-09-10' } // ADDED
     ], { startISO: '2026-07-02', endISO: '2026-08-01' }, { basisLabel: 'turnover planting' }); // ADDED
     assert.equal(turnoverHints.text, 'Before: 1d gap; After: 19d gap'); // ADDED
+}); // ADDED
+
+test('scheduler layout tab wires live SVG preview and context-aware default saving', () => { // ADDED
+    assert.match(schedulerSource, /const layoutTab = document\.createElement\('div'\)/); // ADDED
+    assert.match(schedulerSource, /const layoutTabBtn = mxUtils\.button\("Layout"/); // ADDED
+    assert.match(schedulerSource, /renderLayoutPreviewSvg\(layoutPreview, model\)/); // ADDED
+    assert.match(schedulerSource, /saveLayoutDefaultChk\.checked[\s\S]*CompanionRelationshipModel\.ensurePairDefaultsRelationship[\s\S]*CompanionRelationshipModel\.saveLayoutDefaults/); // CHANGED
+    assert.match(schedulerSource, /PlantModel\.update\(formState\.plantId, spacingPatch\)/); // ADDED
+    assert.match(schedulerSource, /layoutOffsetCm: derivedContext\.mode === 'companion'/); // ADDED
+    assert.match(schedulerSource, /writeCellAttribute\(targetCell, 'companion_relation_id', ensured\.relationId/); // CHANGED
+    assert.match(schedulerSource, /Companion group layout/); // ADDED
+    assert.match(schedulerSource, /applyCompanionGroupLayoutToGraph/); // ADDED
+    assert.match(schedulerSource, /CompanionLayoutGroupDefaultModel\.save/); // ADDED
+}); // ADDED
+
+test('plant editor exposes plant layout spacing x and y defaults', () => { // ADDED
+    assert.match(schedulerSource, /const spacingXInput = makeNullableNumber\(existing\?\.spacing_x_cm/); // ADDED
+    assert.match(schedulerSource, /const spacingYInput = makeNullableNumber\(existing\?\.spacing_y_cm/); // ADDED
+    assert.match(schedulerSource, /spacing_x_cm: readNullableNumber\(spacingXInput\)/); // ADDED
+    assert.match(schedulerSource, /spacing_y_cm: readNullableNumber\(spacingYInput\)/); // ADDED
+    assert.match(schedulerSource, /plantLayoutHeading\.textContent = 'Layout'/); // ADDED
+    assert.match(schedulerSource, /refreshPlantEditorLayoutPreview\(\)/); // ADDED
+    assert.match(schedulerSource, /Companion pair layout defaults/); // ADDED
+    assert.match(schedulerSource, /CompanionRelationshipModel\.saveLayoutDefaults\(relationship\.relationId, readCompanionLayoutDraft\(\), relationship\)/); // ADDED
 }); // ADDED
 
 test('turnover computed-window filtering rejects same-cluster occupancy overlap', () => { // CHANGED

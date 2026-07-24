@@ -149,6 +149,11 @@ class TrellisSeederTests(unittest.TestCase):
             self.assertIn("source_plant_id", companion_cols)  # ADDED
             self.assertIn("companion_plant_id", companion_cols)  # ADDED
             self.assertIn("start_offset_days", companion_cols)  # ADDED
+            self.assertIn("layout_template", companion_cols)  # ADDED
+            self.assertIn("layout_spacing_x_cm", companion_cols)  # ADDED
+            self.assertIn("layout_spacing_y_cm", companion_cols)  # ADDED
+            self.assertIn("layout_offset_x_cm", companion_cols)  # ADDED
+            self.assertIn("layout_offset_y_cm", companion_cols)  # ADDED
 
     def test_companion_migration_adds_directional_timing_and_nullable_id_backfill(self) -> None:  # ADDED
         with closing(sqlite3.connect(":memory:")) as conn:  # ADDED
@@ -174,6 +179,8 @@ class TrellisSeederTests(unittest.TestCase):
             self.assertIn("source_plant_id", cols)  # ADDED
             self.assertIn("companion_plant_id", cols)  # ADDED
             self.assertIn("start_offset_days", cols)  # ADDED
+            self.assertIn("layout_template", cols)  # ADDED
+            self.assertIn("layout_offset_x_cm", cols)  # ADDED
             rows = list(conn.execute("SELECT p1, p2, source_plant_id, companion_plant_id, start_offset_days FROM Companions ORDER BY relation_id"))  # ADDED
             self.assertEqual((rows[0]["source_plant_id"], rows[0]["companion_plant_id"], rows[0]["start_offset_days"]), (1, 2, None))  # ADDED
             self.assertEqual((rows[1]["source_plant_id"], rows[1]["companion_plant_id"]), (None, 2))  # ADDED
@@ -189,14 +196,22 @@ class TrellisSeederTests(unittest.TestCase):
             "source_plant_id": 1,  # ADDED
             "companion_plant_id": 2,  # ADDED
             "start_offset_days": -7,  # ADDED
+            "layout_template": "staggered",  # ADDED
+            "layout_spacing_x_cm": 20.0,  # ADDED
+            "layout_spacing_y_cm": 25.0,  # ADDED
+            "layout_offset_x_cm": 10.0,  # ADDED
         })  # ADDED
         self.assertEqual(valid["errors"], [])  # ADDED
         invalid = validate_row("Companions", {  # ADDED
             "p1": "Tomato",  # ADDED
             "p2": "Basil",  # ADDED
             "start_offset_days": "soon",  # ADDED
+            "layout_template": "diagonal",  # ADDED
+            "layout_spacing_x_cm": "wide",  # ADDED
         })  # ADDED
         self.assertTrue(any("start_offset_days" in error for error in invalid["errors"]))  # ADDED
+        self.assertTrue(any("layout_template" in error for error in invalid["errors"]))  # ADDED
+        self.assertTrue(any("layout_spacing_x_cm" in error for error in invalid["errors"]))  # ADDED
 
     def test_companion_upsert_preserves_directional_ids_timing_and_evidence(self) -> None:  # ADDED
         with closing(sqlite3.connect(":memory:")) as conn:  # ADDED
@@ -212,7 +227,12 @@ class TrellisSeederTests(unittest.TestCase):
                     companion_type_id INTEGER,
                     source_plant_id INTEGER,
                     companion_plant_id INTEGER,
-                    start_offset_days INTEGER
+                    start_offset_days INTEGER,
+                    layout_template TEXT,
+                    layout_spacing_x_cm REAL,
+                    layout_spacing_y_cm REAL,
+                    layout_offset_x_cm REAL,
+                    layout_offset_y_cm REAL
                 );
                 CREATE TABLE CompanionEvidence (
                     evidence_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -241,9 +261,15 @@ class TrellisSeederTests(unittest.TestCase):
                 "source_plant_id": 1,  # ADDED
                 "companion_plant_id": 2,  # ADDED
                 "start_offset_days": -5,  # ADDED
+                "layout_template": "interplant",  # ADDED
+                "layout_spacing_x_cm": 22.5,  # ADDED
+                "layout_spacing_y_cm": 30,  # ADDED
+                "layout_offset_x_cm": 12,  # ADDED
+                "layout_offset_y_cm": -4,  # ADDED
             }])  # ADDED
-            row = conn.execute("SELECT source_plant_id, companion_plant_id, start_offset_days FROM Companions WHERE relation_id=10").fetchone()  # ADDED
+            row = conn.execute("SELECT source_plant_id, companion_plant_id, start_offset_days, layout_template, layout_spacing_x_cm, layout_spacing_y_cm, layout_offset_x_cm, layout_offset_y_cm FROM Companions WHERE relation_id=10").fetchone()  # CHANGED
             self.assertEqual((row["source_plant_id"], row["companion_plant_id"], row["start_offset_days"]), (1, 2, -5))  # ADDED
+            self.assertEqual((row["layout_template"], row["layout_spacing_x_cm"], row["layout_spacing_y_cm"], row["layout_offset_x_cm"], row["layout_offset_y_cm"]), ("interplant", 22.5, 30.0, 12.0, -4.0))  # ADDED
             evidence = conn.execute("SELECT summary FROM CompanionEvidence WHERE relation_id=10").fetchone()  # ADDED
             self.assertEqual(evidence["summary"], "Keep this evidence.")  # ADDED
 
@@ -311,7 +337,7 @@ class TrellisSeederTests(unittest.TestCase):
         self.assertEqual(without_templates["estimated_total"], without_templates["crop_rows"] + without_templates["companion_rows"])
 
     def test_sowing_window_call_estimate_and_preflight_label(self) -> None:
-        data = {"sowing_windows": {"enabled": True, "crop_allowlist": ["Lettuce"]}}
+        data = {"sowing_windows": {"enabled": True, "crop_allowlist": ["Apple"]}}  # CHANGED
         settings = Settings(self.tmp_path / "config.json", {"db_path": str(self.db_path)})
         estimate = estimate_openai_calls(data, settings, self.db_path, GenerationOptions(generate_templates=False))
         self.assertEqual(estimate["sowing_window_crops"], 1)
@@ -416,8 +442,8 @@ class TrellisSeederTests(unittest.TestCase):
 
     def test_suggestion_context_extracts_normalized_existing_db_values(self) -> None:
         context = load_suggestion_context(self.db_path)
-        self.assertIn("lettuce", context["plant_keys"])
-        self.assertIn("vancouver, bc", context["city_keys"])
+        self.assertIn("apple", context["plant_keys"])  # CHANGED
+        self.assertIn("vancouver", context["city_keys"])  # CHANGED
         self.assertTrue(context["companion_pair_keys"])
 
     def test_suggestion_validation_rejects_duplicates_and_bad_companion_endpoints(self) -> None:
@@ -426,7 +452,7 @@ class TrellisSeederTests(unittest.TestCase):
             "section": "crops",
             "requested_count": 2,
             "suggestions": [
-                {"name": "Lettuce", "rationale": "already exists", "source_hints": ["source"]},
+                {"name": "Apple", "rationale": "already exists", "source_hints": ["source"]},  # CHANGED
                 {"name": "Parsnip", "rationale": "new root crop", "source_hints": ["source"]},
             ],
         }
@@ -435,7 +461,7 @@ class TrellisSeederTests(unittest.TestCase):
         companion_result = {
             "section": "companions",
             "requested_count": 1,
-            "suggestions": [{"p1": "Lettuce", "p2": "Missing Plant", "rationale": "bad endpoint", "source_hints": ["source"]}],
+            "suggestions": [{"p1": "Apple", "p2": "Missing Plant", "rationale": "bad endpoint", "source_hints": ["source"]}],  # CHANGED
         }
         self.assertTrue(any("must already exist" in error for error in validate_suggestion_list(companion_result, "companions", 1, context)))
 
@@ -480,11 +506,11 @@ class TrellisSeederTests(unittest.TestCase):
         }
         self.assertTrue(any("needs at least one source" in error for error in validate_input_draft(invalid_crop_draft, "crops", accepted_crop, context)))
 
-        accepted_companion = [{"p1": "Apple", "p2": "Carrot", "rationale": "existing endpoints", "source_hints": ["source"]}]
+        accepted_companion = [{"p1": "Apple", "p2": "Beet", "rationale": "existing endpoints", "source_hints": ["source"]}]  # CHANGED
         companion_draft = {
             "crops": [],
             "cities": [],
-            "companions": [{"p1": "Apple", "p2": "Carrot", "sources": ["https://example.test/apple-carrot"], "notes": ""}],
+            "companions": [{"p1": "Apple", "p2": "Beet", "sources": ["https://example.test/apple-beet"], "notes": ""}],  # CHANGED
         }
         self.assertEqual(validate_input_draft(companion_draft, "companions", accepted_companion, context), [])
 
@@ -1069,6 +1095,7 @@ class TrellisSeederTests(unittest.TestCase):
         with closing(sqlite3.connect(self.db_path)) as conn:
             with conn:
                 apply_migrations(conn)
+                conn.execute("UPDATE Cities SET is_major_city=NULL, climate_band=NULL")  # CHANGED
                 conn.execute("UPDATE Cities SET is_major_city=1, climate_band='hot' WHERE city_name LIKE 'Toronto%'")  # CHANGED
                 conn.execute("UPDATE Cities SET is_major_city=1, climate_band='temperate' WHERE city_name LIKE 'Vancouver%'")  # CHANGED
         missing = preflight_climate_benchmark(settings)
@@ -1997,8 +2024,8 @@ class TrellisSeederTests(unittest.TestCase):
                 for row in conn.execute("SELECT region_code, city_id FROM Cities WHERE city_name='Springfield'")
             }
             self.assertEqual(set(rows), {"IL", "MO"})
-            il_monthly = conn.execute("SELECT temp_mean_c FROM CityWeatherMonthly WHERE city_id=?", [rows["IL"]]).fetchone()[0]
-            mo_monthly = conn.execute("SELECT temp_mean_c FROM CityWeatherMonthly WHERE city_id=?", [rows["MO"]]).fetchone()[0]
+            il_monthly = conn.execute("SELECT temp_mean_c FROM CityWeatherMonthly WHERE city_id=? AND weather_month='2025-01' AND provider='nasa-power' AND dataset='nasa-power-monthly'", [rows["IL"]]).fetchone()[0]  # CHANGED
+            mo_monthly = conn.execute("SELECT temp_mean_c FROM CityWeatherMonthly WHERE city_id=? AND weather_month='2025-01' AND provider='nasa-power' AND dataset='nasa-power-monthly'", [rows["MO"]]).fetchone()[0]  # CHANGED
             self.assertEqual(il_monthly, 4.0)
             self.assertEqual(mo_monthly, 6.0)
             il_window = conn.execute("SELECT summary FROM PlantingWindowReferences WHERE city_id=?", [rows["IL"]]).fetchone()[0]

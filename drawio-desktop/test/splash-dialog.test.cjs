@@ -598,6 +598,8 @@ test("Trellis splash outer decoration stays below app chrome and applies a valid
 
     context.window.TrellisSplashEnhancements.decorateOuterDialog( // NEW
         editorUi, dialog, { container: outerContainer, bg: backdrop }); // NEW
+	const backgroundLayer = backdrop.querySelector(".trellis-splash-bg-image"); // NEW
+	backgroundLayer.onload(); // NEW
 
     assert.ok(outerContainer.classList.contains("trellis-splash-dialog")); // NEW
     assert.ok(backdrop.classList.contains("trellis-splash-backdrop")); // NEW
@@ -610,7 +612,7 @@ test("Trellis splash outer decoration stays below app chrome and applies a valid
     assert.equal(outerContainer.classList.contains("trellis-splash-compact"), false); // NEW
     assert.equal(requests[0].action, "getTrellisSplashBackground"); // NEW
     assert.match(backdrop.style.getPropertyValue("--trellis-splash-image"), /garden%20view\.webp/); // NEW
-    assert.match(backdrop.querySelector(".trellis-splash-bg-image").getAttribute("src"), /garden%20view\.webp/); // NEW
+    assert.match(backgroundLayer.getAttribute("src"), /garden%20view\.webp/); // CHANGE
     assert.equal(closeButton.getAttribute("aria-label"), "Continue with a blank diagram"); // NEW
 }); // NEW
 
@@ -756,11 +758,69 @@ test("Trellis splash tries the packaged default before Electron selection", () =
 
 	context.window.TrellisSplashEnhancements.decorateOuterDialog( // NEW
 		editorUi, dialog, { container: outerContainer, bg: backdrop }); // NEW
+	const backgroundLayer = backdrop.querySelector(".trellis-splash-bg-image"); // NEW
+	backgroundLayer.onload(); // NEW
 
 	assert.deepEqual(requestedSources, ["images/trellis-splash/trellis-garden-sunrise.png"]); // NEW
 	assert.ok(backdrop.classList.contains("trellis-splash-has-image")); // NEW
 	assert.match(backdrop.style.getPropertyValue("--trellis-splash-image"), /trellis-garden-sunrise\.png/); // NEW
-	assert.match(backdrop.querySelector(".trellis-splash-bg-image").getAttribute("src"), /trellis-garden-sunrise\.png/); // NEW
+	assert.match(backgroundLayer.getAttribute("src"), /trellis-garden-sunrise\.png/); // CHANGE
+}); // NEW
+
+test("Trellis splash reveals a loaded background on the next animation frame", () => { // NEW
+	const { dom, dialog, context, editorUi } = loadSplashDialog(); // NEW
+	const outerContainer = dom.window.document.createElement("div"); // NEW
+	const backdrop = dom.window.document.createElement("div"); // NEW
+	const animationFrames = []; // NEW
+	context.electron = { request(payload, callback) { callback(null); } }; // NEW
+	dom.window.requestAnimationFrame = function(callback) { // NEW
+		animationFrames.push(callback); // NEW
+		return animationFrames.length; // NEW
+	}; // NEW
+	dom.window.Image = class { // NEW
+		set src(_value) { // NEW
+			this.onload(); // NEW
+		} // NEW
+	}; // NEW
+
+	context.window.TrellisSplashEnhancements.decorateOuterDialog( // NEW
+		editorUi, dialog, { container: outerContainer, bg: backdrop }); // NEW
+	const backgroundLayer = backdrop.querySelector(".trellis-splash-bg-image"); // NEW
+
+	assert.match(backdrop.style.getPropertyValue("--trellis-splash-image"), /trellis-garden-sunrise\.png/); // NEW
+	assert.equal(backdrop.classList.contains("trellis-splash-has-image"), false); // NEW
+	assert.match(backgroundLayer.getAttribute("src"), /trellis-garden-sunrise\.png/); // NEW
+	backgroundLayer.onload(); // NEW
+	assert.equal(backdrop.classList.contains("trellis-splash-has-image"), false); // NEW
+	animationFrames[0](); // NEW
+	assert.equal(backdrop.classList.contains("trellis-splash-has-image"), true); // NEW
+}); // NEW
+
+test("Trellis splash skips duplicate pending Electron background selection", () => { // NEW
+	const { dom, dialog, context, editorUi } = loadSplashDialog(); // NEW
+	const outerContainer = dom.window.document.createElement("div"); // NEW
+	const backdrop = dom.window.document.createElement("div"); // NEW
+	const images = []; // NEW
+	const requestedSources = []; // NEW
+	context.electron = { request(payload, callback) { callback("trellis-garden-sunrise.png"); } }; // NEW
+	dom.window.Image = class { // NEW
+		set src(value) { // NEW
+			requestedSources.push(value); // NEW
+			images.push(this); // NEW
+		} // NEW
+	}; // NEW
+
+	context.window.TrellisSplashEnhancements.decorateOuterDialog( // NEW
+		editorUi, dialog, { container: outerContainer, bg: backdrop }); // NEW
+
+	assert.deepEqual(requestedSources, ["images/trellis-splash/trellis-garden-sunrise.png"]); // NEW
+	assert.equal(backdrop.style.getPropertyValue("--trellis-splash-image"), ""); // NEW
+	images[0].onload(); // NEW
+	const backgroundLayer = backdrop.querySelector(".trellis-splash-bg-image"); // NEW
+	backgroundLayer.onload(); // NEW
+	assert.ok(backdrop.classList.contains("trellis-splash-has-image")); // NEW
+	assert.match(backdrop.style.getPropertyValue("--trellis-splash-image"), /trellis-garden-sunrise\.png/); // NEW
+	assert.match(backgroundLayer.getAttribute("src"), /trellis-garden-sunrise\.png/); // NEW
 }); // NEW
 
 test("Trellis splash handles image load failures without setting the background", () => { // CHANGE
@@ -778,7 +838,7 @@ test("Trellis splash handles image load failures without setting the background"
 
 	assert.equal(backdrop.style.getPropertyValue("--trellis-splash-image"), ""); // NEW
 	assert.equal(backdrop.classList.contains("trellis-splash-has-image"), false); // NEW
-	assert.equal(backdrop.querySelector(".trellis-splash-bg-image"), null); // NEW
+	assert.equal(backdrop.querySelector(".trellis-splash-bg-image").hasAttribute("src"), false); // CHANGE
 }); // NEW
 
 test("Trellis splash assets and bootstrap wire the same enhancement into packaged runtime", () => { // NEW
@@ -795,13 +855,17 @@ test("Trellis splash assets and bootstrap wire the same enhancement into package
 	assert.match(enhancementSource, /trellis-splash-active/); // NEW
 	assert.match(splashCss, /trellis-splash-dialog\.trellis-splash-compact/); // CHANGE
 	assert.match(splashCss, /trellis-splash-backdrop::before/); // CHANGE
+	assert.doesNotMatch(splashCss, /trellis-splash-backdrop::after/); // CHANGE
+	assert.doesNotMatch(splashCss, /background-image: var\(--trellis-splash-image\)/); // CHANGE
+	assert.match(splashCss, /trellis-splash-has-image \.trellis-splash-bg-image[\s\S]*opacity: 1/); // CHANGE
+	assert.doesNotMatch(splashCss, /trellis-splash-has-image::before[\s\S]*opacity: 0/); // CHANGE
 	assert.match(splashCss, /\.geEditor\.trellis-splash-active > \.geMenubarContainer/); // NEW
 	assert.match(splashCss, /\.geEditor\.trellis-splash-active > \.geToolbarContainer/); // NEW
-	assert.match(splashCss, /\.trellis-splash-bg-image/); // NEW
-	assert.match(splashCss, /object-fit: cover/); // NEW
+	assert.match(splashCss, /\.trellis-splash-bg-image/); // CHANGE
+	assert.match(splashCss, /object-fit: cover/); // CHANGE
 	assert.match(splashCss, /\.trellis-splash-tagline[\s\S]*text-align: center/); // NEW
 	assert.match(splashCss, /width: var\(--trellis-workspace-width, 100%\)/); // CHANGE
-	assert.match(enhancementSource, /trellis-splash-bg-image/); // NEW
+	assert.match(enhancementSource, /trellis-splash-bg-image/); // CHANGE
 	assert.doesNotMatch(splashCss, /max-height: 820px/); // NEW
 	assert.match(splashCss, /top: var\(--trellis-workspace-top/); // NEW
 	assert.match(splashCss, /height: var\(--trellis-splash-dialog-height, 690px\) !important/); // CHANGE

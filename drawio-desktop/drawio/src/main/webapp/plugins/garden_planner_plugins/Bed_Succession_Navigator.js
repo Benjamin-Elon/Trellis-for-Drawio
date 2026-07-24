@@ -45,6 +45,8 @@ Draw.loadPlugin(function (ui) {
     // -------------------- Config --------------------
     const BTN_SIZE = 22;
     const BTN_INSET = 6;
+    const SELECT_BUTTON_GAP = 4; // NEW
+    const SELECT_BUTTON_DRAG_HANDLE_SLOT = BTN_SIZE + SELECT_BUTTON_GAP; // NEW
     const ICON_PREV = 'data:image/svg+xml;utf8,' + encodeURIComponent(
         '<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22">' +
         '<circle cx="11" cy="11" r="10" fill="white" stroke="black" stroke-width="1"/>' +
@@ -1250,6 +1252,39 @@ Draw.loadPlugin(function (ui) {
         return bedId; // NEW
     } // NEW
 
+    function resolveOccupiedBedAnchor(cell) { // NEW
+        if (!cell || !model.isVertex(cell)) return null; // NEW
+        if (isGardenBed(cell)) return cell; // NEW
+        const group = findTilerGroupSelection(cell); // NEW
+        if (!group) return null; // NEW
+        const parent = model.getParent(group); // NEW
+        if (!parent) return null; // NEW
+        const beds = (graph.getChildVertices(parent) || []).filter(isGardenBed); // NEW
+        const meta = classifyTilerGroupForBeds(group, beds); // NEW
+        if (meta.type !== 'contained' || !meta.bedId) return null; // NEW
+        const bed = model.getCell(meta.bedId); // NEW
+        return bed && model.isVertex(bed) && isGardenBed(bed) ? bed : null; // NEW
+    } // NEW
+
+    function containedPlantingGroupsForBed(bed) { // NEW
+        const parent = bed && model.getParent(bed); // NEW
+        if (!parent) return []; // NEW
+        const beds = (graph.getChildVertices(parent) || []).filter(isGardenBed); // NEW
+        return (graph.getChildVertices(parent) || []).filter(cell => { // NEW
+            if (!isTilerGroup(cell)) return false; // NEW
+            const meta = classifyTilerGroupForBeds(cell, beds); // NEW
+            return meta.type === 'contained' && meta.bedId === bed.id; // NEW
+        }); // NEW
+    } // NEW
+
+    function resolveOccupiedBedMoveUnit(cell) { // NEW
+        const bed = resolveOccupiedBedAnchor(cell); // NEW
+        if (!bed) return null; // NEW
+        const groups = containedPlantingGroupsForBed(bed); // NEW
+        if (!groups.length) return null; // NEW
+        return { bed, cells: [bed].concat(groups) }; // NEW
+    } // NEW
+
     function makeCoveredPlantTarget(component, coverKey, coverCells) { // NEW
         if (!component || !component.length || clusterKeyOf(component) === coverKey) return null; // NEW
         const fraction = coverageFractionOfTargetCellsByCoverCells(component, coverCells); // NEW
@@ -1429,15 +1464,14 @@ Draw.loadPlugin(function (ui) {
 
         // place select buttons at the top-left outside corner of the cluster bbox
         if (st.btnSelectAll || st.btnSelectBed) { // CHANGE
-            const baseX = Math.round(box.x - BTN_SIZE - BTN_INSET);
+            const baseX = Math.round(box.x - BTN_SIZE - BTN_INSET + SELECT_BUTTON_DRAG_HANDLE_SLOT); // CHANGE
             const y = Math.round(box.y - BTN_SIZE - BTN_INSET);
-            const selectGap = 4; // NEW
             if (st.btnSelectBed) { // NEW
-                st.btnSelectBed.style.left = baseX + 'px'; // NEW
+                st.btnSelectBed.style.left = baseX + 'px'; // CHANGE
                 st.btnSelectBed.style.top = y + 'px'; // NEW
             } // NEW
             if (st.btnSelectAll) {
-                const x2 = baseX + (st.btnSelectBed && st.btnSelectBed.style.display !== 'none' ? (BTN_SIZE + selectGap) : 0); // CHANGE
+                const x2 = baseX + (st.btnSelectBed && st.btnSelectBed.style.display !== 'none' ? (BTN_SIZE + SELECT_BUTTON_GAP) : 0); // CHANGE
                 st.btnSelectAll.style.left = x2 + 'px'; // CHANGE
                 st.btnSelectAll.style.top = y + 'px';
             }
@@ -1815,7 +1849,8 @@ Draw.loadPlugin(function (ui) {
     });
 
     graph.__trellisBedSuccessionNavigator = Object.assign({}, graph.__trellisBedSuccessionNavigator, { // NEW
-        getSelectedClusterOccupancy: selectedClusterOccupancyFor // NEW
+        getSelectedClusterOccupancy: selectedClusterOccupancyFor, // CHANGE
+        resolveOccupiedBedMoveUnit: resolveOccupiedBedMoveUnit // NEW
     }); // NEW
 
     // Init

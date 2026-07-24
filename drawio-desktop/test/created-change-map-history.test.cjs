@@ -520,7 +520,7 @@ test("domain plugins declare semantic history transactions and restore listeners
     const taskManager = fs.readFileSync(path.join(pluginDir, "Garden_Task_Manager.js"), "utf8"); // NEW
     const irrigation = fs.readFileSync(path.join(pluginDir, "Garden_Irrigation_Planner.js"), "utf8"); // NEW
     const linking = fs.readFileSync(path.join(pluginDir, "Vertex_Linking_Standalone.js"), "utf8"); // NEW
-    assert.match(scheduler, /category:\s*"Garden scheduling"[\s\S]*action:\s*"emitTasks"/); // NEW
+    assert.match(scheduler, /category:\s*"Garden scheduling"[\s\S]*action:\s*"saveSchedule"/); // CHANGED
     assert.match(taskManager, /category:\s*"Assignments"[\s\S]*action:\s*"assign"/); // NEW
     assert.match(taskManager, /category:\s*replacement\.mode === 'sync' \? "Garden scheduling" : "Tasks"/); // NEW
     assert.match(irrigation, /category:\s*"Irrigation"[\s\S]*action:\s*label/); // NEW
